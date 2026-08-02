@@ -40,7 +40,7 @@ in the browser before moving on.
 - [x] 1. Project scaffold: Vite + Three.js + Rapier running, empty scene
  renders (ground plane + camera). Verify: `npm run dev` shows a scene
  with no console errors.
-- [ ] 2. First-person movement: WASD to move, mouse to look, Space to jump,
+- [x] 2. First-person movement: WASD to move, mouse to look, Space to jump,
       player collides with ground/walls via Rapier. Verify: can walk around
       the whole scene, can't clip through the ground or walls, jump works.
 - [ ] 2.5. Pointer lock + focus handling (see dedicated section below):
