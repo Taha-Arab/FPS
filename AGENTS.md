@@ -36,6 +36,44 @@ one is checked off. After finishing a milestone, update this checklist
 (change [ ] to [x]) and tell the user exactly how to verify it themselves
 in the browser before moving on.
 
+### Current Status (as of Milestone 2)
+For a fresh session picking this project back up:
+- **Built so far:** Milestones 1 (project scaffold) and 2 (first-person
+  movement) are done and checked off below. Next up is Milestone 2.5
+  (pointer lock + focus handling polish).
+- **File structure:** Everything lives in one file, `src/main.js`, plus
+  `index.html` and `src/style.css`. The project hasn't been split into
+  multiple JS modules yet — it's still small enough for one file to stay
+  readable; revisit this once more systems (shooting, bots, HUD) exist.
+- **Player movement:** The player is a Rapier `kinematicPositionBased`
+  rigid body with a capsule collider (radius 0.4, half-height 0.6), moved
+  each frame via `world.createCharacterController()` (Rapier's built-in
+  character controller) rather than a dynamic physics body — this gives
+  precise FPS-style control instead of bouncy physics. Gravity and jump
+  velocity are applied manually in the render loop (kinematic bodies
+  aren't affected by Rapier's own gravity).
+- **Camera/mouse look:** Yaw/pitch are tracked as plain variables in
+  `src/main.js` and applied to `camera.rotation` with
+  `rotation.order = "YXZ"` (needed so look up/down and look left/right
+  combine correctly without gimbal issues).
+- **Pointer lock is intentionally minimal right now:** clicking the
+  canvas calls `requestPointerLock()`, with a plain text "Click to enable
+  mouse look" hint (`#pointer-lock-hint` in `index.html`/`style.css`)
+  shown until locked. There's no click-to-play overlay, no Escape-to-
+  pause, no focus-loss handling yet — building that out is Milestone 2.5.
+- **Boundary walls already exist:** 4 simple gray box walls were added
+  around the edge of the ground plane during Milestone 2 (not Milestone
+  3) so wall collision could be tested, since Milestone 2's verify step
+  required it. Milestone 3 will still add the real arena design/interior
+  obstacles; these boundary walls may be reused or replaced then.
+- **Key tuning constants (all in `src/main.js`):** `GROUND_SIZE = 50`,
+  `WALL_HEIGHT = 3`, `WALL_THICKNESS = 1`, `MOVE_SPEED = 5` (m/s),
+  `JUMP_SPEED = 6` (m/s), `GRAVITY = 20` (stronger than real-world 9.81
+  for a snappier game feel), `PLAYER_RADIUS = 0.4`, `PLAYER_HALF_HEIGHT
+  = 0.6`, `EYE_HEIGHT = 0.8`.
+- **Note:** Uses `THREE.Timer` (not the older `THREE.Clock`, which the
+  installed Three.js version has deprecated) for per-frame delta-time.
+
 ### v1 — Playable Core
 - [x] 1. Project scaffold: Vite + Three.js + Rapier running, empty scene
  renders (ground plane + camera). Verify: `npm run dev` shows a scene
