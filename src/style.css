@@ -1,0 +1,20 @@
+/* Reset default page margins so the 3D canvas fills the whole browser window. */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden; /* no scrollbars over the game canvas */
+  width: 100%;
+  height: 100%;
+}
+
+#app {
+  width: 100vw;
+  height: 100vh;
+  display: block;
+}
+
+/* The <canvas> that Three.js creates and appends into #app. */
+canvas {
+  display: block; /* removes the tiny inline-element gap under the canvas */
+}
