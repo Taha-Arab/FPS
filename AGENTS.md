@@ -57,7 +57,9 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   `CROUCH_MOVE_SPEED` / `CROUCH_EYE_HEIGHT`, and refuses to stand up when
   a ceiling blocks the taller capsule (upward headroom raycast).
   Yaw/pitch are plain variables applied to `camera.rotation`
-  (`rotation.order = "YXZ"`). Spawn: `PLAYER_SPAWN_POSITION` `(0, 3, 5)`.
+  (`rotation.order = "YXZ"`). Spawns: random pick from
+  `BLUE_TEAM_SPAWN_POINTS` / `RED_TEAM_SPAWN_POINTS` on match start and
+  each respawn (player drop-in `y = PLAYER_SPAWN_DROP_Y`).
 - **Pointer lock / focus handling:** Game starts paused with
   `#pause-overlay` ("Click to Play"). `pointerlockchange` plus
   `blur`/`visibilitychange` pause on Escape / focus loss; resume re-locks
@@ -71,12 +73,14 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   on the same footprints so the boundary stays sealed even if a future
   prop is taller than the visible walls. Soft OOB recovery
   (`recoverPlayerFromOutOfBounds`, `OOB_MARGIN`) teleports the player to
-  spawn if they somehow leave the ground pad — no death/score change.
-  Static Rapier colliders for walls + varied interior cover
-  (`boxObstacleDefs`, `pillarObstacleDefs`, `rampObstacleDef`) laid out for
-  competitive flow — center chokepoint blocking the spawn-to-spawn
-  sightline, denser west cover, sparser east open lane. Player spawn
-  `(0, _, 5)`, bot spawn `(0, _, -5)`. Shorter solid Milestone 3 cover
+  a random blue-team spawn if they somehow leave the ground pad — no
+  death/score change. Static Rapier colliders for walls + varied interior
+  cover (`boxObstacleDefs`, `pillarObstacleDefs`, `rampObstacleDef`) laid
+  out for competitive flow — center chokepoint blocking the spawn-to-spawn
+  sightline, denser west cover, sparser east open lane. Team spawns:
+  BLUE (`BLUE_TEAM_SPAWN_POINTS`, +Z side) vs RED (`RED_TEAM_SPAWN_POINTS`,
+  -Z side), randomly chosen on match start and each respawn. Shorter solid
+  Milestone 3 cover
   still supports jump-on-top via the character controller (unchanged as
   solid blockers — not walk-under). Milestone 7 adds separate elevated
   platforms/bridges (`elevatedStructurePieceDefs`: east bridge, west
@@ -108,8 +112,9 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   after `HEALTH_REGEN_DELAY_MS` at `HEALTH_REGEN_RATE_PER_SECOND`.
 - **Respawn + spawn invulnerability:** On death, player shows
   `#death-overlay` then `respawnPlayer()` after `RESPAWN_DELAY_MS` (3s)
-  (teleport, full health/ammo). Bot disables collider + hides mesh, then
-  `respawnBot()` re-enables/shows and resets AI state. Both get
+  (teleport to a random blue spawn, full health/ammo). Bot disables
+  collider + hides mesh, then `respawnBot()` re-enables/shows, picks a
+  random red spawn, and resets AI state. Both get
   `SPAWN_INVULNERABILITY_MS` (1.5s) of no-damage
   (`playerInvulnerableUntil` / `botInvulnerableUntil` — early returns in
   `damagePlayer()` / `damageBot()`; tracers still land). Cues: pulsing blue

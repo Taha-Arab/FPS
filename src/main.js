@@ -250,10 +250,10 @@ for (const wall of wallDefs) {
 // shorter ones via the character controller). Walk-under platforms are
 // the separate elevatedStructurePieceDefs further below.
 //
-// The player spawns at (0, _, 5) (see playerBodyDesc below), mirrored by
-// the enemy bot's spawn at (0, _, -5) (see the AI bot section further
-// down) - this layout was planned around both spawns from the start so it
-// never needed reworking once the bot was added.
+// Team spawn zones: player's team (BLUE) on the +Z / south side, enemy
+// team (RED) on the -Z / north side — see BLUE_TEAM_SPAWN_POINTS /
+// RED_TEAM_SPAWN_POINTS. The center chokepoint blocks spawn-to-spawn
+// sightlines; candidate points stay on their own side of it.
 
 // Box obstacles. { hx, hy, hz } are half-extents, { x, z } is the center
 // position (each rests on the ground, so its world Y position is just its
@@ -561,14 +561,54 @@ const HEALTH_REGEN_RATE_PER_SECOND = 8; // ~12.5s for a full regen from 0
 // Kept equal to the player's own max health for balance - see the
 // PLAYER_MAX_HEALTH declaration above.
 const BOT_MAX_HEALTH = PLAYER_MAX_HEALTH;
-const BOT_SPAWN_POSITION = { x: 0, z: -5 };
 const BOT_COLOR = 0xcc3333;
 
-// The player's spawn point (Milestone 6: also reused on respawn, not just
-// the initial load). y = 3 spawns it a bit above the ground so it visibly
-// settles/falls into place on load - the same "drop in" effect a respawn
-// gets too, since it goes through the same gravity code either way.
-const PLAYER_SPAWN_POSITION = { x: 0, y: 3, z: 5 };
+// -----------------------------------------------------------------------
+// Team spawn points (variety on match start + each respawn)
+// -----------------------------------------------------------------------
+// BLUE = player's team on the +Z (south) side; RED = enemy team on the -Z
+// (north) side. Points are hand-placed clear of Milestone 3 cover and M7
+// platforms (capsule radius ~0.4 plus margin). Both zones stay on their
+// own side of the center chokepoint so neither can immediately see/shoot
+// into the other's spawn area. Pick randomly via pickRandomSpawnPoint().
+
+// Player drop-in height — a bit above the ground so load/respawn visibly
+// settles via gravity (same feel as the old fixed PLAYER_SPAWN_POSITION).
+const PLAYER_SPAWN_DROP_Y = 3;
+
+const BLUE_TEAM_SPAWN_POINTS = [
+  { x: 0, z: 5 }, // original center-south
+  { x: 2.5, z: 9 },
+  { x: 7, z: 11 },
+  { x: -2, z: 12 },
+  { x: 5.5, z: 6.5 },
+];
+
+const RED_TEAM_SPAWN_POINTS = [
+  { x: 0, z: -5 }, // original center-north
+  { x: -3.5, z: -7 },
+  { x: 2.5, z: -9 },
+  { x: 7, z: -11 },
+  { x: -8, z: -5.5 },
+];
+
+function pickRandomSpawnPoint(spawnPoints) {
+  return spawnPoints[Math.floor(Math.random() * spawnPoints.length)];
+}
+
+function getBlueTeamSpawnTranslation() {
+  const point = pickRandomSpawnPoint(BLUE_TEAM_SPAWN_POINTS);
+  return { x: point.x, y: PLAYER_SPAWN_DROP_Y, z: point.z };
+}
+
+function getRedTeamSpawnTranslation() {
+  const point = pickRandomSpawnPoint(RED_TEAM_SPAWN_POINTS);
+  return {
+    x: point.x,
+    y: PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
+    z: point.z,
+  };
+}
 
 // How far the bot can "see" the player - same scale as the player's own
 // GUN_RANGE above.
@@ -687,11 +727,9 @@ botMarkerMesh.position.copy(BOT_MARKER_OFFSET);
 const botGroup = new THREE.Group();
 botGroup.add(botMesh);
 botGroup.add(botMarkerMesh);
-botGroup.position.set(
-  BOT_SPAWN_POSITION.x,
-  PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
-  BOT_SPAWN_POSITION.z
-);
+// Placeholder until initPhysics() picks a random red spawn and
+// startRenderLoop() syncs the group to the live body each frame.
+botGroup.position.set(0, PLAYER_HALF_HEIGHT + PLAYER_RADIUS, -5);
 scene.add(botGroup);
 
 // -----------------------------------------------------------------------
@@ -1403,10 +1441,11 @@ async function initPhysics() {
   // player it doesn't need a gravity/jump velocity state machine - see
   // moveBotTowards() further down, which only ever feeds it horizontal
   // movement.
+  const initialBotSpawn = getRedTeamSpawnTranslation();
   const botBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-    BOT_SPAWN_POSITION.x,
-    PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
-    BOT_SPAWN_POSITION.z
+    initialBotSpawn.x,
+    initialBotSpawn.y,
+    initialBotSpawn.z
   );
   const botBody = world.createRigidBody(botBodyDesc);
   const botColliderDesc = RAPIER.ColliderDesc.capsule(
@@ -1426,10 +1465,11 @@ async function initPhysics() {
   // (via setNextKinematicTranslation) instead of letting Rapier's forces
   // push it around like a normal dynamic object. This gives precise,
   // responsive FPS-style control instead of physics-y/bouncy movement.
+  const initialPlayerSpawn = getBlueTeamSpawnTranslation();
   const playerBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-    PLAYER_SPAWN_POSITION.x,
-    PLAYER_SPAWN_POSITION.y,
-    PLAYER_SPAWN_POSITION.z
+    initialPlayerSpawn.x,
+    initialPlayerSpawn.y,
+    initialPlayerSpawn.z
   );
   const playerBody = world.createRigidBody(playerBodyDesc);
   const playerColliderDesc = RAPIER.ColliderDesc.capsule(
@@ -1469,6 +1509,15 @@ function startRenderLoop({
   botCollider,
   botCharacterController,
 }) {
+  // Sync the bot mesh to whichever random red spawn initPhysics() picked
+  // (the Group was created earlier with a placeholder position).
+  const initialBotPosition = botBody.translation();
+  botGroup.position.set(
+    initialBotPosition.x,
+    initialBotPosition.y,
+    initialBotPosition.z
+  );
+
   // THREE.Timer is the modern replacement for the older THREE.Clock -
   // update() must be called once per frame (with the requestAnimationFrame
   // timestamp) before getDelta() returns the correct value.
@@ -1568,7 +1617,7 @@ function startRenderLoop({
       );
       isCrouching = false;
     }
-    playerBody.setTranslation(PLAYER_SPAWN_POSITION, true);
+    playerBody.setTranslation(getBlueTeamSpawnTranslation(), true);
   }
 
   // -----------------------------------------------------------------
@@ -1597,8 +1646,8 @@ function startRenderLoop({
     // A direct teleport (not setNextKinematicTranslation, which is for the
     // normal per-frame collide-and-slide movement) since this needs to take
     // effect immediately - it's called from a setTimeout, not from inside
-    // tick()'s usual movement step.
-    playerBody.setTranslation(PLAYER_SPAWN_POSITION, true);
+    // tick()'s usual movement step. Random blue-team spawn each time.
+    playerBody.setTranslation(getBlueTeamSpawnTranslation(), true);
 
     setPlayerHealth(PLAYER_MAX_HEALTH);
     playerLastDamageTime = -Infinity;
@@ -1618,11 +1667,8 @@ function startRenderLoop({
     botGroup.visible = true;
     botMaterial.color.set(BOT_COLOR);
 
-    const spawnPosition = {
-      x: BOT_SPAWN_POSITION.x,
-      y: PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
-      z: BOT_SPAWN_POSITION.z,
-    };
+    // Random red-team spawn each respawn (same pool as match start).
+    const spawnPosition = getRedTeamSpawnTranslation();
     botBody.setTranslation(spawnPosition, true);
     botGroup.position.set(spawnPosition.x, spawnPosition.y, spawnPosition.z);
     botGroup.rotation.y = 0;
