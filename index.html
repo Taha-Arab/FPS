@@ -30,6 +30,19 @@
     </div>
 
     <!--
+      Minimap (Milestone 8). Top-right top-down view of the arena.
+      #minimap-layout is filled once by buildMinimapLayout() with simplified
+      obstacle/platform footprints; player/bot dots are updated every frame
+      by updateMinimap(). Blue = player/allies, red = enemies (same team
+      colors as the score HUD).
+    -->
+    <div id="minimap">
+      <div id="minimap-layout"></div>
+      <div id="minimap-player" class="minimap-dot minimap-dot-blue"></div>
+      <div id="minimap-bot" class="minimap-dot minimap-dot-red"></div>
+    </div>
+
+    <!--
       Crosshair (Milestone 4). A simple centered reticle so the player can
       see exactly where the hitscan raycast in src/main.js will fire from -
       it's purely visual/decorative (styled in src/style.css), it doesn't

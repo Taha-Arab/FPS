@@ -114,6 +114,101 @@ canvas {
   opacity: 0.8;
 }
 
+/* Minimap (Milestone 8). Top-right square matching the dark translucent
+   HUD pill style of #match-hud. Dots are positioned in % by updateMinimap()
+   in src/main.js (world XZ → left/top). pointer-events: none so it never
+   blocks clicks/shots. */
+#minimap {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  width: 140px;
+  height: 140px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-radius: 4px;
+  pointer-events: none;
+  user-select: none;
+  z-index: 5;
+  overflow: hidden;
+}
+
+/* Static arena footprints (boxes/pillars/ramps/decks), built once by
+   buildMinimapLayout() in src/main.js. Sits under the live player/bot dots. */
+#minimap-layout {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.minimap-shape {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+}
+
+/* Solid Milestone 3 cover — warmer fill matching obstacleMaterial (~#8a6d3f). */
+.minimap-shape-cover {
+  background: rgba(138, 109, 63, 0.8);
+  border: 1px solid rgba(200, 170, 120, 0.55);
+}
+
+/* Elevated decks/ramps — lighter / more translucent so they read as
+   platforms rather than solid crates (matches elevatedMaterial ~#a8885a). */
+.minimap-shape-platform {
+  background: rgba(168, 136, 90, 0.45);
+  border: 1px solid rgba(220, 190, 140, 0.7);
+}
+
+.minimap-shape-circle {
+  border-radius: 50%;
+}
+
+/* Shared base for player/bot markers. left/top + translate(-50%, -50%)
+   centers each dot on its mapped arena position. Above layout shapes. */
+.minimap-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  box-sizing: border-box;
+  z-index: 1;
+}
+
+/* Player: slightly larger blue circle + upward chevron (CSS triangle via
+   ::after). updateMinimap() rotates this element with yaw so the chevron
+   faces the look direction on the top-down map. */
+.minimap-dot-blue {
+  width: 10px;
+  height: 10px;
+  background: #3366cc;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+}
+
+.minimap-dot-blue::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  /* Sit just above the circle so forward reads clearly on the map. */
+  bottom: 100%;
+  margin-left: -4px;
+  margin-bottom: 1px;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 6px solid #3366cc;
+}
+
+/* Enemy bot: smaller red circle; hidden via display:none while destroyed. */
+.minimap-dot-red {
+  width: 8px;
+  height: 8px;
+  background: #cc3333;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+}
+
 /* Spawn-invulnerability overlay (Milestone 6). A blue-tinted radial
    vignette, structurally identical to #vignette below but blue (instead of
    red) and with a gentle pulse animation while active, so it reads as a

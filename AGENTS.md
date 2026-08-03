@@ -36,11 +36,9 @@ one is checked off. After finishing a milestone, update this checklist
 (change [ ] to [x]) and tell the user exactly how to verify it themselves
 in the browser before moving on.
 
-### Current Status (Milestones 1–7 complete)
-**v1 (Playable Core) is complete**, and **Milestone 7** (platforms +
-crouch) is done — including several follow-up fixes/features beyond the
-core M7 checklist (see item 7 below). Next up is **Milestone 8**
-(minimap).
+### Current Status (Milestones 1–8 complete)
+**v1 (Playable Core) is complete**, and **Milestones 7–8** (platforms +
+crouch, minimap) are done. Next up is **Milestone 9** (pre-match menu).
 
 Everything still lives in one file (`src/main.js`, plus `index.html` /
 `src/style.css`); it hasn't been split into modules yet since it's still
@@ -133,6 +131,14 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   **`KILL_TARGET` is currently hardcoded to 5** — it becomes configurable
   (alongside team size / difficulty) when Milestone 9 adds the pre-match
   menu. Refresh page to play again (real "Play Again" is Milestone 13).
+- **Minimap:** Top-right `#minimap` (140×140 DOM panel). Static layout
+  layer (`buildMinimapLayout()` → `#minimap-layout`) draws simplified
+  XZ footprints from `boxObstacleDefs` / `pillarObstacleDefs` /
+  `rampObstacleDef` / elevated decks+ramps (legs skipped). Each frame
+  `updateMinimap()` maps `playerBody` / `botBody` XZ via `GROUND_SIZE`
+  onto blue (`#3366cc`) player + red (`#cc3333`) enemy dots. Player
+  marker rotates with `yaw` (facing chevron). Enemy dot hidden while
+  `botDestroyed`. No ally-bot dots yet (Milestone 9/10).
 
 Key tuning constants in `src/main.js` include: `ARENA_SIZES`,
 `WALL_HEIGHT = 6`, `BOUNDARY_CONTAINMENT_HEIGHT = 20`, `OOB_MARGIN = 0.5`,
@@ -207,8 +213,13 @@ Key tuning constants in `src/main.js` include: `ARENA_SIZES`,
           respawn; zones stay separated by the center chokepoint.
         - Live respawn countdown on `#death-overlay-subtitle` (3…2…1)
           synced to `RESPAWN_DELAY_MS` via `playerRespawnAt`.
-- [ ] 8. Minimap: top-down indicator of player + bot positions. Verify:
-      minimap updates live as player/bots move.
+- [x] 8. Minimap: top-down indicator of player + bot positions. Verify:
+      minimap updates live as player/bots move. Top-right `#minimap`
+      DOM panel; blue player dot (yaw-facing chevron) + red enemy bot
+      dot via `updateMinimap()` / `worldToMinimapPercent()` using
+      `GROUND_SIZE`. Enemy dot hidden while `botDestroyed`. Also
+      includes a static simplified layout layer (`buildMinimapLayout`)
+      for cover + elevated decks/ramps (support legs omitted).
 - [ ] 9. Pre-match menu: team size preset (1v1/3v3/5v5 — see team size
       counting rule above) + bot difficulty selection, shown before match
       starts. Verify: selecting each preset spawns the correct bot counts.

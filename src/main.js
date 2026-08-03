@@ -88,6 +88,11 @@
 // static capsule height + move-speed reduction (no slide), with a
 // headroom check before standing back up.
 //
+// Milestone 8: Minimap. Top-right DOM panel (#minimap) with live blue
+// player + red enemy dots mapped from arena XZ each frame (updateMinimap),
+// plus a static simplified layout layer (buildMinimapLayout) drawn from
+// the obstacle/platform defs for spatial awareness.
+//
 // NOT built yet (later milestones):
 // - No cover-seeking behavior or difficulty tiers yet (9-10) - the bot's
 //   patrol/chase movement above is a basic step ahead of that, not the
@@ -1277,10 +1282,135 @@ const matchEndOverlay = document.getElementById("match-end-overlay");
 const matchEndTitle = document.getElementById("match-end-title");
 const matchEndSubtitle = document.getElementById("match-end-subtitle");
 
+// Minimap DOM nodes (Milestone 8). Layout shapes are built once into
+// #minimap-layout; player/bot dots are written every frame by
+// updateMinimap() — see worldToMinimapPercent() for the world→map math.
+const minimapLayoutEl = document.getElementById("minimap-layout");
+const minimapPlayerEl = document.getElementById("minimap-player");
+const minimapBotEl = document.getElementById("minimap-bot");
+
 function updateScoreHud() {
   matchScoreBlueEl.textContent = String(blueScore);
   matchScoreRedEl.textContent = String(redScore);
 }
+
+// Maps a world XZ point onto the square #minimap as CSS left%/top%.
+// Arena is centered at the origin with width GROUND_SIZE, so:
+//   x = -GROUND_HALF → left 0%,  x = +GROUND_HALF → left 100%
+//   z = -GROUND_HALF → top 0%,   z = +GROUND_HALF → top 100%
+// (+Z is "down" on the map, matching a top-down view looking along -Y.)
+// Uses GROUND_SIZE (not a hardcoded 30) so this stays correct when
+// Milestone 9 switches arena presets.
+function worldToMinimapPercent(x, z) {
+  return {
+    leftPct: (x / GROUND_SIZE + 0.5) * 100,
+    topPct: (z / GROUND_SIZE + 0.5) * 100,
+  };
+}
+
+// Converts a world-space half-extent (meters) to a % of the minimap square.
+function worldSizeToMinimapPercent(halfExtentMeters) {
+  return ((halfExtentMeters * 2) / GROUND_SIZE) * 100;
+}
+
+// Appends one axis-aligned footprint rectangle (or circle) to the layout
+// layer. Centered with translate(-50%, -50%) like the live dots.
+function appendMinimapShape(x, z, halfX, halfZ, className) {
+  const el = document.createElement("div");
+  el.className = className;
+  const center = worldToMinimapPercent(x, z);
+  el.style.left = `${center.leftPct}%`;
+  el.style.top = `${center.topPct}%`;
+  el.style.width = `${worldSizeToMinimapPercent(halfX)}%`;
+  el.style.height = `${worldSizeToMinimapPercent(halfZ)}%`;
+  minimapLayoutEl.appendChild(el);
+}
+
+// Builds the static top-down arena layout once from the same defs that
+// place 3D cover/platforms. Intentionally abstract (axis-aligned boxes +
+// circles, no tilt foreshortening, no support legs) — readable CoD /
+// Valorant-style layout awareness, not a faithful orthographic render.
+function buildMinimapLayout() {
+  minimapLayoutEl.replaceChildren();
+
+  for (const box of boxObstacleDefs) {
+    appendMinimapShape(
+      box.x,
+      box.z,
+      box.hx,
+      box.hz,
+      "minimap-shape minimap-shape-cover"
+    );
+  }
+
+  for (const pillar of pillarObstacleDefs) {
+    // Pillars are round in-world; same radius for X and Z on the map.
+    appendMinimapShape(
+      pillar.x,
+      pillar.z,
+      pillar.radius,
+      pillar.radius,
+      "minimap-shape minimap-shape-cover minimap-shape-circle"
+    );
+  }
+
+  // M3 ramp: use its untilted XZ box footprint. Close enough for a
+  // simplified map (tilt only changes height, not the plan footprint much).
+  appendMinimapShape(
+    rampObstacleDef.x,
+    rampObstacleDef.z,
+    rampObstacleDef.hx,
+    rampObstacleDef.hz,
+    "minimap-shape minimap-shape-cover"
+  );
+
+  for (const piece of elevatedStructurePieceDefs) {
+    // Skip thin support legs — they clutter the map without helping the
+    // player read walkable decks / ramp approaches.
+    if (piece.type === "box" && piece.hx <= 0.2 && piece.hz <= 0.2) {
+      continue;
+    }
+    appendMinimapShape(
+      piece.x,
+      piece.z,
+      piece.hx,
+      piece.hz,
+      "minimap-shape minimap-shape-platform"
+    );
+  }
+}
+
+// Syncs the minimap dots to the latest player/bot body positions.
+// Called from tick() after world.step() (same timing as the camera /
+// botGroup sync). Keeps updating while paused/dead so the frozen
+// positions still show under overlays.
+//
+// Player facing: Three.js yaw=0 looks down -Z (toward the top of this
+// map). A CSS rotate of 0deg leaves the chevron pointing up, so we negate
+// yaw when converting to degrees — positive yaw turns the camera left
+// (toward -X), which is counterclockwise on the map, and CSS positive
+// rotation is clockwise.
+function updateMinimap(playerPos, botPos, playerYaw) {
+  const playerMap = worldToMinimapPercent(playerPos.x, playerPos.z);
+  const yawDegrees = (-playerYaw * 180) / Math.PI;
+  minimapPlayerEl.style.left = `${playerMap.leftPct}%`;
+  minimapPlayerEl.style.top = `${playerMap.topPct}%`;
+  minimapPlayerEl.style.transform = `translate(-50%, -50%) rotate(${yawDegrees}deg)`;
+
+  if (botDestroyed) {
+    minimapBotEl.style.display = "none";
+    return;
+  }
+
+  const botMap = worldToMinimapPercent(botPos.x, botPos.z);
+  minimapBotEl.style.display = "block";
+  minimapBotEl.style.left = `${botMap.leftPct}%`;
+  minimapBotEl.style.top = `${botMap.topPct}%`;
+}
+
+// Layout is static for the match — build it once now that the obstacle /
+// platform defs and the #minimap-layout node both exist.
+buildMinimapLayout();
 
 // Formats an elapsed-time duration (ms) as "M:SS" for the match timer HUD.
 function formatMatchTime(elapsedMs) {
@@ -2315,6 +2445,10 @@ function startRenderLoop({
     // camera sync just above (must happen after world.step(), not before).
     const botPosition = botBody.translation();
     botGroup.position.set(botPosition.x, botPosition.y, botPosition.z);
+
+    // Minimap (Milestone 8): live top-down dots from the same post-step
+    // body translations used above. Runs even while paused/dead.
+    updateMinimap(playerPosition, botPosition, yaw);
 
     // Keep the bot's floating health bar glued above its head on screen.
     // Runs even while paused/dead (same reasoning as the camera follow
