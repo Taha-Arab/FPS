@@ -179,9 +179,20 @@ scene.add(groundMesh);
 // with the arena sizing above, so Milestone 3 reuses them as-is and just
 // adds interior obstacles alongside them (below).
 
-const WALL_HEIGHT = 3;
+// Visible wall height. Must stay well above jump reach from the tallest
+// walkable surface (Milestone 7 decks top out at ~2.55m; jump peak ~0.9m
+// → ~3.45m). 3m was climbable from those decks — 6m is not.
+const WALL_HEIGHT = 6;
 const WALL_THICKNESS = 1;
+// Invisible collision-only barriers on the same XZ footprint as the
+// visible walls, but much taller — seals the boundary even if a future
+// prop is taller than WALL_HEIGHT (a horizontal "lid" would itself be
+// standable, so we extend vertically instead).
+const BOUNDARY_CONTAINMENT_HEIGHT = 20;
 const GROUND_HALF = GROUND_SIZE / 2;
+// How far past the ground pad a player must go before OOB recovery snaps
+// them back to spawn (failsafe if containment is ever bypassed).
+const OOB_MARGIN = 0.5;
 
 // North/south walls span the full width (including the corners), and
 // east/west walls fit snugly between them, so there are no corner gaps.
@@ -380,49 +391,52 @@ const elevatedMaterial = new THREE.MeshStandardMaterial({ color: 0xa8885a });
 const elevatedStructurePieceDefs = [
   // Placements are intentionally clear of Milestone 3 cover (east wall
   // segment, east pillar, west crate, low wall, M3 ramp, etc.) — earlier
-  // spots at (9,1) / (-9,9) / (6,-10) clipped those obstacles.
+  // spots at (9,1) / (-9,9) / (6,-10) clipped those obstacles. Tall decks
+  // were also nudged inward from the arena walls so a jump from the deck
+  // cannot reach the boundary rim (see WALL_HEIGHT / containment notes).
 
-  // --- East bridge (far-east lane): stand-under + ramps both ends ---
-  // Shifted east to x=12 and north to z=-2 so the south ramp stops short
-  // of the east pillar at (11,6) and the north ramp's X no longer overlaps
-  // the east wall segment at (8,-6).
+  // --- East bridge (east lane): stand-under + ramps both ends ---
+  // At x=10 (not 12): outer deck edge ~11.6 leaves ~3.4m to the east wall
+  // at x=15 — beyond one jump — while z=-2 keeps the south ramp short of
+  // the east pillar (11,6) and clear of the east wall segment (8,-6).
   {
     type: "box",
     hx: 1.6,
     hy: PLATFORM_DECK_HALF_THICKNESS,
     hz: 1.8,
-    x: 12,
+    x: 10,
     y: STANDING_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS,
     z: -2,
   },
   // Corner legs (thin so the middle undercroft stays walkable).
-  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 10.6, y: STANDING_PLATFORM_CLEARANCE / 2, z: -3.5 },
-  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 13.4, y: STANDING_PLATFORM_CLEARANCE / 2, z: -3.5 },
-  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 10.6, y: STANDING_PLATFORM_CLEARANCE / 2, z: -0.5 },
-  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 13.4, y: STANDING_PLATFORM_CLEARANCE / 2, z: -0.5 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 8.6, y: STANDING_PLATFORM_CLEARANCE / 2, z: -3.5 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 11.4, y: STANDING_PLATFORM_CLEARANCE / 2, z: -3.5 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 8.6, y: STANDING_PLATFORM_CLEARANCE / 2, z: -0.5 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 11.4, y: STANDING_PLATFORM_CLEARANCE / 2, z: -0.5 },
   // South ramp (high end meets deck at z ≈ -0.2).
-  { type: "ramp", hx: 1.3, hy: 0.2, hz: 2.52, x: 12, y: 1.275, z: 1.98, tiltRadians: 0.45 },
+  { type: "ramp", hx: 1.3, hy: 0.2, hz: 2.52, x: 10, y: 1.275, z: 1.98, tiltRadians: 0.45 },
   // North ramp (negative tilt so the high end faces the deck's north edge).
-  { type: "ramp", hx: 1.3, hy: 0.2, hz: 2.52, x: 12, y: 1.275, z: -5.98, tiltRadians: -0.45 },
+  { type: "ramp", hx: 1.3, hy: 0.2, hz: 2.52, x: 10, y: 1.275, z: -5.98, tiltRadians: -0.45 },
 
-  // --- West raised platform (SW corner): stand-under + one ramp ---
-  // Parked in the SW corner clear of the west crate (-9,5) and the M3
-  // ramp (-5,10). Steeper ramp (~34°) keeps the run short of the south wall.
+  // --- West raised platform: stand-under + one ramp ---
+  // At x=-10.5 (not -12.5): outer edge ~-11.9 leaves ~3.1m to the west
+  // wall, clear of the west crate (-9,5) and the M3 ramp (-5,10). Steeper
+  // ramp (~34°) keeps the run short of the south wall.
   {
     type: "box",
     hx: 1.4,
     hy: PLATFORM_DECK_HALF_THICKNESS,
     hz: 1.3,
-    x: -12.5,
+    x: -10.5,
     y: STANDING_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS,
     z: 9.2,
   },
-  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -13.7, y: STANDING_PLATFORM_CLEARANCE / 2, z: 8.1 },
-  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -11.3, y: STANDING_PLATFORM_CLEARANCE / 2, z: 8.1 },
-  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -13.7, y: STANDING_PLATFORM_CLEARANCE / 2, z: 10.3 },
-  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -11.3, y: STANDING_PLATFORM_CLEARANCE / 2, z: 10.3 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -11.7, y: STANDING_PLATFORM_CLEARANCE / 2, z: 8.1 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -9.3, y: STANDING_PLATFORM_CLEARANCE / 2, z: 8.1 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -11.7, y: STANDING_PLATFORM_CLEARANCE / 2, z: 10.3 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -9.3, y: STANDING_PLATFORM_CLEARANCE / 2, z: 10.3 },
   // Ramp on the +Z side onto the deck (high end at z ≈ 10.5).
-  { type: "ramp", hx: 1.2, hy: 0.2, hz: 1.97, x: -12.5, y: 1.275, z: 12.01, tiltRadians: 0.6 },
+  { type: "ramp", hx: 1.2, hy: 0.2, hz: 1.97, x: -10.5, y: 1.275, z: 12.01, tiltRadians: 0.6 },
 
   // --- Low crouch underpass (SW bot corner): crouch-only clearance + ramp ---
   // Bot-side west corner keeps it clear of the low wall (4,-12), the east
@@ -1295,6 +1309,19 @@ async function initPhysics() {
     world.createCollider(wallColliderDesc);
   }
 
+  // Invisible tall containment colliders — same XZ as the visible walls,
+  // but BOUNDARY_CONTAINMENT_HEIGHT tall so the player cannot cross the
+  // boundary plane even from a prop taller than the grey wall mesh.
+  // No Three.js mesh; collision only.
+  for (const wall of wallDefs) {
+    const containmentColliderDesc = RAPIER.ColliderDesc.cuboid(
+      wall.hx,
+      BOUNDARY_CONTAINMENT_HEIGHT / 2,
+      wall.hz
+    ).setTranslation(wall.x, BOUNDARY_CONTAINMENT_HEIGHT / 2, wall.z);
+    world.createCollider(containmentColliderDesc);
+  }
+
   // Interior obstacle colliders, matching the obstacle meshes created
   // above. Same "no parent rigid body" static pattern as the ground/walls.
   // Being real Rapier colliders (not just visuals) means they already
@@ -1517,6 +1544,24 @@ function startRenderLoop({
       // walking out, still lets the player stand once headroom is clear.
       setPlayerCrouch(false);
     }
+  }
+
+  // Failsafe if the player somehow leaves the playable pad (e.g. a future
+  // prop reopens a climb-out path). Soft teleport to spawn — no death/score
+  // change — and force standing so a mid-crouch escape can't stick.
+  function recoverPlayerFromOutOfBounds() {
+    const pos = playerBody.translation();
+    const limit = GROUND_HALF + OOB_MARGIN;
+    if (Math.abs(pos.x) <= limit && Math.abs(pos.z) <= limit) return;
+
+    verticalVelocity = 0;
+    if (isCrouching) {
+      playerCollider.setShape(
+        new RAPIER.Capsule(PLAYER_HALF_HEIGHT, PLAYER_RADIUS)
+      );
+      isCrouching = false;
+    }
+    playerBody.setTranslation(PLAYER_SPAWN_POSITION, true);
   }
 
   // -----------------------------------------------------------------
@@ -2099,6 +2144,10 @@ function startRenderLoop({
       });
 
       world.step();
+
+      // After physics commits the new position — catch escapes past the
+      // walls/containment colliders and snap back to spawn.
+      recoverPlayerFromOutOfBounds();
     }
 
     // Follow the player's current position with the camera. Runs even while

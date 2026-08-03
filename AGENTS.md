@@ -45,11 +45,6 @@ Everything still lives in one file (`src/main.js`, plus `index.html` /
 small enough to stay readable. Uses `THREE.Timer` (not the deprecated
 `THREE.Clock`) for per-frame delta-time.
 
-**Known follow-up (not part of Milestone 7):** a boundary-exit exploit was
-found after Milestone 7 landed (player can leave the playable arena). It
-will be fixed in a separate follow-up commit — do not treat the arena
-bounds as sealed until that lands.
-
 **Working summary (what a fresh session can rely on):**
 - **Movement:** WASD + mouse look + Space jump + hold **C** crouch.
   Player is a Rapier `kinematicPositionBased` capsule
@@ -70,7 +65,14 @@ bounds as sealed until that lands.
   `isFiring` on pause so held inputs can't stick across alt-tab.
 - **Arena:** Sized via `ARENA_SIZES` (`1v1`/`3v3`/`5v5` → 30/45/60m);
   `GROUND_SIZE` currently hardcodes `"1v1"` until Milestone 9's pre-match
-  menu. Static Rapier colliders for walls + varied interior cover
+  menu. Boundary walls use `WALL_HEIGHT = 6` (tall enough that a jump from
+  the tallest M7 deck ~2.55m cannot mount the rim) plus invisible
+  collision-only containment cuboids (`BOUNDARY_CONTAINMENT_HEIGHT = 20`)
+  on the same footprints so the boundary stays sealed even if a future
+  prop is taller than the visible walls. Soft OOB recovery
+  (`recoverPlayerFromOutOfBounds`, `OOB_MARGIN`) teleports the player to
+  spawn if they somehow leave the ground pad — no death/score change.
+  Static Rapier colliders for walls + varied interior cover
   (`boxObstacleDefs`, `pillarObstacleDefs`, `rampObstacleDef`) laid out for
   competitive flow — center chokepoint blocking the spawn-to-spawn
   sightline, denser west cover, sparser east open lane. Player spawn
@@ -81,8 +83,9 @@ bounds as sealed until that lands.
   raised platform, low crouch underpass) with visible legs, open
   undercroft (stand-under ~2.25m on the tall decks; crouch-only ~1.35m on
   the low underpass), and ramps onto the decks for jump/walk-on-top.
-  Placement was adjusted after the first pass so the new structures no
-  longer overlap or clip Milestone 3 obstacles.
+  Placement was adjusted so the new structures do not overlap Milestone 3
+  cover, and the tall decks were nudged inward from the arena walls so
+  they are no longer a climbable path onto the boundary rim.
 - **Shooting + player HUD:** Hitscan gun (`world.castRayAndGetNormal()`),
   full-auto via `isFiring` + `FIRE_RATE_RPM`, magazine/reload
   (`MAGAZINE_SIZE` / `RELOAD_TIME_MS`, manual R or auto on empty), tracers
@@ -122,6 +125,7 @@ bounds as sealed until that lands.
   menu. Refresh page to play again (real "Play Again" is Milestone 13).
 
 Key tuning constants in `src/main.js` include: `ARENA_SIZES`,
+`WALL_HEIGHT = 6`, `BOUNDARY_CONTAINMENT_HEIGHT = 20`, `OOB_MARGIN = 0.5`,
 `MOVE_SPEED = 5`, `JUMP_SPEED = 6`, `GRAVITY = 20`, `PLAYER_RADIUS = 0.4`,
 `PLAYER_HALF_HEIGHT = 0.6`, `EYE_HEIGHT = 0.8`, `CROUCH_HALF_HEIGHT = 0.15`,
 `CROUCH_EYE_HEIGHT = 0.35`, `CROUCH_MOVE_SPEED = 2.5`, `GUN_DAMAGE = 25`,
@@ -178,9 +182,11 @@ Key tuning constants in `src/main.js` include: `ARENA_SIZES`,
       controller). Overlap with Milestone 3 obstacles was found after the
       first placement pass and resolved by repositioning the new
       structures. Crouch uses `CROUCH_HALF_HEIGHT` / `CROUCH_MOVE_SPEED` /
-      `CROUCH_EYE_HEIGHT` with a headroom ray before standing. Note: a
-      separate boundary-exit exploit was found after this milestone and is
-      tracked as a follow-up fix (see Current Status), not part of M7.
+      `CROUCH_EYE_HEIGHT` with a headroom ray before standing. A
+      post-M7 boundary-exit exploit (jump from tall decks onto the old 3m
+      wall rims) was fixed afterward: `WALL_HEIGHT = 6`, invisible
+      `BOUNDARY_CONTAINMENT_HEIGHT` colliders, inward-nudged tall decks,
+      and soft OOB spawn recovery — see Current Status.
 - [ ] 8. Minimap: top-down indicator of player + bot positions. Verify:
       minimap updates live as player/bots move.
 - [ ] 9. Pre-match menu: team size preset (1v1/3v3/5v5 — see team size
