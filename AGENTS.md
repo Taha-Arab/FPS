@@ -36,23 +36,33 @@ one is checked off. After finishing a milestone, update this checklist
 (change [ ] to [x]) and tell the user exactly how to verify it themselves
 in the browser before moving on.
 
-### Current Status (v1 complete — Milestones 1–6)
-**v1 (Playable Core) is complete.** Milestones 1–6 are all checked off
-below. Next up is **Milestone 7** (platforms + crouch) — the start of v2.
+### Current Status (Milestones 1–7 complete)
+**v1 (Playable Core) is complete**, and **Milestone 7** (platforms +
+crouch) is done — the start of v2. Next up is **Milestone 8** (minimap).
 
 Everything still lives in one file (`src/main.js`, plus `index.html` /
 `src/style.css`); it hasn't been split into modules yet since it's still
 small enough to stay readable. Uses `THREE.Timer` (not the deprecated
 `THREE.Clock`) for per-frame delta-time.
 
-**Working v1 summary (what a fresh session can rely on):**
-- **Movement:** WASD + mouse look + Space jump. Player is a Rapier
-  `kinematicPositionBased` capsule (`PLAYER_RADIUS = 0.4`,
-  `PLAYER_HALF_HEIGHT = 0.6`) driven by `world.createCharacterController()`,
-  with gravity/jump applied manually (`GRAVITY` / `JUMP_SPEED` — kinematic
-  bodies ignore Rapier's own gravity). Yaw/pitch are plain variables applied
-  to `camera.rotation` (`rotation.order = "YXZ"`). Spawn:
-  `PLAYER_SPAWN_POSITION` `(0, 3, 5)`.
+**Known follow-up (not part of Milestone 7):** a boundary-exit exploit was
+found after Milestone 7 landed (player can leave the playable arena). It
+will be fixed in a separate follow-up commit — do not treat the arena
+bounds as sealed until that lands.
+
+**Working summary (what a fresh session can rely on):**
+- **Movement:** WASD + mouse look + Space jump + hold **C** crouch.
+  Player is a Rapier `kinematicPositionBased` capsule
+  (`PLAYER_RADIUS = 0.4`, `PLAYER_HALF_HEIGHT = 0.6` standing /
+  `CROUCH_HALF_HEIGHT = 0.15` crouched) driven by
+  `world.createCharacterController()`, with gravity/jump applied manually
+  (`GRAVITY` / `JUMP_SPEED` — kinematic bodies ignore Rapier's own
+  gravity). Crouch is a static height/speed change only (no slide):
+  resizes the capsule with a foot-anchored Y adjust, uses
+  `CROUCH_MOVE_SPEED` / `CROUCH_EYE_HEIGHT`, and refuses to stand up when
+  a ceiling blocks the taller capsule (upward headroom raycast).
+  Yaw/pitch are plain variables applied to `camera.rotation`
+  (`rotation.order = "YXZ"`). Spawn: `PLAYER_SPAWN_POSITION` `(0, 3, 5)`.
 - **Pointer lock / focus handling:** Game starts paused with
   `#pause-overlay` ("Click to Play"). `pointerlockchange` plus
   `blur`/`visibilitychange` pause on Escape / focus loss; resume re-locks
@@ -64,9 +74,15 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   (`boxObstacleDefs`, `pillarObstacleDefs`, `rampObstacleDef`) laid out for
   competitive flow — center chokepoint blocking the spawn-to-spawn
   sightline, denser west cover, sparser east open lane. Player spawn
-  `(0, _, 5)`, bot spawn `(0, _, -5)`. Jumping on top of shorter obstacles
-  already works as a side effect of ordinary colliders (reuse for
-  Milestone 7); walk-under platforms and crouch are still unbuilt.
+  `(0, _, 5)`, bot spawn `(0, _, -5)`. Shorter solid Milestone 3 cover
+  still supports jump-on-top via the character controller (unchanged as
+  solid blockers — not walk-under). Milestone 7 adds separate elevated
+  platforms/bridges (`elevatedStructurePieceDefs`: east bridge, west
+  raised platform, low crouch underpass) with visible legs, open
+  undercroft (stand-under ~2.25m on the tall decks; crouch-only ~1.35m on
+  the low underpass), and ramps onto the decks for jump/walk-on-top.
+  Placement was adjusted after the first pass so the new structures no
+  longer overlap or clip Milestone 3 obstacles.
 - **Shooting + player HUD:** Hitscan gun (`world.castRayAndGetNormal()`),
   full-auto via `isFiring` + `FIRE_RATE_RPM`, magazine/reload
   (`MAGAZINE_SIZE` / `RELOAD_TIME_MS`, manual R or auto on empty), tracers
@@ -107,7 +123,8 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
 
 Key tuning constants in `src/main.js` include: `ARENA_SIZES`,
 `MOVE_SPEED = 5`, `JUMP_SPEED = 6`, `GRAVITY = 20`, `PLAYER_RADIUS = 0.4`,
-`PLAYER_HALF_HEIGHT = 0.6`, `EYE_HEIGHT = 0.8`, `GUN_DAMAGE = 25`,
+`PLAYER_HALF_HEIGHT = 0.6`, `EYE_HEIGHT = 0.8`, `CROUCH_HALF_HEIGHT = 0.15`,
+`CROUCH_EYE_HEIGHT = 0.35`, `CROUCH_MOVE_SPEED = 2.5`, `GUN_DAMAGE = 25`,
 `FIRE_RATE_RPM = 750`, `MAGAZINE_SIZE = 30`, `RELOAD_TIME_MS = 1800`,
 `PLAYER_MAX_HEALTH = 100`, `HEALTH_REGEN_DELAY_MS = 5000`,
 `HEALTH_REGEN_RATE_PER_SECOND = 8`, `BOT_*` AI/movement/aim constants,
@@ -149,21 +166,21 @@ Key tuning constants in `src/main.js` include: `ARENA_SIZES`,
       configurable via the pre-match menu. See "Current Status" above.
 
 ### v2 — Core Requested Features
-- [ ] 7. Platforms + crouch: jumpable/walkable platforms, C key crouches
-      (static height/speed change, no slide). Verify: can jump onto a
-      platform, walk on it, walk underneath it, and crouch to fit under
-      low obstacles.
-      NOTE: several Milestone 3 obstacles (`boxObstacleDefs` /
-      `pillarObstacleDefs` in `src/main.js`) already have working
-      jump-on-top collision as a side effect of being ordinary static
-      Rapier colliders — Rapier's character controller lets the player
-      land on any short-enough box/pillar with no special code. Milestone
-      7 should extend/reuse those existing obstacles (and their collider
-      pattern) for the "jump on top" part rather than building separate
-      platform objects from scratch. What's still missing and IS this
-      milestone's job: the "walk underneath" part (an obstacle raised off
-      the ground with clearance beneath it) and the crouch mechanic itself
-      (C key, static height/speed change).
+- [x] 7. Platforms + crouch: COMPLETE. Jump-on-top / walk-across platforms
+      and bridges, plus walk-underneath through open undercrofts; hold **C**
+      crouches as a static height/speed change (no slide). Verify: ramp
+      onto a deck and walk across; walk under a tall deck standing; hold C
+      to fit under the low underpass (stay crouched if C is released while
+      still under). New elevated structures live in
+      `elevatedStructurePieceDefs` (east bridge, west raised platform, low
+      crouch underpass) — Milestone 3 solid cover was left unchanged
+      (shorter boxes/pillars still jump-on-top via the character
+      controller). Overlap with Milestone 3 obstacles was found after the
+      first placement pass and resolved by repositioning the new
+      structures. Crouch uses `CROUCH_HALF_HEIGHT` / `CROUCH_MOVE_SPEED` /
+      `CROUCH_EYE_HEIGHT` with a headroom ray before standing. Note: a
+      separate boundary-exit exploit was found after this milestone and is
+      tracked as a follow-up fix (see Current Status), not part of M7.
 - [ ] 8. Minimap: top-down indicator of player + bot positions. Verify:
       minimap updates live as player/bots move.
 - [ ] 9. Pre-match menu: team size preset (1v1/3v3/5v5 — see team size

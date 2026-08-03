@@ -13,7 +13,8 @@
 // scaling rule (defaulting to "1v1"/small since there's no pre-match menu
 // yet), plus a varied mix of boxes/pillars/a ramp laid out for competitive
 // flow (chokepoints, broken sightlines, mixed cover density) rather than
-// an even grid - no jump-on-top/walk-under platforms yet (Milestone 7).
+// an even grid. Those remain solid cover (jump-on-top where short enough);
+// walk-under platforms are Milestone 7's separate elevated structures.
 //
 // Milestone 4: Shooting + health. Holding left-click fires a full-auto
 // Rapier raycast gun ("hitscan" - instant, no travel time) from the
@@ -81,8 +82,13 @@
 // genuine mesh transparency. A top-center HUD (#match-hud) shows the
 // live team score and a simple count-up match timer.
 //
+// Milestone 7: Platforms + crouch. New elevated structures (bridge /
+// raised platform / low underpass) with open undercroft + ramps onto the
+// decks — separate from Milestone 3's solid cover. Hold C crouches:
+// static capsule height + move-speed reduction (no slide), with a
+// headroom check before standing back up.
+//
 // NOT built yet (later milestones):
-// - No platforms or crouch yet (7).
 // - No cover-seeking behavior or difficulty tiers yet (9-10) - the bot's
 //   patrol/chase movement above is a basic step ahead of that, not the
 //   real thing.
@@ -228,9 +234,10 @@ for (const wall of wallDefs) {
 // combat): no sightline should reach across the whole arena unbroken, a
 // couple of chokepoints funnel movement instead of one open field, and
 // obstacle density varies by area (tighter cover in firefight pockets,
-// sparser in movement lanes) rather than being spaced evenly. Still just
-// plain solid shapes, no jump-on-top/walk-under "platforms" yet (Milestone
-// 7 adds that mechanic - see the note there about reusing these).
+// sparser in movement lanes) rather than being spaced evenly. These
+// Milestone 3 shapes stay solid cover (jump-on-top already works on the
+// shorter ones via the character controller). Walk-under platforms are
+// the separate elevatedStructurePieceDefs further below.
 //
 // The player spawns at (0, _, 5) (see playerBodyDesc below), mirrored by
 // the enemy bot's spawn at (0, _, -5) (see the AI bot section further
@@ -346,6 +353,109 @@ rampMesh.rotation.x = rampObstacleDef.tiltRadians;
 scene.add(rampMesh);
 
 // -----------------------------------------------------------------------
+// Elevated walk-under structures (Milestone 7)
+// -----------------------------------------------------------------------
+// Separate from the solid Milestone 3 cover above on purpose: those stay
+// ground-resting blockers. These pieces are raised decks on visible legs
+// so you can walk underneath through the open undercroft AND walk across
+// the top. Tops sit above jump peak (~0.9m), so each deck gets a ramp
+// (same ~tilted-box pattern as rampObstacleDef, steeper but still under
+// Rapier's default 45° climb limit) for access.
+//
+// Piece format:
+//   type "box"  - axis-aligned cuboid at world center (x, y, z)
+//   type "ramp" - cuboid tilted around X by tiltRadians (positive tilt
+//                 raises the local -Z end; negative raises +Z)
+// Standing clearance under tall decks ≈ 2.25m (standing capsule is 2.0m).
+// Low underpass clearance ≈ 1.35m (requires crouch; crouch capsule is 1.1m).
+
+const STANDING_PLATFORM_CLEARANCE = 2.25;
+const CROUCH_PLATFORM_CLEARANCE = 1.35;
+const PLATFORM_DECK_HALF_THICKNESS = 0.15;
+
+// Slightly lighter than solid cover so elevated decks/legs read as
+// "platform" rather than another crate wall at a glance.
+const elevatedMaterial = new THREE.MeshStandardMaterial({ color: 0xa8885a });
+
+const elevatedStructurePieceDefs = [
+  // Placements are intentionally clear of Milestone 3 cover (east wall
+  // segment, east pillar, west crate, low wall, M3 ramp, etc.) — earlier
+  // spots at (9,1) / (-9,9) / (6,-10) clipped those obstacles.
+
+  // --- East bridge (far-east lane): stand-under + ramps both ends ---
+  // Shifted east to x=12 and north to z=-2 so the south ramp stops short
+  // of the east pillar at (11,6) and the north ramp's X no longer overlaps
+  // the east wall segment at (8,-6).
+  {
+    type: "box",
+    hx: 1.6,
+    hy: PLATFORM_DECK_HALF_THICKNESS,
+    hz: 1.8,
+    x: 12,
+    y: STANDING_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS,
+    z: -2,
+  },
+  // Corner legs (thin so the middle undercroft stays walkable).
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 10.6, y: STANDING_PLATFORM_CLEARANCE / 2, z: -3.5 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 13.4, y: STANDING_PLATFORM_CLEARANCE / 2, z: -3.5 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 10.6, y: STANDING_PLATFORM_CLEARANCE / 2, z: -0.5 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 13.4, y: STANDING_PLATFORM_CLEARANCE / 2, z: -0.5 },
+  // South ramp (high end meets deck at z ≈ -0.2).
+  { type: "ramp", hx: 1.3, hy: 0.2, hz: 2.52, x: 12, y: 1.275, z: 1.98, tiltRadians: 0.45 },
+  // North ramp (negative tilt so the high end faces the deck's north edge).
+  { type: "ramp", hx: 1.3, hy: 0.2, hz: 2.52, x: 12, y: 1.275, z: -5.98, tiltRadians: -0.45 },
+
+  // --- West raised platform (SW corner): stand-under + one ramp ---
+  // Parked in the SW corner clear of the west crate (-9,5) and the M3
+  // ramp (-5,10). Steeper ramp (~34°) keeps the run short of the south wall.
+  {
+    type: "box",
+    hx: 1.4,
+    hy: PLATFORM_DECK_HALF_THICKNESS,
+    hz: 1.3,
+    x: -12.5,
+    y: STANDING_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS,
+    z: 9.2,
+  },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -13.7, y: STANDING_PLATFORM_CLEARANCE / 2, z: 8.1 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -11.3, y: STANDING_PLATFORM_CLEARANCE / 2, z: 8.1 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -13.7, y: STANDING_PLATFORM_CLEARANCE / 2, z: 10.3 },
+  { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -11.3, y: STANDING_PLATFORM_CLEARANCE / 2, z: 10.3 },
+  // Ramp on the +Z side onto the deck (high end at z ≈ 10.5).
+  { type: "ramp", hx: 1.2, hy: 0.2, hz: 1.97, x: -12.5, y: 1.275, z: 12.01, tiltRadians: 0.6 },
+
+  // --- Low crouch underpass (SW bot corner): crouch-only clearance + ramp ---
+  // Bot-side west corner keeps it clear of the low wall (4,-12), the east
+  // wall segment, AND the east bridge's north ramp (which reaches ~z=-8 on
+  // the opposite flank). Also stays west of the far-west crate (-7,-9).
+  {
+    type: "box",
+    hx: 1.3,
+    hy: PLATFORM_DECK_HALF_THICKNESS,
+    hz: 1.3,
+    x: -11.5,
+    y: CROUCH_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS,
+    z: -12,
+  },
+  { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -12.6, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -13.1 },
+  { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -10.4, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -13.1 },
+  { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -12.6, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -10.9 },
+  { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -10.4, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -10.9 },
+  // Shorter ramp onto the lower deck (top ≈ 1.65m), facing into the arena (+Z).
+  { type: "ramp", hx: 1.1, hy: 0.18, hz: 1.52, x: -11.5, y: 0.825, z: -9.41, tiltRadians: 0.45 },
+];
+
+for (const piece of elevatedStructurePieceDefs) {
+  const geometry = new THREE.BoxGeometry(piece.hx * 2, piece.hy * 2, piece.hz * 2);
+  const mesh = new THREE.Mesh(geometry, elevatedMaterial);
+  mesh.position.set(piece.x, piece.y, piece.z);
+  if (piece.type === "ramp") {
+    mesh.rotation.x = piece.tiltRadians;
+  }
+  scene.add(mesh);
+}
+
+// -----------------------------------------------------------------------
 // Player movement tuning constants
 // -----------------------------------------------------------------------
 // Declared here (before the bot below, which reuses PLAYER_RADIUS/
@@ -359,6 +469,16 @@ const PLAYER_HALF_HEIGHT = 0.6;
 // How far above the capsule's center point the camera sits (roughly eye
 // level, a bit below the very top of the capsule).
 const EYE_HEIGHT = 0.8;
+
+// Crouch (Milestone 7): static height/speed change only — no slide.
+// Total crouch height = 2 * (0.15 + 0.4) = 1.1m, which fits under the
+// 1.35m low underpass with a bit of margin. Capsule is center-based, so
+// entering/exiting crouch also shifts body Y by CROUCH_CENTER_OFFSET to
+// keep the feet planted.
+const CROUCH_HALF_HEIGHT = 0.15;
+const CROUCH_EYE_HEIGHT = 0.35;
+const CROUCH_MOVE_SPEED = 2.5; // half of MOVE_SPEED — clearly slower
+const CROUCH_CENTER_OFFSET = PLAYER_HALF_HEIGHT - CROUCH_HALF_HEIGHT;
 
 const MOVE_SPEED = 5; // meters/second
 const JUMP_SPEED = 6; // initial upward velocity, in meters/second
@@ -1219,6 +1339,29 @@ async function initPhysics() {
     });
   world.createCollider(rampColliderDesc);
 
+  // Elevated walk-under structures (Milestone 7) — same static "no parent
+  // rigid body" pattern as the solid cover above, but with world Y taken
+  // from each piece def (decks sit above ground clearance, not on y = hy).
+  for (const piece of elevatedStructurePieceDefs) {
+    const pieceColliderDesc = RAPIER.ColliderDesc.cuboid(
+      piece.hx,
+      piece.hy,
+      piece.hz
+    ).setTranslation(piece.x, piece.y, piece.z);
+    if (piece.type === "ramp") {
+      const pieceQuaternion = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(piece.tiltRadians, 0, 0)
+      );
+      pieceColliderDesc.setRotation({
+        x: pieceQuaternion.x,
+        y: pieceQuaternion.y,
+        z: pieceQuaternion.z,
+        w: pieceQuaternion.w,
+      });
+    }
+    world.createCollider(pieceColliderDesc);
+  }
+
   // Bot rigid body (movement pass): a kinematicPositionBased body just
   // like the player's, so Rapier's character controller can slide it
   // along walls/obstacles as it patrols instead of us hand-rolling
@@ -1298,6 +1441,83 @@ function startRenderLoop({
   const timer = new THREE.Timer();
   // Vertical speed accumulated by gravity/jumping. Positive = moving up.
   let verticalVelocity = 0;
+  // Milestone 7: true while the player's collider is the shorter crouch
+  // capsule. Driven by hold-C plus a headroom check when standing up.
+  let isCrouching = false;
+
+  // -----------------------------------------------------------------
+  // Crouch helpers (Milestone 7)
+  // -----------------------------------------------------------------
+  // Capsule shapes are center-based in Rapier, so shrinking/growing the
+  // half-height without also shifting body Y would lift or sink the feet.
+  // CROUCH_CENTER_OFFSET is exactly that foot-anchored correction.
+
+  function getCurrentEyeHeight() {
+    return isCrouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT;
+  }
+
+  // Tries to enter or leave crouch. Leaving can fail (and leave the player
+  // crouched) when a ceiling — e.g. the low underpass — blocks the taller
+  // standing capsule; the caller retries every frame while C is released.
+  function setPlayerCrouch(shouldCrouch) {
+    if (shouldCrouch === isCrouching) return;
+
+    if (shouldCrouch) {
+      playerCollider.setShape(
+        new RAPIER.Capsule(CROUCH_HALF_HEIGHT, PLAYER_RADIUS)
+      );
+      const pos = playerBody.translation();
+      playerBody.setTranslation(
+        { x: pos.x, y: pos.y - CROUCH_CENTER_OFFSET, z: pos.z },
+        true
+      );
+      isCrouching = true;
+      return;
+    }
+
+    const pos = playerBody.translation();
+    // Ray upward from the crouch capsule's head for the extra height the
+    // standing capsule needs. Standing raises both the body center AND the
+    // half-height, so the head rises by 2 * CROUCH_CENTER_OFFSET (0.9m),
+    // not just the center offset. A full standing-shape intersection would
+    // also overlap the ground whenever the character controller has the
+    // player pressed slightly into the floor, falsely blocking stand-up.
+    const crouchHeadY = pos.y + CROUCH_HALF_HEIGHT + PLAYER_RADIUS;
+    const standExtraHeight = 2 * CROUCH_CENTER_OFFSET;
+    const headroomRay = new RAPIER.Ray(
+      { x: pos.x, y: crouchHeadY, z: pos.z },
+      { x: 0, y: 1, z: 0 }
+    );
+    const ceilingHit = world.castRay(
+      headroomRay,
+      standExtraHeight + 0.05,
+      true,
+      undefined,
+      undefined,
+      playerCollider
+    );
+    if (ceilingHit !== null) return;
+
+    playerCollider.setShape(
+      new RAPIER.Capsule(PLAYER_HALF_HEIGHT, PLAYER_RADIUS)
+    );
+    playerBody.setTranslation(
+      { x: pos.x, y: pos.y + CROUCH_CENTER_OFFSET, z: pos.z },
+      true
+    );
+    isCrouching = false;
+  }
+
+  function updateCrouch() {
+    const wantCrouch = !!keysPressed["KeyC"];
+    if (wantCrouch) {
+      if (!isCrouching) setPlayerCrouch(true);
+    } else if (isCrouching) {
+      // Retry stand each frame so releasing C under a low ceiling, then
+      // walking out, still lets the player stand once headroom is clear.
+      setPlayerCrouch(false);
+    }
+  }
 
   // -----------------------------------------------------------------
   // Respawn (Milestone 6): these live here (rather than at module scope,
@@ -1312,6 +1532,15 @@ function startRenderLoop({
     isDead = false;
     deathOverlay.classList.add("hidden");
     verticalVelocity = 0;
+
+    // Force standing before the teleport so death mid-crouch can't leave
+    // the shorter capsule stuck on a standing spawn height.
+    if (isCrouching) {
+      playerCollider.setShape(
+        new RAPIER.Capsule(PLAYER_HALF_HEIGHT, PLAYER_RADIUS)
+      );
+      isCrouching = false;
+    }
 
     // A direct teleport (not setNextKinematicTranslation, which is for the
     // normal per-frame collide-and-slide movement) since this needs to take
@@ -1497,7 +1726,7 @@ function startRenderLoop({
     const playerPosition = playerBody.translation();
     return {
       x: playerPosition.x,
-      y: playerPosition.y + EYE_HEIGHT,
+      y: playerPosition.y + getCurrentEyeHeight(),
       z: playerPosition.z,
     };
   }
@@ -1801,9 +2030,11 @@ function startRenderLoop({
     const worldX = inputForward * -sinYaw + inputRight * cosYaw;
     const worldZ = inputForward * -cosYaw + inputRight * -sinYaw;
 
+    // Crouch is a static speed reduction only (no slide) — see Milestone 7.
+    const speed = isCrouching ? CROUCH_MOVE_SPEED : MOVE_SPEED;
     return {
-      x: worldX * MOVE_SPEED * deltaTime,
-      z: worldZ * MOVE_SPEED * deltaTime,
+      x: worldX * speed * deltaTime,
+      z: worldZ * speed * deltaTime,
     };
   }
 
@@ -1829,6 +2060,10 @@ function startRenderLoop({
       // regenPlayerHealth()/regenBotHealth() above for the delay/rate.
       regenPlayerHealth(timestamp, deltaTime);
       regenBotHealth(timestamp, deltaTime);
+
+      // Hold-C crouch (Milestone 7): resize capsule / adjust speed before
+      // movement so this frame's collide-and-slide uses the right shape.
+      updateCrouch();
 
       // computedGrounded() reflects the result of *last* frame's movement
       // computation. Using it to decide this frame's gravity/jump is a
@@ -1872,7 +2107,7 @@ function startRenderLoop({
     const playerPosition = playerBody.translation();
     camera.position.set(
       playerPosition.x,
-      playerPosition.y + EYE_HEIGHT,
+      playerPosition.y + getCurrentEyeHeight(),
       playerPosition.z
     );
     camera.rotation.y = yaw;
