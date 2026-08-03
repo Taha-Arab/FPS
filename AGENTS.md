@@ -36,11 +36,11 @@ one is checked off. After finishing a milestone, update this checklist
 (change [ ] to [x]) and tell the user exactly how to verify it themselves
 in the browser before moving on.
 
-### Current Status (as of Milestone 2)
+### Current Status (as of Milestone 2.5)
 For a fresh session picking this project back up:
-- **Built so far:** Milestones 1 (project scaffold) and 2 (first-person
-  movement) are done and checked off below. Next up is Milestone 2.5
-  (pointer lock + focus handling polish).
+- **Built so far:** Milestones 1 (project scaffold), 2 (first-person
+  movement), and 2.5 (pointer lock + focus handling) are done and checked
+  off below. Next up is Milestone 3 (arena with obstacles).
 - **File structure:** Everything lives in one file, `src/main.js`, plus
   `index.html` and `src/style.css`. The project hasn't been split into
   multiple JS modules yet — it's still small enough for one file to stay
@@ -56,11 +56,17 @@ For a fresh session picking this project back up:
   `src/main.js` and applied to `camera.rotation` with
   `rotation.order = "YXZ"` (needed so look up/down and look left/right
   combine correctly without gimbal issues).
-- **Pointer lock is intentionally minimal right now:** clicking the
-  canvas calls `requestPointerLock()`, with a plain text "Click to enable
-  mouse look" hint (`#pointer-lock-hint` in `index.html`/`style.css`)
-  shown until locked. There's no click-to-play overlay, no Escape-to-
-  pause, no focus-loss handling yet — building that out is Milestone 2.5.
+- **Pointer lock + pause overlay (Milestone 2.5):** a full-screen
+  `#pause-overlay` (`index.html`/`style.css`) shows "Click to Play"
+  (or "Paused — Click to Resume" after the first play) whenever the game
+  isn't pointer-locked. A single `isPaused` flag in `src/main.js` gates
+  all physics/movement in the render loop's `tick()` — nothing moves or
+  falls while paused. It's driven by the `pointerlockchange` event (which
+  fires for Escape, programmatic unlock, and browser-forced release
+  alike), plus explicit `blur`/`visibilitychange` listeners as a safety
+  net for focus loss (alt-tab, switching tabs) in case a browser doesn't
+  auto-release pointer lock on its own. `showPauseOverlay()` also clears
+  `keysPressed` so a key held down when focus is lost can't stay "stuck".
 - **Boundary walls already exist:** 4 simple gray box walls were added
   around the edge of the ground plane during Milestone 2 (not Milestone
   3) so wall collision could be tested, since Milestone 2's verify step
@@ -81,7 +87,7 @@ For a fresh session picking this project back up:
 - [x] 2. First-person movement: WASD to move, mouse to look, Space to jump,
       player collides with ground/walls via Rapier. Verify: can walk around
       the whole scene, can't clip through the ground or walls, jump works.
-- [ ] 2.5. Pointer lock + focus handling (see dedicated section below):
+- [x] 2.5. Pointer lock + focus handling (see dedicated section below):
       click-to-play overlay, Escape pauses + shows resume overlay, losing
       window focus auto-pauses, resuming reliably works every time. Verify:
       click away mid-test, alt-tab, press Escape — each time, resuming

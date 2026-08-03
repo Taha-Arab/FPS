@@ -11,11 +11,17 @@
     <div id="app"></div>
 
     <!--
-      Minimal prompt telling the player to click to enable mouse look.
-      This is a placeholder - Milestone 2.5 replaces this with a proper
-      "Click to Play" overlay plus pause/resume handling.
+      Click-to-play / pause overlay (Milestone 2.5). Shown whenever the game
+      isn't pointer-locked (before the first click, after Escape, after
+      losing window focus, etc). Clicking it requests pointer lock again -
+      see the click listener on #pause-overlay in src/main.js.
     -->
-    <div id="pointer-lock-hint">Click to enable mouse look</div>
+    <div id="pause-overlay">
+      <div id="pause-overlay-title">Click to Play</div>
+      <div id="pause-overlay-subtitle">
+        WASD to move &middot; Mouse to look &middot; Space to jump
+      </div>
+    </div>
 
     <script type="module" src="/src/main.js"></script>
   </body>

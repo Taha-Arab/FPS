@@ -19,25 +19,39 @@ canvas {
   display: block; /* removes the tiny inline-element gap under the canvas */
 }
 
-/* Simple placeholder hint prompting the player to click to enable mouse
-   look. Milestone 2.5 will replace this with a full click-to-play overlay. */
-#pointer-lock-hint {
+/* Click-to-play / pause overlay (Milestone 2.5). Covers the whole viewport
+   whenever the game isn't pointer-locked, so the player always has an
+   obvious, clickable way back into the game (initial load, after Escape,
+   after alt-tabbing away, etc). Unlike the old hint text, this DOES capture
+   clicks (no pointer-events: none) since clicking it is how you resume. */
+#pause-overlay {
   position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5em;
+  background: rgba(0, 0, 0, 0.6);
   color: white;
   font-family: sans-serif;
-  font-size: 1.2rem;
-  background: rgba(0, 0, 0, 0.5);
-  padding: 0.6em 1.2em;
-  border-radius: 4px;
+  text-align: center;
+  cursor: pointer;
   user-select: none;
-  /* Let clicks pass through to the canvas underneath so clicking the hint
-     text itself still requests pointer lock. */
-  pointer-events: none;
+  /* Sit above the canvas so it's clickable while shown. */
+  z-index: 10;
 }
 
-#pointer-lock-hint.hidden {
+#pause-overlay-title {
+  font-size: 2rem;
+  font-weight: bold;
+}
+
+#pause-overlay-subtitle {
+  font-size: 1rem;
+  opacity: 0.8;
+}
+
+#pause-overlay.hidden {
   display: none;
 }

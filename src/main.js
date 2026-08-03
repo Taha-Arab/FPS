@@ -1,11 +1,15 @@
 // ---------------------------------------------------------------------------
-// Milestone 2: First-person movement.
-// WASD to move, mouse to look, Space to jump, colliding with the ground and
-// boundary walls via Rapier's character controller.
+// Milestone 2: First-person movement (WASD to move, mouse to look, Space to
+// jump, colliding with the ground and boundary walls via Rapier's character
+// controller).
+//
+// Milestone 2.5: Click-to-play / pause overlay. The game starts paused, and
+// pauses again on Escape, on losing pointer lock, or on losing window/tab
+// focus - simulation is fully frozen while paused so nothing moves or falls
+// while the player can't see/control it, and clicking the overlay always
+// reliably resumes.
 //
 // NOT built yet (later milestones):
-// - No click-to-play/pause overlay, no Escape handling, no focus-loss
-//   handling - just a minimal pointer-lock click prompt for now (2.5).
 // - No arena obstacles/platforms, no crouch (3 and 7).
 // - No shooting, health, bots (4-5).
 // ---------------------------------------------------------------------------
@@ -161,20 +165,114 @@ const MOUSE_SENSITIVITY = 0.0022;
 // Clamp pitch so you can't look past straight up/down and flip the camera.
 const PITCH_LIMIT = Math.PI / 2 - 0.01;
 
-// Minimal pointer lock: click the canvas to lock the mouse cursor and start
-// steering the camera with mouse movement. There's no pause/resume overlay
-// or Escape handling yet (that's Milestone 2.5) - pressing Escape just lets
-// the browser release the lock natively, and the hint text below reappears
-// until you click again.
-const pointerLockHint = document.getElementById("pointer-lock-hint");
+// -----------------------------------------------------------------------
+// Pause state + click-to-play/resume overlay (Milestone 2.5)
+// -----------------------------------------------------------------------
+// The game starts paused (isPaused = true) and stays paused until the
+// player clicks the overlay and pointer lock is granted. It pauses again
+// any time pointer lock is lost - whether from pressing Escape, the browser
+// force-releasing it, or our own focus-loss handling below - so there's a
+// single source of truth for "is the game actually playable right now".
 
-renderer.domElement.addEventListener("click", () => {
+let isPaused = true;
+// Tracks whether the player has ever successfully entered play, just so we
+// can show a different overlay title ("Click to Play" vs "Paused") without
+// needing two separate overlay elements.
+let hasPlayedBefore = false;
+
+const pauseOverlay = document.getElementById("pause-overlay");
+const pauseOverlayTitle = document.getElementById("pause-overlay-title");
+
+function showPauseOverlay() {
+  isPaused = true;
+  pauseOverlayTitle.textContent = hasPlayedBefore
+    ? "Paused \u2014 Click to Resume"
+    : "Click to Play";
+  pauseOverlay.classList.remove("hidden");
+
+  // Release any keys that were held down when we paused. Without this, if
+  // the player is holding W and then alt-tabs away, "KeyW" would stay true
+  // forever (the keyup event never fires while the tab isn't focused), so
+  // resuming would have the player silently walking forward.
+  for (const key in keysPressed) {
+    keysPressed[key] = false;
+  }
+}
+
+function hidePauseOverlay() {
+  isPaused = false;
+  hasPlayedBefore = true;
+  pauseOverlay.classList.add("hidden");
+}
+
+// Chrome (and some other browsers) enforce a short "cooldown" - roughly
+// 1-2 seconds - before allowing pointer lock to be re-requested right after
+// Escape releases it. This is a browser anti-abuse measure we can't bypass,
+// but without handling it, a click during the cooldown just silently fails
+// (see pointerlockerror below), making the game feel stuck/unresponsive.
+// We fix that by quietly retrying in the background every 150ms until it
+// succeeds, so the single click the player already made "sticks" the
+// instant the browser allows it, instead of requiring a second click.
+let lockRetryTimeoutId = null;
+
+function clearLockRetry() {
+  if (lockRetryTimeoutId !== null) {
+    clearTimeout(lockRetryTimeoutId);
+    lockRetryTimeoutId = null;
+  }
+}
+
+// Clicking the overlay is the only way to (re-)request pointer lock. Once
+// locked, the overlay is hidden, so this listener simply can't fire again
+// until we're paused - no risk of accidentally re-requesting an active lock.
+pauseOverlay.addEventListener("click", () => {
+  clearLockRetry();
   renderer.domElement.requestPointerLock();
 });
 
+// This single handler covers every way pointer lock can be gained or lost:
+// clicking the overlay (locked), pressing Escape (browser releases the lock
+// natively), and our own document.exitPointerLock() calls below.
 document.addEventListener("pointerlockchange", () => {
   const isLocked = document.pointerLockElement === renderer.domElement;
-  pointerLockHint.classList.toggle("hidden", isLocked);
+  if (isLocked) {
+    clearLockRetry();
+    hidePauseOverlay();
+  } else {
+    showPauseOverlay();
+  }
+});
+
+// Fires when a requestPointerLock() call fails - most commonly the Escape
+// cooldown described above. Keep retrying on a short timer as long as we're
+// still paused and the window still has focus; this stops on its own once
+// the lock succeeds (pointerlockchange above clears the timer) or the
+// player is no longer trying to resume.
+document.addEventListener("pointerlockerror", () => {
+  clearLockRetry();
+  lockRetryTimeoutId = setTimeout(() => {
+    lockRetryTimeoutId = null;
+    if (isPaused && document.hasFocus()) {
+      renderer.domElement.requestPointerLock();
+    }
+  }, 150);
+});
+
+// Safety net for focus loss (alt-tab, clicking another window/app, switching
+// tabs): most browsers already auto-release pointer lock on blur, which
+// would trigger the pointerlockchange handler above on its own. These
+// listeners force the same outcome explicitly, in case a browser doesn't
+// auto-release it, so the game can never keep simulating while unfocused.
+function pauseForFocusLoss() {
+  clearLockRetry();
+  if (document.pointerLockElement === renderer.domElement) {
+    document.exitPointerLock();
+  }
+  showPauseOverlay();
+}
+window.addEventListener("blur", pauseForFocusLoss);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) pauseForFocusLoss();
 });
 
 document.addEventListener("mousemove", (event) => {
@@ -322,42 +420,50 @@ function startRenderLoop({ world, playerBody, playerCollider, characterControlle
     timer.update(timestamp);
     const deltaTime = Math.min(timer.getDelta(), MAX_DELTA_TIME);
 
-    // computedGrounded() reflects the result of *last* frame's movement
-    // computation. Using it to decide this frame's gravity/jump is a
-    // one-frame-old check, but the delay is imperceptible in practice and
-    // it's the standard approach for Rapier's character controller.
-    if (characterController.computedGrounded()) {
-      // Small constant downward speed (instead of 0) keeps the character
-      // pressed against the floor so the "grounded" check stays true,
-      // rather than flickering true/false due to tiny floating gaps.
-      verticalVelocity = keysPressed["Space"] ? JUMP_SPEED : -0.5;
-    } else {
-      verticalVelocity -= GRAVITY * deltaTime;
+    // Freeze the entire simulation while paused (overlay showing) - no
+    // gravity, no movement, no physics stepping - so the player can't fall,
+    // slide, or otherwise keep moving while they have no control over the
+    // game. The scene still renders below so the frame doesn't go blank.
+    if (!isPaused) {
+      // computedGrounded() reflects the result of *last* frame's movement
+      // computation. Using it to decide this frame's gravity/jump is a
+      // one-frame-old check, but the delay is imperceptible in practice and
+      // it's the standard approach for Rapier's character controller.
+      if (characterController.computedGrounded()) {
+        // Small constant downward speed (instead of 0) keeps the character
+        // pressed against the floor so the "grounded" check stays true,
+        // rather than flickering true/false due to tiny floating gaps.
+        verticalVelocity = keysPressed["Space"] ? JUMP_SPEED : -0.5;
+      } else {
+        verticalVelocity -= GRAVITY * deltaTime;
+      }
+
+      const horizontal = computeHorizontalMovement(deltaTime);
+      const desiredTranslation = {
+        x: horizontal.x,
+        y: verticalVelocity * deltaTime,
+        z: horizontal.z,
+      };
+
+      characterController.computeColliderMovement(
+        playerCollider,
+        desiredTranslation
+      );
+      const correctedMovement = characterController.computedMovement();
+
+      const currentPosition = playerBody.translation();
+      playerBody.setNextKinematicTranslation({
+        x: currentPosition.x + correctedMovement.x,
+        y: currentPosition.y + correctedMovement.y,
+        z: currentPosition.z + correctedMovement.z,
+      });
+
+      world.step();
     }
 
-    const horizontal = computeHorizontalMovement(deltaTime);
-    const desiredTranslation = {
-      x: horizontal.x,
-      y: verticalVelocity * deltaTime,
-      z: horizontal.z,
-    };
-
-    characterController.computeColliderMovement(
-      playerCollider,
-      desiredTranslation
-    );
-    const correctedMovement = characterController.computedMovement();
-
-    const currentPosition = playerBody.translation();
-    playerBody.setNextKinematicTranslation({
-      x: currentPosition.x + correctedMovement.x,
-      y: currentPosition.y + correctedMovement.y,
-      z: currentPosition.z + correctedMovement.z,
-    });
-
-    world.step();
-
-    // Follow the player's new (post-collision) position with the camera.
+    // Follow the player's current position with the camera. Runs even while
+    // paused so the camera stays put at the player's last known position
+    // instead of needing separate paused/unpaused render paths.
     const playerPosition = playerBody.translation();
     camera.position.set(
       playerPosition.x,
