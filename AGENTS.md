@@ -36,11 +36,12 @@ one is checked off. After finishing a milestone, update this checklist
 (change [ ] to [x]) and tell the user exactly how to verify it themselves
 in the browser before moving on.
 
-### Current Status (as of Milestone 2.5)
+### Current Status (as of Milestone 3)
 For a fresh session picking this project back up:
 - **Built so far:** Milestones 1 (project scaffold), 2 (first-person
-  movement), and 2.5 (pointer lock + focus handling) are done and checked
-  off below. Next up is Milestone 3 (arena with obstacles).
+  movement), 2.5 (pointer lock + focus handling), and 3 (arena with
+  obstacles) are done and checked off below. Next up is Milestone 4
+  (shooting + health).
 - **File structure:** Everything lives in one file, `src/main.js`, plus
   `index.html` and `src/style.css`. The project hasn't been split into
   multiple JS modules yet — it's still small enough for one file to stay
@@ -67,13 +68,40 @@ For a fresh session picking this project back up:
   net for focus loss (alt-tab, switching tabs) in case a browser doesn't
   auto-release pointer lock on its own. `showPauseOverlay()` also clears
   `keysPressed` so a key held down when focus is lost can't stay "stuck".
-- **Boundary walls already exist:** 4 simple gray box walls were added
-  around the edge of the ground plane during Milestone 2 (not Milestone
-  3) so wall collision could be tested, since Milestone 2's verify step
-  required it. Milestone 3 will still add the real arena design/interior
-  obstacles; these boundary walls may be reused or replaced then.
-- **Key tuning constants (all in `src/main.js`):** `GROUND_SIZE = 50`,
-  `WALL_HEIGHT = 3`, `WALL_THICKNESS = 1`, `MOVE_SPEED = 5` (m/s),
+- **Arena sizing (Milestone 3):** `ARENA_SIZES` in `src/main.js` maps
+  `"1v1"`/`"3v3"`/`"5v5"` to arena widths (30/45/60 meters), per the
+  Visual Style scaling rule. `GROUND_SIZE` currently just reads
+  `ARENA_SIZES["1v1"]` since there's no pre-match menu yet - Milestone 9
+  will pick the size based on the player's menu selection instead.
+- **Boundary walls:** 4 simple gray box walls (`wallDefs`) were added
+  around the edge of the ground plane during Milestone 2 to test wall
+  collision. Since they're computed from `GROUND_SIZE`, Milestone 3 just
+  reused them as-is (they scale automatically) instead of replacing them.
+- **Interior obstacles (Milestone 3):** a varied mix of static crate-
+  colored cover in `src/main.js` - 7 boxes (`boxObstacleDefs`: a split
+  center wall plus assorted crates/low walls), 4 round pillars
+  (`pillarObstacleDefs`, using Rapier's cylinder collider), and 1 tilted
+  ramp (`rampObstacleDef`, a box rotated ~15 degrees via a THREE.Quaternion
+  copied into Rapier's rotation format). Shapes/sizes are intentionally
+  varied (not a repeating grid/mirrored pattern), and the *layout* is
+  deliberately designed for competitive flow, not just visuals: a center
+  wall-with-a-gap is the main chokepoint and sightline-breaker (blocks the
+  direct spawn-to-spawn view), a second crate-to-pillar gap forms a
+  narrower chokepoint on the west flank, the west side is kept denser/
+  tighter (firefight cover) while the east side is kept sparser (an open
+  repositioning lane), and both the player's spawn `(0, _, 5)` and a
+  reserved mirrored spot for the future enemy bot spawn `(0, _, -5)`
+  (Milestone 5 doesn't exist yet) are kept clear of obstacles sitting
+  directly on top of them.
+  Side effect worth knowing about for Milestone 7: because these are
+  ordinary static Rapier colliders, the character controller already lets
+  the player jump on top of the shorter ones with zero extra code - see
+  the note under Milestone 7 below about reusing this instead of rebuilding
+  platform-top collision from scratch. Walking *underneath* an obstacle and
+  the crouch mechanic itself are still not built - that's still Milestone
+  7's job.
+- **Key tuning constants (all in `src/main.js`):** `ARENA_SIZES` (see
+  above), `WALL_HEIGHT = 3`, `WALL_THICKNESS = 1`, `MOVE_SPEED = 5` (m/s),
   `JUMP_SPEED = 6` (m/s), `GRAVITY = 20` (stronger than real-world 9.81
   for a snappier game feel), `PLAYER_RADIUS = 0.4`, `PLAYER_HALF_HEIGHT
   = 0.6`, `EYE_HEIGHT = 0.8`.
@@ -92,7 +120,7 @@ For a fresh session picking this project back up:
       window focus auto-pauses, resuming reliably works every time. Verify:
       click away mid-test, alt-tab, press Escape — each time, resuming
       restores working mouse-look with no dead states.
-- [ ] 3. Arena with obstacles: walls + a few static obstacles placed (no
+- [x] 3. Arena with obstacles: walls + a few static obstacles placed (no
       platforms yet). Verify: obstacles block movement and bullets (once
       shooting exists) correctly.
 - [ ] 4. Shooting + health: raycast gun fires on click, deals damage,
@@ -111,6 +139,17 @@ For a fresh session picking this project back up:
       (static height/speed change, no slide). Verify: can jump onto a
       platform, walk on it, walk underneath it, and crouch to fit under
       low obstacles.
+      NOTE: several Milestone 3 obstacles (`boxObstacleDefs` /
+      `pillarObstacleDefs` in `src/main.js`) already have working
+      jump-on-top collision as a side effect of being ordinary static
+      Rapier colliders — Rapier's character controller lets the player
+      land on any short-enough box/pillar with no special code. Milestone
+      7 should extend/reuse those existing obstacles (and their collider
+      pattern) for the "jump on top" part rather than building separate
+      platform objects from scratch. What's still missing and IS this
+      milestone's job: the "walk underneath" part (an obstacle raised off
+      the ground with clearance beneath it) and the crouch mechanic itself
+      (C key, static height/speed change).
 - [ ] 8. Minimap: top-down indicator of player + bot positions. Verify:
       minimap updates live as player/bots move.
 - [ ] 9. Pre-match menu: team size preset (1v1/3v3/5v5 — see team size
