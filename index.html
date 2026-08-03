@@ -11,6 +11,25 @@
     <div id="app"></div>
 
     <!--
+      Match HUD (Milestone 6): team score + match timer, fixed top-center.
+      Both #score-blue-value/#score-red-value and #match-timer are updated
+      live from src/main.js (updateScoreHud()/the timer update in tick()).
+      Team colors match the bot's RED (#cc3333) and the new BLUE (#3366cc)
+      used consistently across the HUD, per the Visual Style team-color
+      rule in AGENTS.md.
+    -->
+    <div id="match-hud">
+      <div id="score-display">
+        <span class="score-label score-blue">BLUE</span>
+        <span id="score-blue-value" class="score-value score-blue">0</span>
+        <span class="score-separator">&mdash;</span>
+        <span id="score-red-value" class="score-value score-red">0</span>
+        <span class="score-label score-red">RED</span>
+      </div>
+      <div id="match-timer">0:00</div>
+    </div>
+
+    <!--
       Crosshair (Milestone 4). A simple centered reticle so the player can
       see exactly where the hitscan raycast in src/main.js will fire from -
       it's purely visual/decorative (styled in src/style.css), it doesn't
@@ -56,16 +75,38 @@
     <div id="vignette"></div>
 
     <!--
-      Death overlay (Milestone 4). Hidden by default; shown by
-      damagePlayer() in src/main.js once health reaches 0. There's no
-      respawn yet (that's Milestone 6), so this just freezes the game.
+      Spawn-invulnerability overlay (Milestone 6). A pulsing blue vignette
+      shown for a short window right after the player respawns (see
+      respawnPlayer()/the invulnerability check in tick(), both in
+      src/main.js) - the player equivalent of the bot's fading transparency,
+      since there's no visible first-person body to make transparent
+      instead. pointer-events: none so it never blocks clicks/shots.
+    -->
+    <div id="spawn-invuln-overlay"></div>
+
+    <!--
+      Death overlay (Milestone 4; respawn added in Milestone 6). Hidden by
+      default; shown by setPlayerHealth() in src/main.js once health
+      reaches 0, and hidden again automatically once respawnPlayer() runs a
+      few seconds later. #death-overlay-subtitle's text is filled in from
+      src/main.js so it always matches the real RESPAWN_DELAY_MS constant.
     -->
     <div id="death-overlay" class="hidden">
       <div id="death-overlay-title">You Died</div>
-      <div id="death-overlay-subtitle">
-        Respawning isn't built yet (coming in a later milestone) &mdash;
-        refresh the page to try again.
-      </div>
+      <div id="death-overlay-subtitle"></div>
+    </div>
+
+    <!--
+      Match-end overlay (Milestone 6). Hidden by default; shown by
+      endMatch() in src/main.js once either team reaches the kill target.
+      Higher z-index than #death-overlay so it naturally covers it if the
+      match-ending kill happens to be the player's own death. No "Play
+      Again" button yet (that's Milestone 13 polish) - refreshing the page
+      starts a new match.
+    -->
+    <div id="match-end-overlay" class="hidden">
+      <div id="match-end-title"></div>
+      <div id="match-end-subtitle"></div>
     </div>
 
     <!--

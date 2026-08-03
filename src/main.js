@@ -57,9 +57,32 @@
 //   seconds without taking damage - see regenPlayerHealth()/
 //   regenBotHealth(), called from tick().
 //
+// Milestone 6: Respawn + win condition. Kills are now tracked per TEAM
+// (blueScore for the player's side, redScore for the bot's side) rather
+// than per-character, since that's the shape multiple bots per team
+// (Milestone 10) will need anyway - a kill just increments the killer's
+// team score via handlePlayerDeath()/handleBotDeath(). Reaching
+// KILL_TARGET first ends the match (endMatch()), freezing the whole
+// simulation (see the `matchEnded` check in tick()) and showing
+// #match-end-overlay - refreshing the page is still the only way to start
+// a new match (a real "Play Again" button is Milestone 13 polish). Until
+// then, dying just means a short respawn: damagePlayer()/damageBot()
+// schedule respawnPlayer()/respawnBot() (defined inside startRenderLoop(),
+// where the Rapier bodies live) after RESPAWN_DELAY_MS, which reset
+// health/position/ammo (player) or health/position/AI state (bot) rather
+// than recreating any Rapier objects - the bot in particular just
+// disables/re-enables its existing collider (world.removeCollider() would
+// work too, but re-adding a fresh collider later is more code for no
+// benefit here). Both respawns also grant SPAWN_INVULNERABILITY_MS of
+// no-damage (tracked as a timestamp, exactly like the health regen delay
+// below) so you can't be shot the instant you reappear - shown to the
+// player as a pulsing blue screen vignette (#spawn-invuln-overlay, since
+// there's no visible player model to make transparent) and to the bot as
+// genuine mesh transparency. A top-center HUD (#match-hud) shows the
+// live team score and a simple count-up match timer.
+//
 // NOT built yet (later milestones):
 // - No platforms or crouch yet (7).
-// - No respawn or win condition yet (6).
 // - No cover-seeking behavior or difficulty tiers yet (9-10) - the bot's
 //   patrol/chase movement above is a basic step ahead of that, not the
 //   real thing.
@@ -407,6 +430,12 @@ const BOT_MAX_HEALTH = PLAYER_MAX_HEALTH;
 const BOT_SPAWN_POSITION = { x: 0, z: -5 };
 const BOT_COLOR = 0xcc3333;
 
+// The player's spawn point (Milestone 6: also reused on respawn, not just
+// the initial load). y = 3 spawns it a bit above the ground so it visibly
+// settles/falls into place on load - the same "drop in" effect a respawn
+// gets too, since it goes through the same gravity code either way.
+const PLAYER_SPAWN_POSITION = { x: 0, y: 3, z: 5 };
+
 // How far the bot can "see" the player - same scale as the player's own
 // GUN_RANGE above.
 const BOT_SIGHT_RANGE = 100;
@@ -496,7 +525,14 @@ let lastPatrolPointIndex = -1;
 // the group turns them together; BOT_MARKER_OFFSET is also reused below as
 // the bot's own "muzzle" point for tracers, the same idea as the player's
 // MUZZLE_OFFSET.
-const botMaterial = new THREE.MeshStandardMaterial({ color: BOT_COLOR });
+// transparent: true is needed up front (Three.js won't pick up opacity
+// changes on a material created as opaque) so Milestone 6's spawn-
+// invulnerability effect can fade the bot out/in via `.opacity` later -
+// see the invulnerability check in tick().
+const botMaterial = new THREE.MeshStandardMaterial({
+  color: BOT_COLOR,
+  transparent: true,
+});
 const botGeometry = new THREE.CapsuleGeometry(
   PLAYER_RADIUS,
   PLAYER_HALF_HEIGHT * 2,
@@ -506,7 +542,10 @@ const botGeometry = new THREE.CapsuleGeometry(
 const botMesh = new THREE.Mesh(botGeometry, botMaterial);
 
 const BOT_MARKER_OFFSET = new THREE.Vector3(0, 0.3, -(PLAYER_RADIUS + 0.1));
-const botMarkerMaterial = new THREE.MeshStandardMaterial({ color: 0x2b2b2b });
+const botMarkerMaterial = new THREE.MeshStandardMaterial({
+  color: 0x2b2b2b,
+  transparent: true,
+});
 const botMarkerGeometry = new THREE.BoxGeometry(0.15, 0.15, 0.3);
 const botMarkerMesh = new THREE.Mesh(botMarkerGeometry, botMarkerMaterial);
 botMarkerMesh.position.copy(BOT_MARKER_OFFSET);
@@ -612,14 +651,14 @@ window.addEventListener("keydown", (event) => {
   // bot's line of sight. Checked once per key-press here (not via
   // keysPressed each frame like WASD), since holding it down should not
   // deal damage every frame.
-  if (event.code === "KeyT" && !isPaused && !isDead) {
+  if (event.code === "KeyT" && !isPaused && !isDead && !matchEnded) {
     damagePlayer(20);
   }
 
   // Manual reload (Milestone 4 extension). Checked once per key-press,
   // same reasoning as "T" above - holding R should only start one reload,
   // not restart it every frame.
-  if (event.code === "KeyR" && !isPaused && !isDead) {
+  if (event.code === "KeyR" && !isPaused && !isDead && !matchEnded) {
     startReload();
   }
 });
@@ -677,6 +716,12 @@ function showPauseOverlay() {
 
 function hidePauseOverlay() {
   isPaused = false;
+  // Start the match timer (see the HUD update in tick()) the first time
+  // the player actually enters play, not from page load - hasPlayedBefore
+  // is exactly "have we already done this once" for that purpose.
+  if (!hasPlayedBefore) {
+    matchStartTime = performance.now();
+  }
   hasPlayedBefore = true;
   pauseOverlay.classList.add("hidden");
 }
@@ -765,8 +810,10 @@ document.addEventListener("mousemove", (event) => {
 // Player health + HUD (Milestone 4)
 // -----------------------------------------------------------------------
 // A simple health bar (HTML/CSS, matching the pause overlay's DOM-based
-// approach) plus a death state. There's no respawn yet - that's Milestone
-// 6's job - so dying just freezes the game and shows a message for now.
+// approach) plus a death state. Milestone 6 adds the actual respawn (see
+// respawnPlayer() inside startRenderLoop(), and handlePlayerDeath() further
+// down) - dying still shows this same overlay, it just no longer stays up
+// forever.
 
 // PLAYER_MAX_HEALTH itself now lives up near the Gun tuning constants
 // (see the comment there) so the AI bot section can reference it.
@@ -781,7 +828,9 @@ let playerLastDamageTime = -Infinity;
 
 const healthBarFill = document.getElementById("health-bar-fill");
 const deathOverlay = document.getElementById("death-overlay");
+const deathOverlaySubtitle = document.getElementById("death-overlay-subtitle");
 const vignette = document.getElementById("vignette");
+const spawnInvulnOverlay = document.getElementById("spawn-invuln-overlay");
 
 // Applies a new health value (clamped to [0, PLAYER_MAX_HEALTH]) and
 // updates the HUD bar/color and low-health vignette to match - shared by
@@ -816,9 +865,15 @@ function setPlayerHealth(newHealth) {
 }
 
 function damagePlayer(amount) {
-  if (isDead) return;
+  if (isDead || matchEnded) return;
+  // No-op during the post-respawn invulnerability window (see
+  // SPAWN_INVULNERABILITY_MS) - shots still visually land, they just
+  // don't do anything yet.
+  if (performance.now() < playerInvulnerableUntil) return;
+
   playerLastDamageTime = performance.now();
   setPlayerHealth(playerHealth - amount);
+  if (playerHealth === 0) handlePlayerDeath();
 }
 
 // Gradually restores the player's health once HEALTH_REGEN_DELAY_MS has
@@ -931,8 +986,17 @@ function setBotHealth(newHealth) {
   updateFloatingHealthBarFill(botHealthBar, (botHealth / BOT_MAX_HEALTH) * 100);
 }
 
-function damageBot(world, botCollider) {
-  if (botDestroyed) return;
+// `botCollider` no longer needs `world` passed in (Milestone 6: a killed
+// bot now just disables its existing collider - see handleBotDeath() below
+// - rather than world.removeCollider()-ing it, since it needs to come back
+// on respawn).
+function damageBot(botCollider) {
+  if (botDestroyed || matchEnded) return;
+  // No-op during the post-respawn invulnerability window (see
+  // SPAWN_INVULNERABILITY_MS below) - shots still visually land (the
+  // collider stays enabled so raycasts/tracers work normally), they just
+  // don't do anything yet.
+  if (performance.now() < botInvulnerableUntil) return;
 
   botLastDamageTime = performance.now();
   setBotHealth(botHealth - GUN_DAMAGE);
@@ -943,9 +1007,10 @@ function damageBot(world, botCollider) {
 
   if (botHealth <= 0) {
     botDestroyed = true;
-    scene.remove(botGroup);
+    botGroup.visible = false;
     botHealthBar.container.style.display = "none";
-    world.removeCollider(botCollider, true);
+    botCollider.setEnabled(false);
+    handleBotDeath();
   }
 }
 
@@ -956,6 +1021,120 @@ function regenBotHealth(now, deltaTime) {
   if (botHealth >= BOT_MAX_HEALTH) return;
   if (now - botLastDamageTime < HEALTH_REGEN_DELAY_MS) return;
   setBotHealth(botHealth + HEALTH_REGEN_RATE_PER_SECOND * deltaTime);
+}
+
+// -----------------------------------------------------------------------
+// Match state: team score, win condition, respawn (Milestone 6)
+// -----------------------------------------------------------------------
+// Kills are tracked per TEAM (not per-character) since that's the shape
+// Milestone 10's multiple-bots-per-team setup will need anyway - a kill
+// just increments the killer's team score. First team to KILL_TARGET wins.
+// BLUE = the player's team, RED = the enemy team, per the Visual Style
+// team-color rule in AGENTS.md.
+
+const KILL_TARGET = 5; // first team to 5 kills wins the match
+const RESPAWN_DELAY_MS = 3000; // 3s "you're dead" pause before respawning
+
+// Set here (rather than left as static HTML) so it always reflects the
+// actual RESPAWN_DELAY_MS value above instead of a hardcoded number that
+// could silently drift out of sync if that constant is ever retuned.
+deathOverlaySubtitle.textContent = `Respawning in ${RESPAWN_DELAY_MS / 1000} seconds...`;
+
+// A short window of no-damage right after respawning, so you can't be
+// killed the instant you reappear. Tracked the same way as the health
+// regen delay above - a timestamp compared against `now` - rather than
+// needing a separate timer/interval.
+const SPAWN_INVULNERABILITY_MS = 1500;
+
+let blueScore = 0;
+let redScore = 0;
+let matchEnded = false;
+// Set once, the first time the player actually starts playing (see
+// hidePauseOverlay()) - null beforehand so the timer HUD knows not to
+// start counting yet.
+let matchStartTime = null;
+
+// Timestamps (performance.now()-scale) until which the player/bot can't
+// take damage - see damagePlayer()/damageBot() above and
+// respawnPlayer()/respawnBot() below, which set these on every respawn.
+let playerInvulnerableUntil = -Infinity;
+let botInvulnerableUntil = -Infinity;
+
+// Respawn logic needs the live Rapier bodies (playerBody/botBody/
+// botCollider), which only exist once startRenderLoop() has started - so
+// respawnPlayer()/respawnBot() are defined there and assigned to these
+// hooks, which the death-handling functions below call via setTimeout.
+let triggerPlayerRespawn = null;
+let triggerBotRespawn = null;
+
+const matchScoreBlueEl = document.getElementById("score-blue-value");
+const matchScoreRedEl = document.getElementById("score-red-value");
+const matchTimerEl = document.getElementById("match-timer");
+const matchEndOverlay = document.getElementById("match-end-overlay");
+const matchEndTitle = document.getElementById("match-end-title");
+const matchEndSubtitle = document.getElementById("match-end-subtitle");
+
+function updateScoreHud() {
+  matchScoreBlueEl.textContent = String(blueScore);
+  matchScoreRedEl.textContent = String(redScore);
+}
+
+// Formats an elapsed-time duration (ms) as "M:SS" for the match timer HUD.
+function formatMatchTime(elapsedMs) {
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+// Ends the match for good: freezes the whole simulation (tick() checks
+// `matchEnded` the same way it already checks `isDead`) and shows the
+// final result. Refreshing the page is still the only way to start a new
+// match - a real "Play Again" button is Milestone 13 polish, not this one.
+function endMatch(winningTeamName) {
+  matchEnded = true;
+
+  const blueWon = winningTeamName === "BLUE";
+  matchEndTitle.textContent = blueWon ? "BLUE TEAM WINS" : "RED TEAM WINS";
+  matchEndTitle.style.color = blueWon ? "#3366cc" : "#cc3333";
+  matchEndSubtitle.innerHTML =
+    `Final Score: <span class="score-blue">${blueScore}</span> &mdash; ` +
+    `<span class="score-red">${redScore}</span><br />` +
+    "Refresh the page to play again.";
+  matchEndOverlay.classList.remove("hidden");
+}
+
+// Called from damagePlayer() the instant the player's health reaches 0.
+// Awards the kill to RED (the bot's team), then either ends the match or
+// schedules the player's respawn - never both.
+function handlePlayerDeath() {
+  redScore += 1;
+  updateScoreHud();
+
+  if (redScore >= KILL_TARGET) {
+    endMatch("RED");
+    return;
+  }
+
+  if (triggerPlayerRespawn) {
+    setTimeout(triggerPlayerRespawn, RESPAWN_DELAY_MS);
+  }
+}
+
+// Called from damageBot() the instant the bot's health reaches 0. Mirrors
+// handlePlayerDeath() for BLUE (the player's team).
+function handleBotDeath() {
+  blueScore += 1;
+  updateScoreHud();
+
+  if (blueScore >= KILL_TARGET) {
+    endMatch("BLUE");
+    return;
+  }
+
+  if (triggerBotRespawn) {
+    setTimeout(triggerBotRespawn, RESPAWN_DELAY_MS);
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -1071,9 +1250,9 @@ async function initPhysics() {
   // push it around like a normal dynamic object. This gives precise,
   // responsive FPS-style control instead of physics-y/bouncy movement.
   const playerBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-    0,
-    3, // spawn above the ground so it visibly settles down on load
-    5
+    PLAYER_SPAWN_POSITION.x,
+    PLAYER_SPAWN_POSITION.y,
+    PLAYER_SPAWN_POSITION.z
   );
   const playerBody = world.createRigidBody(playerBodyDesc);
   const playerColliderDesc = RAPIER.ColliderDesc.capsule(
@@ -1121,6 +1300,66 @@ function startRenderLoop({
   let verticalVelocity = 0;
 
   // -----------------------------------------------------------------
+  // Respawn (Milestone 6): these live here (rather than at module scope,
+  // alongside handlePlayerDeath()/handleBotDeath() that schedule them) since
+  // they need direct access to the live Rapier bodies/colliders, which only
+  // exist once physics has finished initializing. Assigning them to the
+  // module-level triggerPlayerRespawn/triggerBotRespawn hooks is what lets
+  // the death-handling code above actually call them.
+  // -----------------------------------------------------------------
+
+  function respawnPlayer() {
+    isDead = false;
+    deathOverlay.classList.add("hidden");
+    verticalVelocity = 0;
+
+    // A direct teleport (not setNextKinematicTranslation, which is for the
+    // normal per-frame collide-and-slide movement) since this needs to take
+    // effect immediately - it's called from a setTimeout, not from inside
+    // tick()'s usual movement step.
+    playerBody.setTranslation(PLAYER_SPAWN_POSITION, true);
+
+    setPlayerHealth(PLAYER_MAX_HEALTH);
+    playerLastDamageTime = -Infinity;
+    playerInvulnerableUntil = performance.now() + SPAWN_INVULNERABILITY_MS;
+
+    // Fairness: respawning shouldn't leave the player stuck reloading (or
+    // out of ammo) from before they died.
+    currentAmmo = MAGAZINE_SIZE;
+    isReloading = false;
+    updateAmmoDisplay();
+  }
+  triggerPlayerRespawn = respawnPlayer;
+
+  function respawnBot() {
+    botDestroyed = false;
+    botCollider.setEnabled(true);
+    botGroup.visible = true;
+    botMaterial.color.set(BOT_COLOR);
+
+    const spawnPosition = {
+      x: BOT_SPAWN_POSITION.x,
+      y: PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
+      z: BOT_SPAWN_POSITION.z,
+    };
+    botBody.setTranslation(spawnPosition, true);
+    botGroup.position.set(spawnPosition.x, spawnPosition.y, spawnPosition.z);
+    botGroup.rotation.y = 0;
+
+    setBotHealth(BOT_MAX_HEALTH);
+    botLastDamageTime = -Infinity;
+    botInvulnerableUntil = performance.now() + SPAWN_INVULNERABILITY_MS;
+
+    // Reset AI state so the bot doesn't instantly "remember" a target from
+    // before it died - it should start fresh, as if just spawned.
+    botSpottedAtTime = null;
+    lastBotShotTime = -Infinity;
+    botLastKnownPlayerPosition = null;
+    botMoveTarget = null;
+  }
+  triggerBotRespawn = respawnBot;
+
+  // -----------------------------------------------------------------
   // Shooting (Milestone 4, full-auto extension): holding left-click fires
   // repeated instant raycasts from the camera at a fixed fire rate. Set up
   // here (rather than at module scope) because it needs
@@ -1141,6 +1380,7 @@ function startRenderLoop({
     return (
       !isPaused &&
       !isDead &&
+      !matchEnded &&
       !isReloading &&
       currentAmmo > 0 &&
       document.pointerLockElement === renderer.domElement
@@ -1194,7 +1434,7 @@ function startRenderLoop({
       spawnImpactFlash(hitPoint);
 
       if (hit.collider === botCollider) {
-        damageBot(world, botCollider);
+        damageBot(botCollider);
       }
     } else {
       // Missed everything - draw the tracer out to the max range so a
@@ -1571,11 +1811,12 @@ function startRenderLoop({
     timer.update(timestamp);
     const deltaTime = Math.min(timer.getDelta(), MAX_DELTA_TIME);
 
-    // Freeze the entire simulation while paused (overlay showing) or dead -
-    // no gravity, no movement, no physics stepping - so the player can't
-    // fall, slide, or otherwise keep moving while they have no control over
-    // the game. The scene still renders below so the frame doesn't go blank.
-    if (!isPaused && !isDead) {
+    // Freeze the entire simulation while paused (overlay showing), dead, or
+    // once the match has ended - no gravity, no movement, no physics
+    // stepping - so the player can't fall, slide, or otherwise keep moving
+    // while they have no control over the game. The scene still renders
+    // below so the frame doesn't go blank.
+    if (!isPaused && !isDead && !matchEnded) {
       // Full-auto: keep firing every frame the button is held, as long as
       // canFire()/the fire-rate cooldown allow it (see tryFireShot above).
       if (isFiring) tryFireShot(timestamp);
@@ -1636,6 +1877,34 @@ function startRenderLoop({
     );
     camera.rotation.y = yaw;
     camera.rotation.x = pitch;
+
+    // Match timer HUD (Milestone 6). Runs even while paused so the display
+    // doesn't glitch, but simply stops advancing once the match has ended -
+    // note this counts real elapsed time since the first play, and doesn't
+    // subtract time spent paused mid-match; an accepted simplification for
+    // a single-player portfolio demo rather than something worth the extra
+    // bookkeeping.
+    if (matchStartTime !== null && !matchEnded) {
+      matchTimerEl.textContent = formatMatchTime(timestamp - matchStartTime);
+    }
+
+    // Spawn-invulnerability visual cues (Milestone 6) - purely cosmetic,
+    // the actual no-damage effect is enforced in damagePlayer()/damageBot()
+    // above. Checked every frame against the stored "invulnerable until"
+    // timestamps rather than using setTimeout, so it can't drift out of
+    // sync with the real damage-blocking logic.
+    const playerIsInvulnerable = timestamp < playerInvulnerableUntil;
+    spawnInvulnOverlay.classList.toggle(
+      "active",
+      playerIsInvulnerable && !isDead && !matchEnded
+    );
+
+    const botIsInvulnerable = timestamp < botInvulnerableUntil;
+    if (!botDestroyed) {
+      const botOpacity = botIsInvulnerable ? 0.5 : 1;
+      botMaterial.opacity = botOpacity;
+      botMarkerMaterial.opacity = botOpacity;
+    }
 
     // Sync the bot's visual group to wherever physics actually put its
     // body this frame (it may have been blocked/slid along a collision by

@@ -36,113 +36,85 @@ one is checked off. After finishing a milestone, update this checklist
 (change [ ] to [x]) and tell the user exactly how to verify it themselves
 in the browser before moving on.
 
-### Current Status (as of Milestone 5)
-For a fresh session picking this project back up: Milestones 1–5 (project
-scaffold, first-person movement, pointer lock/pause, arena obstacles,
-shooting + health, one AI bot — including a follow-up pass adding bot
-movement, vision-gated turn-speed-limited aiming, floating health bars,
-health regen, and bot/player health parity; see the Milestone 5 checklist
-entry below for the full list) are done and checked off below — next up is
-Milestone 6 (respawn + win condition). Everything still lives in one file
-(`src/main.js`, plus `index.html`/`src/style.css`); it hasn't been split
-into modules yet since it's still small enough to stay readable. The player
-is a Rapier `kinematicPositionBased` capsule body (radius 0.4, half-height
-0.6) driven each frame by `world.createCharacterController()`, with
-gravity/jump speed applied manually in the render loop (kinematic bodies
-ignore Rapier's own gravity); yaw/pitch are plain variables applied to
-`camera.rotation` (`rotation.order = "YXZ"`). Pointer lock/pause
-(`isPaused`) is driven by the `pointerlockchange` event plus
-`blur`/`visibilitychange` fallbacks, showing `#pause-overlay` and clearing
-`keysPressed`/`isFiring` on pause. `ARENA_SIZES` maps `"1v1"`/`"3v3"`/`"5v5"`
-to widths (30/45/60m); `GROUND_SIZE` currently hardcodes `"1v1"` until
-Milestone 9 adds the pre-match menu. Obstacles (`wallDefs`,
-`boxObstacleDefs`, `pillarObstacleDefs`, `rampObstacleDef`) are static
-Rapier colliders laid out deliberately for competitive flow (a center
-chokepoint blocking the spawn-to-spawn sightline, a denser west side for
-cover, a sparser east side as an open lane), with the player spawn
-`(0, _, 5)` and the bot spawn `(0, _, -5)`. As a side effect of being
-ordinary static colliders, the character controller already lets the player
-jump on top of the shorter ones — worth reusing for Milestone 7 — but
-walking underneath an obstacle and the crouch mechanic are still unbuilt.
-Shooting is hitscan (`world.castRayAndGetNormal()`), full-auto via an
-`isFiring` flag and `FIRE_RATE_RPM`, with a tracer line (`spawnTracer()`)
-and impact flash (`spawnImpactFlash()`) on hit, offset from camera center
-via `MUZZLE_OFFSET` so tracers render visibly; there's no visible gun model
-yet. Ammo/reload uses `MAGAZINE_SIZE`/`RELOAD_TIME_MS`, funneled through
-`startReload()` (manual "R" key or automatic on empty magazine). A debug
-"T" key (`damagePlayer(20)`) is still around as a convenience for quickly
-testing the health bar/death state.
+### Current Status (v1 complete — Milestones 1–6)
+**v1 (Playable Core) is complete.** Milestones 1–6 are all checked off
+below. Next up is **Milestone 7** (platforms + crouch) — the start of v2.
 
-The AI bot (Milestone 5, plus a movement/health enhancement pass built
-right after it — see below) is a single enemy that spawns at `(0, _, -5)`,
-built from a `THREE.Group` (`botGroup`) containing the red capsule mesh
-plus a small dark marker box (`BOT_MARKER_OFFSET`) stuck to its front —
-since a plain capsule is rotationally symmetric, the marker is what makes
-its facing/aim actually visible when it turns. Its Rapier setup is now a
-`kinematicPositionBased` body (`botBody`) + capsule collider (`botCollider`)
-plus its OWN `world.createCharacterController()` instance
-(`botCharacterController`) — separate from the player's, since
-`computedGrounded()`/`computedMovement()` are stateful per-controller
-results from whichever `computeColliderMovement()` call ran most recently,
-so sharing one instance between player and bot would corrupt whichever ran
-second each frame. Each frame, `updateBot()` in `startRenderLoop()` casts a
-ray from `getBotEyePosition()` to the player's current eye position
-(`getPlayerEyePosition()`) via `botCanSeePlayer()` — this raycast is the
-ONLY thing allowed to gate tracking/aiming, never omniscience. If
-unobstructed: it stops moving, turns toward the player via
-`rotateGroupTowards()` (rate-limited by `BOT_TURN_SPEED_RADIANS_PER_SEC`,
-so it no longer snaps instantly), tracks how long it's been visible in
-`botSpottedAtTime`, and once `BOT_REACTION_DELAY_MS` has elapsed AND it's
-turned to within `BOT_AIM_ANGLE_THRESHOLD_RADIANS` of dead-on, fires via
-`botFireShot()` at `BOT_FIRE_RATE_RPM`, aiming through `applyAimSpread()`
-(a small random cone jitter, `BOT_AIM_SPREAD_RADIANS`) and damaging the
-player via `damagePlayer()` on a hit. If sight is lost (or never
-established): `botSpottedAtTime` resets to `null` (re-spotting always
-requires the reaction delay again), and it moves via `moveBotTowards()` —
-first toward `botLastKnownPlayerPosition` (continuously updated while
-visible), then falling back to wandering between hand-placed
-`BOT_PATROL_POINTS` near existing cover once that's reached or
-`BOT_MOVE_TIMEOUT_MS` expires (`pickNewPatrolTarget()`). This is simple
-waypoint patrol, NOT the tactical cover-seeking AI still reserved for
-Milestone 10's difficulty tiers. The bot has its own health
-(`botHealth`/`BOT_MAX_HEALTH`, now always equal to `PLAYER_MAX_HEALTH` for
-balance) managed through `setBotHealth()`/`damageBot()`/`regenBotHealth()`,
-is destroyed (mesh + collider removed) at 0 HP, and shows a small
-team-colored floating health bar above its head
-(`createFloatingHealthBar()`/`updateFloatingHealthBarPosition()`/
-`updateFloatingHealthBarFill()` — a DOM/CSS overlay projected from its
-world position each frame, matching how the rest of the HUD is built; no
-occlusion testing against walls yet). No respawn or win/lose state yet,
-that's explicitly Milestone 6.
+Everything still lives in one file (`src/main.js`, plus `index.html` /
+`src/style.css`); it hasn't been split into modules yet since it's still
+small enough to stay readable. Uses `THREE.Timer` (not the deprecated
+`THREE.Clock`) for per-frame delta-time.
 
-Player health/death (`playerHealth`, `damagePlayer()`, `isDead`,
-`#death-overlay`) works but has no respawn yet (that's Milestone 6), and
-now goes through the same `setPlayerHealth()` shared-setter pattern as the
-bot. Both the player and the bot regenerate health gradually — after
-`HEALTH_REGEN_DELAY_MS` with no damage taken, `regenPlayerHealth()`/
-`regenBotHealth()` (called every frame from `tick()`) raise health back
-toward max at `HEALTH_REGEN_RATE_PER_SECOND`, routed back through the same
-setters so the HUD/floating bar/vignette all stay in sync either
-direction; both are no-ops once dead/destroyed. The HUD — crosshair, ammo
-pill (with low-ammo flash), health bar, and a low-health vignette — is
-plain HTML/CSS in `index.html`/`style.css`, matching the pause overlay's
-DOM-based approach. Key tuning constants live in `src/main.js`:
-`ARENA_SIZES`, `WALL_HEIGHT = 3`, `WALL_THICKNESS = 1`, `MOVE_SPEED = 5`,
-`JUMP_SPEED = 6`, `GRAVITY = 20`, `PLAYER_RADIUS = 0.4`,
+**Working v1 summary (what a fresh session can rely on):**
+- **Movement:** WASD + mouse look + Space jump. Player is a Rapier
+  `kinematicPositionBased` capsule (`PLAYER_RADIUS = 0.4`,
+  `PLAYER_HALF_HEIGHT = 0.6`) driven by `world.createCharacterController()`,
+  with gravity/jump applied manually (`GRAVITY` / `JUMP_SPEED` — kinematic
+  bodies ignore Rapier's own gravity). Yaw/pitch are plain variables applied
+  to `camera.rotation` (`rotation.order = "YXZ"`). Spawn:
+  `PLAYER_SPAWN_POSITION` `(0, 3, 5)`.
+- **Pointer lock / focus handling:** Game starts paused with
+  `#pause-overlay` ("Click to Play"). `pointerlockchange` plus
+  `blur`/`visibilitychange` pause on Escape / focus loss; resume re-locks
+  the pointer (with Chrome Escape-cooldown retry). Clears `keysPressed` /
+  `isFiring` on pause so held inputs can't stick across alt-tab.
+- **Arena:** Sized via `ARENA_SIZES` (`1v1`/`3v3`/`5v5` → 30/45/60m);
+  `GROUND_SIZE` currently hardcodes `"1v1"` until Milestone 9's pre-match
+  menu. Static Rapier colliders for walls + varied interior cover
+  (`boxObstacleDefs`, `pillarObstacleDefs`, `rampObstacleDef`) laid out for
+  competitive flow — center chokepoint blocking the spawn-to-spawn
+  sightline, denser west cover, sparser east open lane. Player spawn
+  `(0, _, 5)`, bot spawn `(0, _, -5)`. Jumping on top of shorter obstacles
+  already works as a side effect of ordinary colliders (reuse for
+  Milestone 7); walk-under platforms and crouch are still unbuilt.
+- **Shooting + player HUD:** Hitscan gun (`world.castRayAndGetNormal()`),
+  full-auto via `isFiring` + `FIRE_RATE_RPM`, magazine/reload
+  (`MAGAZINE_SIZE` / `RELOAD_TIME_MS`, manual R or auto on empty), tracers
+  (`spawnTracer()` via `MUZZLE_OFFSET`) + impact flashes. HUD: crosshair,
+  ammo pill (low-ammo flash), health bar, low-health vignette. Debug "T"
+  key still calls `damagePlayer(20)` for quick health/death testing. No
+  visible gun model yet (polish later).
+- **One AI bot:** Red capsule + facing marker (`botGroup` /
+  `BOT_MARKER_OFFSET`), own kinematic body + own character controller
+  (`botCharacterController` — must stay separate from the player's).
+  Vision-gated via `botCanSeePlayer()` raycast only (never omniscient);
+  turn-speed-limited aim (`rotateGroupTowards()` /
+  `BOT_TURN_SPEED_RADIANS_PER_SEC`); fires after `BOT_REACTION_DELAY_MS`
+  once aimed within `BOT_AIM_ANGLE_THRESHOLD_RADIANS`, with
+  `BOT_AIM_SPREAD_RADIANS` jitter. When it can't see the player: chases
+  `botLastKnownPlayerPosition`, else patrols hand-placed
+  `BOT_PATROL_POINTS` near cover (`moveBotTowards()`) — simple waypoint
+  patrol, NOT Milestone 10's tactical cover-seeking. Health equals
+  `PLAYER_MAX_HEALTH`; floating team-colored health bar; both sides regen
+  after `HEALTH_REGEN_DELAY_MS` at `HEALTH_REGEN_RATE_PER_SECOND`.
+- **Respawn + spawn invulnerability:** On death, player shows
+  `#death-overlay` then `respawnPlayer()` after `RESPAWN_DELAY_MS` (3s)
+  (teleport, full health/ammo). Bot disables collider + hides mesh, then
+  `respawnBot()` re-enables/shows and resets AI state. Both get
+  `SPAWN_INVULNERABILITY_MS` (1.5s) of no-damage
+  (`playerInvulnerableUntil` / `botInvulnerableUntil` — early returns in
+  `damagePlayer()` / `damageBot()`; tracers still land). Cues: pulsing blue
+  `#spawn-invuln-overlay` for the player; `botMaterial.opacity = 0.5` for
+  the bot.
+- **Team score / timer HUD + win condition:** Top-center `#match-hud`
+  shows BLUE/RED team scores (`blueScore` / `redScore`) and a count-up
+  match timer (starts on first pointer-lock; doesn't subtract paused time —
+  accepted v1 simplification). First team to `KILL_TARGET` wins via
+  `endMatch()` → `#match-end-overlay` + `matchEnded` freezes simulation.
+  **`KILL_TARGET` is currently hardcoded to 5** — it becomes configurable
+  (alongside team size / difficulty) when Milestone 9 adds the pre-match
+  menu. Refresh page to play again (real "Play Again" is Milestone 13).
+
+Key tuning constants in `src/main.js` include: `ARENA_SIZES`,
+`MOVE_SPEED = 5`, `JUMP_SPEED = 6`, `GRAVITY = 20`, `PLAYER_RADIUS = 0.4`,
 `PLAYER_HALF_HEIGHT = 0.6`, `EYE_HEIGHT = 0.8`, `GUN_DAMAGE = 25`,
-`GUN_RANGE = 100`, `FIRE_RATE_RPM = 750`, `MAGAZINE_SIZE = 30`,
-`RELOAD_TIME_MS = 1800`, `PLAYER_MAX_HEALTH = 100`,
-`HEALTH_REGEN_DELAY_MS = 5000`, `HEALTH_REGEN_RATE_PER_SECOND = 8`,
-`BOT_MAX_HEALTH` (= `PLAYER_MAX_HEALTH`), `BOT_SIGHT_RANGE = 100`,
-`BOT_REACTION_DELAY_MS = 500`, `BOT_FIRE_RATE_RPM = 300`,
-`BOT_DAMAGE_PER_HIT = 10`, `BOT_AIM_SPREAD_RADIANS = 0.035`,
-`BOT_MOVE_SPEED = 3`, `BOT_TURN_SPEED_RADIANS_PER_SEC = PI`,
-`BOT_AIM_ANGLE_THRESHOLD_RADIANS = 0.05`,
-`BOT_WAYPOINT_ARRIVAL_RADIUS = 1.5`, `BOT_MOVE_TIMEOUT_MS = 6000`,
-`BOT_PATROL_POINTS` (6 hand-placed waypoints).
-Uses `THREE.Timer` (not the deprecated `THREE.Clock`) for per-frame delta-time.
+`FIRE_RATE_RPM = 750`, `MAGAZINE_SIZE = 30`, `RELOAD_TIME_MS = 1800`,
+`PLAYER_MAX_HEALTH = 100`, `HEALTH_REGEN_DELAY_MS = 5000`,
+`HEALTH_REGEN_RATE_PER_SECOND = 8`, `BOT_*` AI/movement/aim constants,
+`KILL_TARGET = 5`, `RESPAWN_DELAY_MS = 3000`,
+`SPAWN_INVULNERABILITY_MS = 1500`.
 
-### v1 — Playable Core
+### v1 — Playable Core (COMPLETE)
 - [x] 1. Project scaffold: Vite + Three.js + Rapier running, empty scene renders.
 - [x] 2. First-person movement: WASD, mouse look, jump, collision via Rapier.
 - [x] 2.5. Pointer lock + focus handling: click-to-play overlay, Escape/focus-loss pause, reliable resume.
@@ -166,9 +138,15 @@ Uses `THREE.Timer` (not the deprecated `THREE.Clock`) for per-frame delta-time.
           seconds without taking damage.
         - Bot max health set equal to the player's max health, for
           balance.
-- [ ] 6. Respawn + win condition: player and bot respawn after death,
+- [x] 6. Respawn + win condition: player and bot respawn after death,
       match ends at N kills, simple end-of-match state. Verify: die once,
       confirm respawn works; play to the kill target, confirm match ends.
+      Also includes spawn invulnerability (1.5s no-damage after respawn
+      for both sides, with a blue screen pulse for the player and mesh
+      transparency for the bot) and a team-based score + match-timer HUD
+      at the top of the screen. Kill target is hardcoded to 5 for now
+      (`KILL_TARGET` in `src/main.js`); Milestone 9 will make it
+      configurable via the pre-match menu. See "Current Status" above.
 
 ### v2 — Core Requested Features
 - [ ] 7. Platforms + crouch: jumpable/walkable platforms, C key crouches
