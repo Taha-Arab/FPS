@@ -15,9 +15,22 @@
 // flow (chokepoints, broken sightlines, mixed cover density) rather than
 // an even grid - no jump-on-top/walk-under platforms yet (Milestone 7).
 //
+// Milestone 4: Shooting + health. Holding left-click fires a full-auto
+// Rapier raycast gun ("hitscan" - instant, no travel time) from the
+// camera at a fixed fire rate, which already hits every wall/obstacle
+// collider from Milestone 3 for free. A tracer line + impact flash give
+// hit feedback, and a magazine/reload system (R to reload, ammo shown
+// near the crosshair) adds a bit of arcade-shooter pacing. Since
+// Milestone 5's real AI bot doesn't exist yet, this milestone adds two
+// TEMPORARY stand-ins so the damage pipeline can be tested end-to-end: a
+// shootable red capsule ("test target") at the reserved future-bot spawn
+// spot, and a debug "T" key that damages the player directly (since
+// nothing can shoot back yet). Both are commented where they appear so
+// they're easy to find and replace in Milestone 5.
+//
 // NOT built yet (later milestones):
 // - No platforms or crouch yet (7).
-// - No shooting, health, bots (4-5).
+// - No AI bots or respawn yet (5-6) - see the temporary stand-ins above.
 // ---------------------------------------------------------------------------
 
 import * as THREE from "three";
@@ -278,6 +291,99 @@ rampMesh.rotation.x = rampObstacleDef.tiltRadians;
 scene.add(rampMesh);
 
 // -----------------------------------------------------------------------
+// Player movement tuning constants
+// -----------------------------------------------------------------------
+// Declared here (before the test target below, which reuses PLAYER_RADIUS/
+// PLAYER_HALF_HEIGHT for its own capsule shape) rather than further down
+// near the Rapier setup that mostly uses them, so both can rely on it.
+
+const PLAYER_RADIUS = 0.4;
+// Half-height of just the capsule's cylindrical middle section (not
+// counting the rounded caps), so total capsule height = 2 * (half + radius).
+const PLAYER_HALF_HEIGHT = 0.6;
+// How far above the capsule's center point the camera sits (roughly eye
+// level, a bit below the very top of the capsule).
+const EYE_HEIGHT = 0.8;
+
+const MOVE_SPEED = 5; // meters/second
+const JUMP_SPEED = 6; // initial upward velocity, in meters/second
+// A bit stronger than real-world gravity (9.81) for a snappier game feel -
+// common in shooters so jumps don't feel floaty.
+const GRAVITY = 20;
+// Cap how large a single frame's delta-time can be (e.g. if the tab was
+// backgrounded and just regained focus) to avoid the player tunneling
+// through geometry in one huge simulated step.
+const MAX_DELTA_TIME = 1 / 30;
+
+// Gun tuning constants (Milestone 4). The gun is "hitscan" - it's an
+// instant raycast rather than a physical bullet that travels over time,
+// which is standard for simple FPS games and much easier to get right.
+const GUN_DAMAGE = 25; // 4 hits destroys the 100-health test target
+const GUN_RANGE = 100; // meters
+
+// Where the tracer *looks* like it starts from - offset to the
+// lower-right of the camera, like a held gun, in the camera's own local
+// space (+X = right, +Y = up, -Z = forward). This is ONLY used to draw the
+// tracer; the actual hit-detection ray below still fires from the exact
+// camera center for accuracy. Without this offset, shooting straight
+// ahead makes the tracer perfectly line up with the camera's view, so it
+// renders end-on and is invisible (a line viewed along its own length has
+// no visible width).
+const MUZZLE_OFFSET = new THREE.Vector3(0.25, -0.25, -0.5);
+
+// Full-auto fire rate: 750 rounds/minute is a typical real-world assault
+// rifle rate (close to the in-game rate of e.g. COD's M4), which reads as
+// snappy/arcade-y without being a laser beam. Converted to milliseconds
+// between shots since that's what we actually compare timestamps against.
+const FIRE_RATE_RPM = 750;
+const FIRE_INTERVAL_MS = 60000 / FIRE_RATE_RPM;
+
+// Magazine + reload tuning - simple "arcade shooter" numbers (a full
+// COD-style assault rifle mag, ~1.5-2s reload), not meant to be realistic.
+const MAGAZINE_SIZE = 30;
+const RELOAD_TIME_MS = 1800;
+// Ammo is shown/flashed as "low" once at or below this fraction of a full
+// magazine (30 * 0.2 = 6 rounds) - just a HUD warning cue, doesn't affect
+// firing itself (that's still gated purely on currentAmmo > 0).
+const LOW_AMMO_RATIO = 0.2;
+
+// -----------------------------------------------------------------------
+// TEMPORARY: shootable test target (Milestone 4 stand-in for Milestone 5's
+// real AI bot)
+// -----------------------------------------------------------------------
+// Milestone 4 needs *something* with health for the gun to damage, to prove
+// the raycast-hit -> damage pipeline actually works before real bots exist.
+// This is a plain red capsule (RED = enemy team color, per the Visual Style
+// rule in AGENTS.md) sitting at (0, _, -5) - the exact spot the Milestone 3
+// obstacle layout already reserved and kept clear for the future enemy bot
+// spawn. Milestone 5 should replace this whole section with the real bot
+// (reusing the same position/capsule look) instead of extending it further.
+
+const TARGET_MAX_HEALTH = 100;
+const TARGET_POSITION = { x: 0, z: -5 };
+const TARGET_COLOR = 0xcc3333;
+
+let targetHealth = TARGET_MAX_HEALTH;
+let targetDestroyed = false;
+
+// Same capsule dimensions as the player, so it reads as a person-sized
+// target and can reuse the player's own collider size/shape below.
+const targetMaterial = new THREE.MeshStandardMaterial({ color: TARGET_COLOR });
+const targetGeometry = new THREE.CapsuleGeometry(
+  PLAYER_RADIUS,
+  PLAYER_HALF_HEIGHT * 2,
+  4,
+  8
+);
+const targetMesh = new THREE.Mesh(targetGeometry, targetMaterial);
+targetMesh.position.set(
+  TARGET_POSITION.x,
+  PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
+  TARGET_POSITION.z
+);
+scene.add(targetMesh);
+
+// -----------------------------------------------------------------------
 // Input handling: keyboard state + mouse look + pointer lock
 // -----------------------------------------------------------------------
 
@@ -289,6 +395,22 @@ window.addEventListener("keydown", (event) => {
   // Stop Space from scrolling the page - there's nothing to scroll since
   // the page is a fixed full-screen canvas, but this avoids surprises.
   if (event.code === "Space") event.preventDefault();
+
+  // TEMPORARY (Milestone 4): pressing "T" deals test damage to the player,
+  // so the health bar/death state can be verified before Milestone 5 adds
+  // a real bot that can actually shoot back. Remove this once that exists.
+  // Checked once per key-press here (not via keysPressed each frame like
+  // WASD), since holding it down should not deal damage every frame.
+  if (event.code === "KeyT" && !isPaused && !isDead) {
+    damagePlayer(20);
+  }
+
+  // Manual reload (Milestone 4 extension). Checked once per key-press,
+  // same reasoning as "T" above - holding R should only start one reload,
+  // not restart it every frame.
+  if (event.code === "KeyR" && !isPaused && !isDead) {
+    startReload();
+  }
 });
 window.addEventListener("keyup", (event) => {
   keysPressed[event.code] = false;
@@ -334,6 +456,12 @@ function showPauseOverlay() {
   for (const key in keysPressed) {
     keysPressed[key] = false;
   }
+
+  // Same idea for the mouse button (Milestone 4 extension): without this,
+  // alt-tabbing away while holding left-click would leave `isFiring` stuck
+  // true, since mouseup never fires while the tab isn't focused, and the
+  // gun would start full-auto firing the instant the player resumes.
+  isFiring = false;
 }
 
 function hidePauseOverlay() {
@@ -423,26 +551,167 @@ document.addEventListener("mousemove", (event) => {
 });
 
 // -----------------------------------------------------------------------
-// Player movement tuning constants
+// Player health + HUD (Milestone 4)
 // -----------------------------------------------------------------------
+// A simple health bar (HTML/CSS, matching the pause overlay's DOM-based
+// approach) plus a death state. There's no respawn yet - that's Milestone
+// 6's job - so dying just freezes the game and shows a message for now.
 
-const PLAYER_RADIUS = 0.4;
-// Half-height of just the capsule's cylindrical middle section (not
-// counting the rounded caps), so total capsule height = 2 * (half + radius).
-const PLAYER_HALF_HEIGHT = 0.6;
-// How far above the capsule's center point the camera sits (roughly eye
-// level, a bit below the very top of the capsule).
-const EYE_HEIGHT = 0.8;
+const PLAYER_MAX_HEALTH = 100;
+// Below this health percentage, the screen-edge vignette fades in as a
+// warning cue - purely visual, doesn't affect gameplay.
+const LOW_HEALTH_VIGNETTE_THRESHOLD = 25;
+let playerHealth = PLAYER_MAX_HEALTH;
+let isDead = false;
 
-const MOVE_SPEED = 5; // meters/second
-const JUMP_SPEED = 6; // initial upward velocity, in meters/second
-// A bit stronger than real-world gravity (9.81) for a snappier game feel -
-// common in shooters so jumps don't feel floaty.
-const GRAVITY = 20;
-// Cap how large a single frame's delta-time can be (e.g. if the tab was
-// backgrounded and just regained focus) to avoid the player tunneling
-// through geometry in one huge simulated step.
-const MAX_DELTA_TIME = 1 / 30;
+const healthBarFill = document.getElementById("health-bar-fill");
+const deathOverlay = document.getElementById("death-overlay");
+const vignette = document.getElementById("vignette");
+
+// Reduces the player's health, updates the HUD bar, and triggers the death
+// state once health reaches 0. `amount` is however much damage was dealt -
+// currently only ever called by the temporary "T" debug key below, until
+// Milestone 5's bot can call this for real.
+function damagePlayer(amount) {
+  if (isDead) return;
+
+  playerHealth = Math.max(0, playerHealth - amount);
+
+  const healthPercent = (playerHealth / PLAYER_MAX_HEALTH) * 100;
+  healthBarFill.style.width = `${healthPercent}%`;
+  // Simple threshold-based coloring (green/orange/red) rather than a
+  // continuous gradient - easier to read at a glance and simpler to code.
+  if (healthPercent > 50) {
+    healthBarFill.style.backgroundColor = "#4caf50"; // green
+  } else if (healthPercent > 20) {
+    healthBarFill.style.backgroundColor = "#ff9800"; // orange
+  } else {
+    healthBarFill.style.backgroundColor = "#f44336"; // red
+  }
+
+  // Fade in the low-health vignette once below the threshold - but not
+  // once actually dead, since the #death-overlay covers the whole screen
+  // anyway at that point and would just be hidden behind it.
+  const isLowHealth =
+    healthPercent > 0 && healthPercent <= LOW_HEALTH_VIGNETTE_THRESHOLD;
+  vignette.classList.toggle("active", isLowHealth);
+
+  if (playerHealth === 0) {
+    isDead = true;
+    deathOverlay.classList.remove("hidden");
+  }
+}
+
+// -----------------------------------------------------------------------
+// Ammo + reload (Milestone 4 extension: full-auto + magazine)
+// -----------------------------------------------------------------------
+// Kept at module scope (rather than inside startRenderLoop, like the
+// actual firing logic below) since none of this needs the Rapier world -
+// it's just bookkeeping plus the HUD text - and it needs to be reachable
+// from both the "R" key handler up in the Input Handling section and the
+// firing logic below.
+
+let currentAmmo = MAGAZINE_SIZE;
+let isReloading = false;
+// True for as long as the left mouse button is held down while pointer-
+// locked - checked every frame in tick() so holding the button fires
+// continuously (full-auto) instead of once per click.
+let isFiring = false;
+
+const ammoHud = document.getElementById("ammo-hud");
+const ammoText = document.getElementById("ammo-text");
+
+function updateAmmoDisplay() {
+  if (isReloading) {
+    ammoText.textContent = "Reloading...";
+    // Don't flash "low ammo" red while the "Reloading..." text is already
+    // showing - the two cues would fight each other visually.
+    ammoHud.classList.remove("ammo-low");
+    return;
+  }
+
+  ammoText.textContent = `${currentAmmo} / ${MAGAZINE_SIZE}`;
+  const isLowAmmo = currentAmmo <= MAGAZINE_SIZE * LOW_AMMO_RATIO;
+  ammoHud.classList.toggle("ammo-low", isLowAmmo);
+}
+updateAmmoDisplay(); // show a full magazine before the player fires at all
+
+function startReload() {
+  // Ignore if already reloading, or if the magazine's already full - no
+  // point restarting a reload that wouldn't change anything.
+  if (isReloading || currentAmmo === MAGAZINE_SIZE) return;
+
+  isReloading = true;
+  updateAmmoDisplay();
+
+  setTimeout(() => {
+    currentAmmo = MAGAZINE_SIZE;
+    isReloading = false;
+    updateAmmoDisplay();
+  }, RELOAD_TIME_MS);
+}
+
+// -----------------------------------------------------------------------
+// Shooting visual feedback: tracer line + impact flash (Milestone 4)
+// -----------------------------------------------------------------------
+// Per the Visual Style spec: "a thin glowing tracer line from gun to
+// impact point, plus a small flash/particle at the impact point" - no
+// bullet model needed. Both are just added to the scene and removed a
+// few milliseconds later with setTimeout, so they read as a fast instant
+// flash rather than a persistent laser beam.
+
+const TRACER_LIFETIME_MS = 70;
+const IMPACT_FLASH_LIFETIME_MS = 120;
+
+function spawnTracer(start, end) {
+  const tracerGeometry = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(start.x, start.y, start.z),
+    new THREE.Vector3(end.x, end.y, end.z),
+  ]);
+  const tracerMaterial = new THREE.LineBasicMaterial({ color: 0xfff59d });
+  const tracerLine = new THREE.Line(tracerGeometry, tracerMaterial);
+  scene.add(tracerLine);
+
+  setTimeout(() => {
+    scene.remove(tracerLine);
+    tracerGeometry.dispose();
+    tracerMaterial.dispose();
+  }, TRACER_LIFETIME_MS);
+}
+
+function spawnImpactFlash(point) {
+  const flashGeometry = new THREE.SphereGeometry(0.08, 8, 8);
+  const flashMaterial = new THREE.MeshBasicMaterial({ color: 0xffffaa });
+  const flashMesh = new THREE.Mesh(flashGeometry, flashMaterial);
+  flashMesh.position.set(point.x, point.y, point.z);
+  scene.add(flashMesh);
+
+  setTimeout(() => {
+    scene.remove(flashMesh);
+    flashGeometry.dispose();
+    flashMaterial.dispose();
+  }, IMPACT_FLASH_LIFETIME_MS);
+}
+
+// Briefly flashes the test target white to show a hit landed, then damages
+// it and destroys it (removes mesh + collider) once its health runs out.
+// TEMPORARY (Milestone 4) - see the comment where targetMesh is created;
+// Milestone 5 should replace this along with the rest of the test target.
+function damageTarget(world, targetCollider) {
+  if (targetDestroyed) return;
+
+  targetHealth -= GUN_DAMAGE;
+  targetMaterial.color.set(0xffffff);
+  setTimeout(() => {
+    if (!targetDestroyed) targetMaterial.color.set(TARGET_COLOR);
+  }, 80);
+
+  if (targetHealth <= 0) {
+    targetDestroyed = true;
+    scene.remove(targetMesh);
+    world.removeCollider(targetCollider, true);
+  }
+}
 
 // -----------------------------------------------------------------------
 // Rapier physics setup
@@ -484,8 +753,8 @@ async function initPhysics() {
 
   // Interior obstacle colliders, matching the obstacle meshes created
   // above. Same "no parent rigid body" static pattern as the ground/walls.
-  // Being real Rapier colliders (not just visuals) means they'll already
-  // block a future hitscan raycast in Milestone 4 with no extra work then.
+  // Being real Rapier colliders (not just visuals) means they already
+  // block the Milestone 4 gun's hitscan raycast (below) with no extra work.
   for (const box of boxObstacleDefs) {
     const boxColliderDesc = RAPIER.ColliderDesc.cuboid(
       box.hx,
@@ -526,6 +795,19 @@ async function initPhysics() {
     });
   world.createCollider(rampColliderDesc);
 
+  // TEMPORARY (Milestone 4): a static collider matching the test target
+  // mesh above, using the same capsule shape as the player. This is what
+  // lets the gun's raycast (below) actually detect a hit on the target.
+  const targetColliderDesc = RAPIER.ColliderDesc.capsule(
+    PLAYER_HALF_HEIGHT,
+    PLAYER_RADIUS
+  ).setTranslation(
+    TARGET_POSITION.x,
+    PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
+    TARGET_POSITION.z
+  );
+  const targetCollider = world.createCollider(targetColliderDesc);
+
   // The player is a "kinematic" rigid body: we move it ourselves each frame
   // (via setNextKinematicTranslation) instead of letting Rapier's forces
   // push it around like a normal dynamic object. This gives precise,
@@ -549,20 +831,142 @@ async function initPhysics() {
   // needed for numerical stability.
   const characterController = world.createCharacterController(0.01);
 
-  return { world, playerBody, playerCollider, characterController };
+  return {
+    world,
+    playerBody,
+    playerCollider,
+    characterController,
+    targetCollider,
+  };
 }
 
 // -----------------------------------------------------------------------
 // Main render/physics loop
 // -----------------------------------------------------------------------
 
-function startRenderLoop({ world, playerBody, playerCollider, characterController }) {
+function startRenderLoop({
+  world,
+  playerBody,
+  playerCollider,
+  characterController,
+  targetCollider,
+}) {
   // THREE.Timer is the modern replacement for the older THREE.Clock -
   // update() must be called once per frame (with the requestAnimationFrame
   // timestamp) before getDelta() returns the correct value.
   const timer = new THREE.Timer();
   // Vertical speed accumulated by gravity/jumping. Positive = moving up.
   let verticalVelocity = 0;
+
+  // -----------------------------------------------------------------
+  // Shooting (Milestone 4, full-auto extension): holding left-click fires
+  // repeated instant raycasts from the camera at a fixed fire rate. Set up
+  // here (rather than at module scope) because it needs
+  // `world`/`playerCollider`/`targetCollider`, which only exist once
+  // Rapier has finished initializing.
+  // -----------------------------------------------------------------
+
+  // The timestamp (matching tick()'s requestAnimationFrame timestamp/
+  // performance.now() clock) that the next shot is allowed to fire at.
+  // Starts at -Infinity so the very first shot never has to wait.
+  let lastShotTime = -Infinity;
+
+  // All the conditions that must be true for the gun to be allowed to
+  // fire at all, independent of fire-rate timing - reused by both the
+  // "fire immediately on click" path and the full-auto "keep firing every
+  // frame while held" path in tick() below.
+  function canFire() {
+    return (
+      !isPaused &&
+      !isDead &&
+      !isReloading &&
+      currentAmmo > 0 &&
+      document.pointerLockElement === renderer.domElement
+    );
+  }
+
+  // Does the actual raycast + damage + visual feedback for a single shot.
+  // Assumes the caller has already checked canFire() and the fire-rate
+  // cooldown - this function just fires, unconditionally.
+  function fireShot() {
+    currentAmmo -= 1;
+    updateAmmoDisplay();
+
+    // Auto-reload (Milestone 4 extension): as soon as the last round is
+    // fired, automatically start reloading - on top of the existing
+    // manual "R" key, matching how most arcade shooters behave so the
+    // player doesn't have to remember to reload themselves.
+    if (currentAmmo === 0) startReload();
+
+    const origin = camera.position;
+    const direction = camera.getWorldDirection(new THREE.Vector3());
+    const ray = new RAPIER.Ray(origin, direction);
+
+    // The tracer's visual start point only - see the MUZZLE_OFFSET comment
+    // above for why. localToWorld() converts a point from the camera's
+    // local space into world space using its current matrix, so this
+    // "muzzle" always stays glued to the lower-right of wherever the
+    // camera is currently looking.
+    camera.updateMatrixWorld();
+    const muzzlePosition = camera.localToWorld(MUZZLE_OFFSET.clone());
+
+    // Exclude the player's own collider so the ray can't hit ourselves
+    // point-blank. `solid: true` treats every shape as solid rather than
+    // hollow, which is the expected behavior for a bullet.
+    const hit = world.castRayAndGetNormal(
+      ray,
+      GUN_RANGE,
+      true,
+      undefined,
+      undefined,
+      playerCollider
+    );
+
+    if (hit) {
+      const hitPoint = {
+        x: origin.x + direction.x * hit.timeOfImpact,
+        y: origin.y + direction.y * hit.timeOfImpact,
+        z: origin.z + direction.z * hit.timeOfImpact,
+      };
+      spawnTracer(muzzlePosition, hitPoint);
+      spawnImpactFlash(hitPoint);
+
+      if (hit.collider === targetCollider) {
+        damageTarget(world, targetCollider);
+      }
+    } else {
+      // Missed everything - draw the tracer out to the max range so a
+      // whiffed shot still gets the same visual feedback as a hit.
+      const missPoint = {
+        x: origin.x + direction.x * GUN_RANGE,
+        y: origin.y + direction.y * GUN_RANGE,
+        z: origin.z + direction.z * GUN_RANGE,
+      };
+      spawnTracer(muzzlePosition, missPoint);
+    }
+  }
+
+  // Fires a shot if (and only if) both canFire() and the fire-rate cooldown
+  // allow it right now. `now` should be on the same clock as tick()'s
+  // requestAnimationFrame timestamp (both are DOMHighResTimeStamps, so
+  // performance.now() and the rAF timestamp can be compared directly).
+  function tryFireShot(now) {
+    if (!canFire()) return;
+    if (now - lastShotTime < FIRE_INTERVAL_MS) return;
+    lastShotTime = now;
+    fireShot();
+  }
+
+  renderer.domElement.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    isFiring = true;
+    // Fire immediately on click rather than waiting for the next tick(),
+    // so single taps still feel responsive instead of having a tiny delay.
+    tryFireShot(performance.now());
+  });
+  renderer.domElement.addEventListener("mouseup", (event) => {
+    if (event.button === 0) isFiring = false;
+  });
 
   function computeHorizontalMovement(deltaTime) {
     // Read WASD as a simple -1/0/1 input vector, "forward"/"right" relative
@@ -601,11 +1005,15 @@ function startRenderLoop({ world, playerBody, playerCollider, characterControlle
     timer.update(timestamp);
     const deltaTime = Math.min(timer.getDelta(), MAX_DELTA_TIME);
 
-    // Freeze the entire simulation while paused (overlay showing) - no
-    // gravity, no movement, no physics stepping - so the player can't fall,
-    // slide, or otherwise keep moving while they have no control over the
-    // game. The scene still renders below so the frame doesn't go blank.
-    if (!isPaused) {
+    // Freeze the entire simulation while paused (overlay showing) or dead -
+    // no gravity, no movement, no physics stepping - so the player can't
+    // fall, slide, or otherwise keep moving while they have no control over
+    // the game. The scene still renders below so the frame doesn't go blank.
+    if (!isPaused && !isDead) {
+      // Full-auto: keep firing every frame the button is held, as long as
+      // canFire()/the fire-rate cooldown allow it (see tryFireShot above).
+      if (isFiring) tryFireShot(timestamp);
+
       // computedGrounded() reflects the result of *last* frame's movement
       // computation. Using it to decide this frame's gravity/jump is a
       // one-frame-old check, but the delay is imperceptible in practice and

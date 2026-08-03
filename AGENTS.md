@@ -36,16 +36,16 @@ one is checked off. After finishing a milestone, update this checklist
 (change [ ] to [x]) and tell the user exactly how to verify it themselves
 in the browser before moving on.
 
-### Current Status (as of Milestone 3)
+### Current Status (as of Milestone 4)
 For a fresh session picking this project back up:
 - **Built so far:** Milestones 1 (project scaffold), 2 (first-person
-  movement), 2.5 (pointer lock + focus handling), and 3 (arena with
-  obstacles) are done and checked off below. Next up is Milestone 4
-  (shooting + health).
+  movement), 2.5 (pointer lock + focus handling), 3 (arena with
+  obstacles), and 4 (shooting + health) are done and checked off below.
+  Next up is Milestone 5 (one AI bot).
 - **File structure:** Everything lives in one file, `src/main.js`, plus
   `index.html` and `src/style.css`. The project hasn't been split into
   multiple JS modules yet — it's still small enough for one file to stay
-  readable; revisit this once more systems (shooting, bots, HUD) exist.
+  readable; revisit this once more systems (bots, minimap, menus) exist.
 - **Player movement:** The player is a Rapier `kinematicPositionBased`
   rigid body with a capsule collider (radius 0.4, half-height 0.6), moved
   each frame via `world.createCharacterController()` (Rapier's built-in
@@ -90,9 +90,10 @@ For a fresh session picking this project back up:
   narrower chokepoint on the west flank, the west side is kept denser/
   tighter (firefight cover) while the east side is kept sparser (an open
   repositioning lane), and both the player's spawn `(0, _, 5)` and a
-  reserved mirrored spot for the future enemy bot spawn `(0, _, -5)`
-  (Milestone 5 doesn't exist yet) are kept clear of obstacles sitting
-  directly on top of them.
+  reserved mirrored spot for the future enemy bot spawn `(0, _, -5)` are
+  kept clear of obstacles sitting directly on top of them. That reserved
+  spot is now occupied by Milestone 4's temporary test target (see below)
+  — Milestone 5 should replace it with the real bot at the same position.
   Side effect worth knowing about for Milestone 7: because these are
   ordinary static Rapier colliders, the character controller already lets
   the player jump on top of the shorter ones with zero extra code - see
@@ -100,11 +101,71 @@ For a fresh session picking this project back up:
   platform-top collision from scratch. Walking *underneath* an obstacle and
   the crouch mechanic itself are still not built - that's still Milestone
   7's job.
+- **Shooting (Milestone 4, full-auto):** the gun is "hitscan" (an instant
+  Rapier raycast, `world.castRayAndGetNormal()`, no travelling bullet)
+  fired from the camera. It's full-auto: holding left-click keeps firing
+  at a fixed rate (`FIRE_RATE_RPM = 750`, i.e. `FIRE_INTERVAL_MS` apart)
+  via an `isFiring` flag set on `mousedown`/cleared on `mouseup` (and on
+  pause/focus-loss, alongside the existing `keysPressed` reset - see
+  `showPauseOverlay()`) that's checked every frame in `tick()`
+  (`tryFireShot()` in `startRenderLoop`). It automatically hits every
+  existing wall/obstacle collider from Milestone 3 with no extra work.
+  Hits spawn a short-lived tracer line (`spawnTracer()`) and impact flash
+  (`spawnImpactFlash()`), both plain Three.js meshes added to the scene
+  and removed a few frames later with `setTimeout` - no particle library
+  needed. The tracer's visual start point is offset from the camera
+  center (`MUZZLE_OFFSET`, via `camera.localToWorld()`) so it doesn't
+  render invisibly end-on when firing straight ahead - the actual
+  hit-detection ray still fires from the exact camera center for
+  accuracy. There's no visible gun model yet (per the Visual Style spec,
+  that's fine for now).
+- **Ammo + reload (Milestone 4 extension):** a simple arcade-style
+  magazine - `MAGAZINE_SIZE = 30`, `RELOAD_TIME_MS = 1800`ms - tracked via
+  `currentAmmo`/`isReloading` in `src/main.js`. Firing is blocked
+  (`canFire()`) whenever the magazine is empty or a reload is in progress.
+  Reloading can start two ways, both funneled through the same
+  `startReload()` (which itself no-ops if already reloading/full, so
+  there's no conflict between the two): manually via "R" (in the
+  `keydown` listener, gated the same way as the "T" debug key below), or
+  automatically the instant `currentAmmo` hits 0 (in `fireShot()`).
+- **Test target + player health (Milestone 4, see also above):** since
+  Milestone 5's real bot doesn't exist yet, two TEMPORARY stand-ins let the
+  damage pipeline be tested end-to-end - both are commented in
+  `src/main.js` as temporary so they're easy to find and remove/replace:
+    - A shootable red capsule (`targetMesh`/`targetCollider`, 100 HP) at
+      the reserved `(0, _, -5)` spot, destroyed (mesh + collider removed)
+      after 4 hits. No respawn - refreshing the page resets it.
+    - A debug-only "T" key (`damagePlayer(20)`, in the `keydown` listener)
+      that damages the player directly, since nothing can shoot back yet.
+  The player's own health (`playerHealth`, updated by `damagePlayer()`)
+  reaching 0 sets `isDead`, which freezes movement/shooting in `tick()`
+  (alongside `isPaused`) and shows a `#death-overlay` message. No respawn
+  logic yet - that's Milestone 6.
+- **HUD (Milestone 4 extension):** everything below is plain HTML/CSS
+  (`index.html`/`style.css`), matching the pause overlay's existing
+  DOM-based approach - no canvas-drawn UI or image assets anywhere yet.
+    - `#crosshair`: a simple white "+" reticle at screen center (built
+      from two CSS pseudo-element bars), purely visual - the actual
+      raycast always fires from the exact camera center regardless.
+    - `#ammo-hud` (bottom-right corner): a dark pill showing `"18 / 30"`
+      (or `"Reloading..."`) in `#ammo-text`, next to a small CSS-drawn
+      brass bullet icon (`#ammo-icon`) - both updated by
+      `updateAmmoDisplay()`. Below `LOW_AMMO_RATIO` (20% of the magazine)
+      the text flashes red (`.ammo-low` class) as a reload reminder.
+    - `#health-hud` (bottom-left corner): the `#health-bar-fill` bar
+      (green/orange/red by threshold) next to a small CSS-drawn red
+      medkit icon (`#health-icon`), both driven by `damagePlayer()`.
+    - `#vignette`: a full-screen radial-gradient red glow that fades in
+      around the screen edges (via its `.active` class) once health drops
+      to/below `LOW_HEALTH_VIGNETTE_THRESHOLD` (25%), toggled in
+      `damagePlayer()`.
 - **Key tuning constants (all in `src/main.js`):** `ARENA_SIZES` (see
   above), `WALL_HEIGHT = 3`, `WALL_THICKNESS = 1`, `MOVE_SPEED = 5` (m/s),
   `JUMP_SPEED = 6` (m/s), `GRAVITY = 20` (stronger than real-world 9.81
   for a snappier game feel), `PLAYER_RADIUS = 0.4`, `PLAYER_HALF_HEIGHT
-  = 0.6`, `EYE_HEIGHT = 0.8`.
+  = 0.6`, `EYE_HEIGHT = 0.8`, `GUN_DAMAGE = 25`, `GUN_RANGE = 100`,
+  `FIRE_RATE_RPM = 750`, `MAGAZINE_SIZE = 30`, `RELOAD_TIME_MS = 1800`,
+  `PLAYER_MAX_HEALTH = 100`, `TARGET_MAX_HEALTH = 100`.
 - **Note:** Uses `THREE.Timer` (not the older `THREE.Clock`, which the
   installed Three.js version has deprecated) for per-frame delta-time.
 
@@ -123,7 +184,7 @@ For a fresh session picking this project back up:
 - [x] 3. Arena with obstacles: walls + a few static obstacles placed (no
       platforms yet). Verify: obstacles block movement and bullets (once
       shooting exists) correctly.
-- [ ] 4. Shooting + health: raycast gun fires on click, deals damage,
+- [x] 4. Shooting + health: raycast gun fires on click, deals damage,
       health bar UI updates, player can "die" (health hits 0). Verify: can
       shoot a test target/wall and see hit feedback; health bar decreases
       when taking test damage.

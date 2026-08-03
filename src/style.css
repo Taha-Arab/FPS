@@ -55,3 +55,232 @@ canvas {
 #pause-overlay.hidden {
   display: none;
 }
+
+/* Crosshair (Milestone 4). A simple centered "+" reticle, built from two
+   thin bars via pseudo-elements rather than an image - no extra assets
+   needed. pointer-events: none so it never blocks clicks/shots. */
+#crosshair {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 5;
+}
+
+#crosshair::before,
+#crosshair::after {
+  content: "";
+  position: absolute;
+  background: white;
+}
+
+/* Horizontal bar */
+#crosshair::before {
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  transform: translateY(-50%);
+}
+
+/* Vertical bar */
+#crosshair::after {
+  top: 0;
+  left: 50%;
+  width: 2px;
+  height: 100%;
+  transform: translateX(-50%);
+}
+
+/* Ammo HUD (Milestone 4 extension: full-auto + magazine). Fixed to the
+   bottom-right corner, styled like a typical FPS ammo counter - a dark
+   semi-transparent pill containing a small bullet icon + the count. Text
+   ("18 / 30" or "Reloading...") is set from updateAmmoDisplay() in
+   src/main.js, which also toggles the "ammo-low" class below. */
+#ammo-hud {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-radius: 4px;
+  pointer-events: none;
+  user-select: none;
+  z-index: 5;
+}
+
+#ammo-text {
+  color: white;
+  font-family: sans-serif;
+  font-size: 1.1rem;
+  font-weight: bold;
+  min-width: 5.5ch; /* keeps the pill's width steady as digit count changes */
+}
+
+/* A small bullet/cartridge icon built from CSS shapes (a rounded body plus
+   a triangular tip) rather than an image - no extra assets needed. */
+#ammo-icon {
+  width: 8px;
+  height: 16px;
+  background: #d4af37; /* brass casing color */
+  border-radius: 2px 2px 1px 1px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+#ammo-icon::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 5px solid #b8860b; /* darker brass bullet tip */
+}
+
+/* Flashes the ammo count red once the magazine is low (see the
+   "ammo-low" class toggle in updateAmmoDisplay()) - a clear "running low,
+   consider reloading" cue without needing a sound/audio system yet. */
+#ammo-hud.ammo-low #ammo-text {
+  color: #ff5252;
+  animation: ammo-flash 0.6s ease-in-out infinite;
+}
+
+@keyframes ammo-flash {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Health HUD (Milestone 4 extension). Fixed to the bottom-left corner,
+   icon + bar side by side. Sits below the pause/death overlays (lower
+   z-index) so those still cover it completely when shown. */
+#health-hud {
+  position: fixed;
+  left: 24px;
+  bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 5;
+}
+
+/* A small medkit-style icon (red square, white cross) built from CSS
+   pseudo-elements rather than an image - no extra assets needed. */
+#health-icon {
+  width: 22px;
+  height: 22px;
+  background: #d32f2f;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-radius: 4px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+#health-icon::before,
+#health-icon::after {
+  content: "";
+  position: absolute;
+  background: white;
+}
+
+/* Horizontal bar of the cross */
+#health-icon::before {
+  top: 50%;
+  left: 18%;
+  width: 64%;
+  height: 22%;
+  transform: translateY(-50%);
+}
+
+/* Vertical bar of the cross */
+#health-icon::after {
+  left: 50%;
+  top: 18%;
+  height: 64%;
+  width: 22%;
+  transform: translateX(-50%);
+}
+
+#health-bar-container {
+  width: 250px;
+  height: 24px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+#health-bar-fill {
+  height: 100%;
+  width: 100%; /* full health at start */
+  background-color: #4caf50; /* green - see damagePlayer() in main.js */
+  /* Smoothly animates width/color changes instead of snapping instantly. */
+  transition: width 0.15s ease, background-color 0.15s ease;
+}
+
+/* Low-health vignette (Milestone 4 extension). A radial gradient that's
+   transparent in the middle and red at the edges, faded in/out via the
+   "active" class (toggled by damagePlayer() in src/main.js). Sits above
+   the canvas but below the HUD/crosshair so it doesn't wash them out. */
+#vignette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 55%,
+    rgba(180, 0, 0, 0.55) 100%
+  );
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+#vignette.active {
+  opacity: 1;
+}
+
+/* Death overlay (Milestone 4). Same full-screen-message pattern as
+   #pause-overlay, but not clickable (no respawn yet - see main.js) and a
+   higher z-index so it stays on top if the player also pauses after dying. */
+#death-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5em;
+  background: rgba(60, 0, 0, 0.75);
+  color: white;
+  font-family: sans-serif;
+  text-align: center;
+  user-select: none;
+  z-index: 15;
+}
+
+#death-overlay-title {
+  font-size: 2.5rem;
+  font-weight: bold;
+}
+
+#death-overlay-subtitle {
+  font-size: 1rem;
+  opacity: 0.8;
+}
+
+#death-overlay.hidden {
+  display: none;
+}

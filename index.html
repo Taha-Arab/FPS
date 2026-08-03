@@ -11,6 +11,64 @@
     <div id="app"></div>
 
     <!--
+      Crosshair (Milestone 4). A simple centered reticle so the player can
+      see exactly where the hitscan raycast in src/main.js will fire from -
+      it's purely visual/decorative (styled in src/style.css), it doesn't
+      affect aiming since the actual ray always fires from the camera
+      center, which is what this is drawn on top of.
+    -->
+    <div id="crosshair"></div>
+
+    <!--
+      Ammo HUD (Milestone 4 extension: full-auto + magazine). Fixed to the
+      bottom-right corner, styled like a typical FPS ammo counter - a small
+      CSS-drawn bullet icon (#ammo-icon, no image asset needed) next to the
+      count. #ammo-text's content is set entirely from src/main.js
+      (updateAmmoDisplay()) - starts empty here since JS fills it in
+      immediately on load. #ammo-hud gets an "ammo-low" class from the same
+      function once the magazine is low, which src/style.css uses to flash
+      the text red.
+    -->
+    <div id="ammo-hud">
+      <div id="ammo-icon"></div>
+      <span id="ammo-text"></span>
+    </div>
+
+    <!--
+      Health HUD (Milestone 4 extension). Fixed to the bottom-left corner,
+      always present during gameplay - a small CSS-drawn cross/medkit icon
+      (#health-icon) next to the bar. #health-bar-fill's width/color is
+      updated by damagePlayer() in src/main.js as the player takes damage.
+    -->
+    <div id="health-hud">
+      <div id="health-icon"></div>
+      <div id="health-bar-container">
+        <div id="health-bar-fill"></div>
+      </div>
+    </div>
+
+    <!--
+      Low-health vignette (Milestone 4 extension). A full-screen red glow
+      around the screen edges, faded in/out via the "active" class -
+      toggled by damagePlayer() in src/main.js whenever health is low.
+      pointer-events: none so it never blocks clicks/shots.
+    -->
+    <div id="vignette"></div>
+
+    <!--
+      Death overlay (Milestone 4). Hidden by default; shown by
+      damagePlayer() in src/main.js once health reaches 0. There's no
+      respawn yet (that's Milestone 6), so this just freezes the game.
+    -->
+    <div id="death-overlay" class="hidden">
+      <div id="death-overlay-title">You Died</div>
+      <div id="death-overlay-subtitle">
+        Respawning isn't built yet (coming in a later milestone) &mdash;
+        refresh the page to try again.
+      </div>
+    </div>
+
+    <!--
       Click-to-play / pause overlay (Milestone 2.5). Shown whenever the game
       isn't pointer-locked (before the first click, after Escape, after
       losing window focus, etc). Clicking it requests pointer lock again -
@@ -19,7 +77,8 @@
     <div id="pause-overlay">
       <div id="pause-overlay-title">Click to Play</div>
       <div id="pause-overlay-subtitle">
-        WASD to move &middot; Mouse to look &middot; Space to jump
+        WASD to move &middot; Mouse to look &middot; Space to jump &middot;
+        Hold Click to shoot &middot; R to reload
       </div>
     </div>
 
