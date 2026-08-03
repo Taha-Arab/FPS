@@ -39,7 +39,10 @@ in the browser before moving on.
 ### Current Status (as of Milestone 5)
 For a fresh session picking this project back up: Milestones 1–5 (project
 scaffold, first-person movement, pointer lock/pause, arena obstacles,
-shooting + health, one AI bot) are done and checked off below — next up is
+shooting + health, one AI bot — including a follow-up pass adding bot
+movement, vision-gated turn-speed-limited aiming, floating health bars,
+health regen, and bot/player health parity; see the Milestone 5 checklist
+entry below for the full list) are done and checked off below — next up is
 Milestone 6 (respawn + win condition). Everything still lives in one file
 (`src/main.js`, plus `index.html`/`src/style.css`); it hasn't been split
 into modules yet since it's still small enough to stay readable. The player
@@ -148,6 +151,21 @@ Uses `THREE.Timer` (not the deprecated `THREE.Clock`) for per-frame delta-time.
 - [x] 5. One AI bot: sees player, aims, shoots back, has health/can die.
       Verify: bot reacts when player is in view, player can kill it, it
       can damage the player.
+      Also includes several additions requested directly in a follow-up
+      pass, beyond the milestone's original scope — see "Current Status"
+      above for implementation details:
+        - Basic movement: patrols hand-placed waypoints near cover when
+          it can't see the player, and heads toward their last-known
+          position after losing sight, instead of standing still.
+        - Vision-gated, turn-speed-limited aiming: only tracks/faces the
+          player while its line-of-sight raycast actually confirms it can
+          see them (never through walls), and turns at a capped rate
+          before it's allowed to fire — no more instant snap-aim.
+        - A small team-colored floating health bar above its head.
+        - Health regeneration for both the player and the bot after a few
+          seconds without taking damage.
+        - Bot max health set equal to the player's max health, for
+          balance.
 - [ ] 6. Respawn + win condition: player and bot respawn after death,
       match ends at N kills, simple end-of-match state. Verify: die once,
       confirm respawn works; play to the kill target, confirm match ends.
