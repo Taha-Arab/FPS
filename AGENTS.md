@@ -37,8 +37,10 @@ one is checked off. After finishing a milestone, update this checklist
 in the browser before moving on.
 
 ### Current Status (Milestones 1–8 complete)
-**v1 (Playable Core) is complete**, and **Milestones 7–8** (platforms +
-crouch, minimap) are done. Next up is **Milestone 9** (pre-match menu).
+**v1 (Playable Core) is complete**, and **Milestones 7–8** are done —
+platforms + crouch (M7), and the minimap (M8) with live player/bot dots
+plus a simplified obstacle/platform layout layer. Next up is
+**Milestone 9** (pre-match menu).
 
 Everything still lives in one file (`src/main.js`, plus `index.html` /
 `src/style.css`); it hasn't been split into modules yet since it's still
@@ -131,14 +133,18 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   **`KILL_TARGET` is currently hardcoded to 5** — it becomes configurable
   (alongside team size / difficulty) when Milestone 9 adds the pre-match
   menu. Refresh page to play again (real "Play Again" is Milestone 13).
-- **Minimap:** Top-right `#minimap` (140×140 DOM panel). Static layout
-  layer (`buildMinimapLayout()` → `#minimap-layout`) draws simplified
-  XZ footprints from `boxObstacleDefs` / `pillarObstacleDefs` /
-  `rampObstacleDef` / elevated decks+ramps (legs skipped). Each frame
-  `updateMinimap()` maps `playerBody` / `botBody` XZ via `GROUND_SIZE`
-  onto blue (`#3366cc`) player + red (`#cc3333`) enemy dots. Player
-  marker rotates with `yaw` (facing chevron). Enemy dot hidden while
-  `botDestroyed`. No ally-bot dots yet (Milestone 9/10).
+- **Minimap (Milestone 8 complete):** Top-right `#minimap` (140×140 DOM
+  panel) for spatial awareness — not dots-only. Static layout layer
+  (`buildMinimapLayout()` → `#minimap-layout`) draws simplified XZ
+  footprints from Milestone 3 cover (`boxObstacleDefs` /
+  `pillarObstacleDefs` / `rampObstacleDef`) and Milestone 7 elevated
+  decks + access ramps from `elevatedStructurePieceDefs` (thin support
+  legs omitted so the map stays readable; cover vs platform use distinct
+  CSS fills). Each frame `updateMinimap()` maps `playerBody` /
+  `botBody` XZ via `GROUND_SIZE` onto blue (`#3366cc`) player + red
+  (`#cc3333`) enemy dots. Player marker rotates with `yaw` (facing
+  chevron). Enemy dot hidden while `botDestroyed`. No ally-bot dots yet
+  (Milestone 9/10).
 
 Key tuning constants in `src/main.js` include: `ARENA_SIZES`,
 `WALL_HEIGHT = 6`, `BOUNDARY_CONTAINMENT_HEIGHT = 20`, `OOB_MARGIN = 0.5`,
@@ -213,13 +219,16 @@ Key tuning constants in `src/main.js` include: `ARENA_SIZES`,
           respawn; zones stay separated by the center chokepoint.
         - Live respawn countdown on `#death-overlay-subtitle` (3…2…1)
           synced to `RESPAWN_DELAY_MS` via `playerRespawnAt`.
-- [x] 8. Minimap: top-down indicator of player + bot positions. Verify:
-      minimap updates live as player/bots move. Top-right `#minimap`
-      DOM panel; blue player dot (yaw-facing chevron) + red enemy bot
-      dot via `updateMinimap()` / `worldToMinimapPercent()` using
-      `GROUND_SIZE`. Enemy dot hidden while `botDestroyed`. Also
-      includes a static simplified layout layer (`buildMinimapLayout`)
-      for cover + elevated decks/ramps (support legs omitted).
+- [x] 8. Minimap: COMPLETE. Top-down indicator of player + bot positions
+      that updates live, plus a simplified obstacle/platform layout for
+      arena spatial awareness. Top-right `#minimap` DOM panel; blue
+      player dot (yaw-facing chevron) + red enemy bot dot via
+      `updateMinimap()` / `worldToMinimapPercent()` using `GROUND_SIZE`
+      (enemy dot hidden while `botDestroyed`). Static layout layer via
+      `buildMinimapLayout()` → `#minimap-layout`: Milestone 3 cover
+      footprints + Milestone 7 elevated decks/ramps (support legs
+      omitted). Verify: move around and confirm dots track live over a
+      readable top-down arena layout (chokepoint, cover, bridges).
 - [ ] 9. Pre-match menu: team size preset (1v1/3v3/5v5 — see team size
       counting rule above) + bot difficulty selection, shown before match
       starts. Verify: selecting each preset spawns the correct bot counts.
