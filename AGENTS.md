@@ -38,7 +38,9 @@ in the browser before moving on.
 
 ### Current Status (Milestones 1–7 complete)
 **v1 (Playable Core) is complete**, and **Milestone 7** (platforms +
-crouch) is done — the start of v2. Next up is **Milestone 8** (minimap).
+crouch) is done — including several follow-up fixes/features beyond the
+core M7 checklist (see item 7 below). Next up is **Milestone 8**
+(minimap).
 
 Everything still lives in one file (`src/main.js`, plus `index.html` /
 `src/style.css`); it hasn't been split into modules yet since it's still
@@ -57,39 +59,36 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   `CROUCH_MOVE_SPEED` / `CROUCH_EYE_HEIGHT`, and refuses to stand up when
   a ceiling blocks the taller capsule (upward headroom raycast).
   Yaw/pitch are plain variables applied to `camera.rotation`
-  (`rotation.order = "YXZ"`). Spawns: random pick from
-  `BLUE_TEAM_SPAWN_POINTS` / `RED_TEAM_SPAWN_POINTS` on match start and
-  each respawn (player drop-in `y = PLAYER_SPAWN_DROP_Y`).
+  (`rotation.order = "YXZ"`).
 - **Pointer lock / focus handling:** Game starts paused with
   `#pause-overlay` ("Click to Play"). `pointerlockchange` plus
   `blur`/`visibilitychange` pause on Escape / focus loss; resume re-locks
   the pointer (with Chrome Escape-cooldown retry). Clears `keysPressed` /
   `isFiring` on pause so held inputs can't stick across alt-tab.
-- **Arena:** Sized via `ARENA_SIZES` (`1v1`/`3v3`/`5v5` → 30/45/60m);
-  `GROUND_SIZE` currently hardcodes `"1v1"` until Milestone 9's pre-match
-  menu. Boundary walls use `WALL_HEIGHT = 6` (tall enough that a jump from
-  the tallest M7 deck ~2.55m cannot mount the rim) plus invisible
-  collision-only containment cuboids (`BOUNDARY_CONTAINMENT_HEIGHT = 20`)
-  on the same footprints so the boundary stays sealed even if a future
-  prop is taller than the visible walls. Soft OOB recovery
-  (`recoverPlayerFromOutOfBounds`, `OOB_MARGIN`) teleports the player to
-  a random blue-team spawn if they somehow leave the ground pad — no
-  death/score change. Static Rapier colliders for walls + varied interior
-  cover (`boxObstacleDefs`, `pillarObstacleDefs`, `rampObstacleDef`) laid
-  out for competitive flow — center chokepoint blocking the spawn-to-spawn
-  sightline, denser west cover, sparser east open lane. Team spawns:
-  BLUE (`BLUE_TEAM_SPAWN_POINTS`, +Z side) vs RED (`RED_TEAM_SPAWN_POINTS`,
-  -Z side), randomly chosen on match start and each respawn. Shorter solid
-  Milestone 3 cover
-  still supports jump-on-top via the character controller (unchanged as
-  solid blockers — not walk-under). Milestone 7 adds separate elevated
-  platforms/bridges (`elevatedStructurePieceDefs`: east bridge, west
-  raised platform, low crouch underpass) with visible legs, open
-  undercroft (stand-under ~2.25m on the tall decks; crouch-only ~1.35m on
-  the low underpass), and ramps onto the decks for jump/walk-on-top.
-  Placement was adjusted so the new structures do not overlap Milestone 3
-  cover, and the tall decks were nudged inward from the arena walls so
-  they are no longer a climbable path onto the boundary rim.
+- **Arena + platforms:** Sized via `ARENA_SIZES` (`1v1`/`3v3`/`5v5` →
+  30/45/60m); `GROUND_SIZE` currently hardcodes `"1v1"` until Milestone
+  9's pre-match menu. Solid Milestone 3 cover (`boxObstacleDefs` /
+  `pillarObstacleDefs` / `rampObstacleDef`) stays as ground-resting
+  blockers (shorter ones still jump-on-top via the character controller —
+  not walk-under). Milestone 7 adds separate elevated bridges/platforms
+  (`elevatedStructurePieceDefs`: east bridge, west raised platform, low
+  crouch underpass) with visible legs, open undercroft (stand-under
+  ~2.25m on tall decks; crouch-only ~1.35m on the low underpass), and
+  ramps onto the decks. Placement was adjusted so new structures do not
+  overlap Milestone 3 cover. Boundary walls use `WALL_HEIGHT = 6` plus
+  invisible collision-only containment cuboids
+  (`BOUNDARY_CONTAINMENT_HEIGHT = 20`) so players cannot climb over the
+  rim from tall decks; tall decks were also nudged inward from the walls.
+  Soft OOB recovery (`recoverPlayerFromOutOfBounds`, `OOB_MARGIN`)
+  teleports the player to a random blue-team spawn if they somehow leave
+  the ground pad — no death/score change. Competitive layout: center
+  chokepoint, denser west cover, sparser east open lane.
+- **Team spawns:** BLUE (`BLUE_TEAM_SPAWN_POINTS`, +Z / player side) vs
+  RED (`RED_TEAM_SPAWN_POINTS`, -Z / enemy side). On match start and each
+  respawn, pick randomly among that team's candidates (player drop-in
+  `y = PLAYER_SPAWN_DROP_Y`). Points are clear of obstacles/platforms and
+  stay on opposite sides of the chokepoint so neither team can immediately
+  see/shoot into the other's spawn zone.
 - **Shooting + player HUD:** Hitscan gun (`world.castRayAndGetNormal()`),
   full-auto via `isFiring` + `FIRE_RATE_RPM`, magazine/reload
   (`MAGAZINE_SIZE` / `RELOAD_TIME_MS`, manual R or auto on empty), tracers
@@ -100,22 +99,28 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
 - **One AI bot:** Red capsule + facing marker (`botGroup` /
   `BOT_MARKER_OFFSET`), own kinematic body + own character controller
   (`botCharacterController` — must stay separate from the player's).
-  Vision-gated via `botCanSeePlayer()` raycast only (never omniscient);
-  turn-speed-limited aim (`rotateGroupTowards()` /
-  `BOT_TURN_SPEED_RADIANS_PER_SEC`); fires after `BOT_REACTION_DELAY_MS`
-  once aimed within `BOT_AIM_ANGLE_THRESHOLD_RADIANS`, with
-  `BOT_AIM_SPREAD_RADIANS` jitter. When it can't see the player: chases
-  `botLastKnownPlayerPosition`, else patrols hand-placed
-  `BOT_PATROL_POINTS` near cover (`moveBotTowards()`) — simple waypoint
-  patrol, NOT Milestone 10's tactical cover-seeking. Health equals
-  `PLAYER_MAX_HEALTH`; floating team-colored health bar; both sides regen
-  after `HEALTH_REGEN_DELAY_MS` at `HEALTH_REGEN_RATE_PER_SECOND`.
+  Shared LOS helper `hasLineOfSight()`; bot AI vision via
+  `botCanSeePlayer()` only (never omniscient); turn-speed-limited aim
+  (`rotateGroupTowards()` / `BOT_TURN_SPEED_RADIANS_PER_SEC`); fires after
+  `BOT_REACTION_DELAY_MS` once aimed within
+  `BOT_AIM_ANGLE_THRESHOLD_RADIANS`, with `BOT_AIM_SPREAD_RADIANS` jitter.
+  When it can't see the player: chases `botLastKnownPlayerPosition`, else
+  patrols hand-placed `BOT_PATROL_POINTS` near cover (`moveBotTowards()`)
+  — simple waypoint patrol, NOT Milestone 10's tactical cover-seeking.
+  Health equals `PLAYER_MAX_HEALTH`; both sides regen after
+  `HEALTH_REGEN_DELAY_MS` at `HEALTH_REGEN_RATE_PER_SECOND`.
+- **Floating health bars:** `createFloatingHealthBar({ isEnemy })`. Enemy
+  bars show only when the player has LOS (`playerCanSeeBot()` — same
+  raycast pattern as bot vision, from the player's eye); ally bars stay
+  always visible for team awareness (`isEnemy: false` when ally bots
+  exist). No ally bots yet (Milestone 9/10).
 - **Respawn + spawn invulnerability:** On death, player shows
-  `#death-overlay` then `respawnPlayer()` after `RESPAWN_DELAY_MS` (3s)
-  (teleport to a random blue spawn, full health/ammo). Bot disables
-  collider + hides mesh, then `respawnBot()` re-enables/shows, picks a
-  random red spawn, and resets AI state. Both get
-  `SPAWN_INVULNERABILITY_MS` (1.5s) of no-damage
+  `#death-overlay` with a live countdown on `#death-overlay-subtitle`
+  (3…2…1 via `playerRespawnAt` / `updateDeathOverlayCountdown()`, synced
+  to `RESPAWN_DELAY_MS`), then `respawnPlayer()` (random blue spawn, full
+  health/ammo). Bot disables collider + hides mesh, then `respawnBot()`
+  re-enables/shows, picks a random red spawn, and resets AI state. Both
+  get `SPAWN_INVULNERABILITY_MS` (1.5s) of no-damage
   (`playerInvulnerableUntil` / `botInvulnerableUntil` — early returns in
   `damagePlayer()` / `damageBot()`; tracers still land). Cues: pulsing blue
   `#spawn-invuln-overlay` for the player; `botMaterial.opacity = 0.5` for
@@ -137,6 +142,7 @@ Key tuning constants in `src/main.js` include: `ARENA_SIZES`,
 `FIRE_RATE_RPM = 750`, `MAGAZINE_SIZE = 30`, `RELOAD_TIME_MS = 1800`,
 `PLAYER_MAX_HEALTH = 100`, `HEALTH_REGEN_DELAY_MS = 5000`,
 `HEALTH_REGEN_RATE_PER_SECOND = 8`, `BOT_*` AI/movement/aim constants,
+`BLUE_TEAM_SPAWN_POINTS` / `RED_TEAM_SPAWN_POINTS`,
 `KILL_TARGET = 5`, `RESPAWN_DELAY_MS = 3000`,
 `SPAWN_INVULNERABILITY_MS = 1500`.
 
@@ -175,23 +181,32 @@ Key tuning constants in `src/main.js` include: `ARENA_SIZES`,
       configurable via the pre-match menu. See "Current Status" above.
 
 ### v2 — Core Requested Features
-- [x] 7. Platforms + crouch: COMPLETE. Jump-on-top / walk-across platforms
-      and bridges, plus walk-underneath through open undercrofts; hold **C**
-      crouches as a static height/speed change (no slide). Verify: ramp
-      onto a deck and walk across; walk under a tall deck standing; hold C
-      to fit under the low underpass (stay crouched if C is released while
-      still under). New elevated structures live in
+- [x] 7. Platforms + crouch: COMPLETE (core + follow-ups). Core: jump-on-
+      top / walk-across platforms and bridges with proper walk-underneath
+      clearance; hold **C** crouches as a static height/speed change (no
+      slide). Verify: ramp onto a deck and walk across; walk under a tall
+      deck standing; hold C to fit under the low underpass (stay crouched
+      if C is released while still under). New elevated structures live in
       `elevatedStructurePieceDefs` (east bridge, west raised platform, low
-      crouch underpass) — Milestone 3 solid cover was left unchanged
-      (shorter boxes/pillars still jump-on-top via the character
-      controller). Overlap with Milestone 3 obstacles was found after the
-      first placement pass and resolved by repositioning the new
-      structures. Crouch uses `CROUCH_HALF_HEIGHT` / `CROUCH_MOVE_SPEED` /
-      `CROUCH_EYE_HEIGHT` with a headroom ray before standing. A
-      post-M7 boundary-exit exploit (jump from tall decks onto the old 3m
-      wall rims) was fixed afterward: `WALL_HEIGHT = 6`, invisible
-      `BOUNDARY_CONTAINMENT_HEIGHT` colliders, inward-nudged tall decks,
-      and soft OOB spawn recovery — see Current Status.
+      crouch underpass) — separate from Milestone 3 solid cover, which was
+      left unchanged (shorter boxes/pillars still jump-on-top via the
+      character controller). Crouch uses `CROUCH_HALF_HEIGHT` /
+      `CROUCH_MOVE_SPEED` / `CROUCH_EYE_HEIGHT` with a headroom ray before
+      standing. Also includes follow-ups beyond the original M7 checklist
+      — see "Current Status" above for details:
+        - Obstacle/platform overlap fix: repositioned elevated structures
+          so they no longer clip Milestone 3 cover.
+        - Arena boundary-exit exploit fix: `WALL_HEIGHT = 6`, invisible
+          `BOUNDARY_CONTAINMENT_HEIGHT` colliders, inward-nudged tall
+          decks, soft OOB spawn recovery.
+        - Enemy floating health bars only visible with player→bot line of
+          sight (`playerCanSeeBot` / shared `hasLineOfSight`); ally bars
+          remain always visible (`isEnemy: false` when allies exist).
+        - Varied per-team spawn points (`BLUE_TEAM_SPAWN_POINTS` /
+          `RED_TEAM_SPAWN_POINTS`) — random pick on match start and each
+          respawn; zones stay separated by the center chokepoint.
+        - Live respawn countdown on `#death-overlay-subtitle` (3…2…1)
+          synced to `RESPAWN_DELAY_MS` via `playerRespawnAt`.
 - [ ] 8. Minimap: top-down indicator of player + bot positions. Verify:
       minimap updates live as player/bots move.
 - [ ] 9. Pre-match menu: team size preset (1v1/3v3/5v5 — see team size
