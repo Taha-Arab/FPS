@@ -1214,10 +1214,34 @@ function regenBotHealth(now, deltaTime) {
 const KILL_TARGET = 5; // first team to 5 kills wins the match
 const RESPAWN_DELAY_MS = 3000; // 3s "you're dead" pause before respawning
 
-// Set here (rather than left as static HTML) so it always reflects the
-// actual RESPAWN_DELAY_MS value above instead of a hardcoded number that
-// could silently drift out of sync if that constant is ever retuned.
-deathOverlaySubtitle.textContent = `Respawning in ${RESPAWN_DELAY_MS / 1000} seconds...`;
+// performance.now() deadline for the player's pending respawn, or null
+// when not waiting. Drives the live "Respawning in N..." countdown on
+// #death-overlay-subtitle (updated from tick() while dead).
+let playerRespawnAt = null;
+// Last whole-second value written to the subtitle, so we don't rewrite
+// the DOM every frame — only when the displayed number changes.
+let lastDisplayedRespawnSecond = null;
+
+function formatRespawnCountdown(remainingSeconds) {
+  if (remainingSeconds <= 0) return "Respawning...";
+  if (remainingSeconds === 1) return "Respawning in 1 second...";
+  return `Respawning in ${remainingSeconds} seconds...`;
+}
+
+// Updates the death-overlay subtitle to match time left until
+// playerRespawnAt. Safe to call every frame; no-ops when not waiting.
+function updateDeathOverlayCountdown(now) {
+  if (playerRespawnAt === null) return;
+
+  const remainingSeconds = Math.max(
+    0,
+    Math.ceil((playerRespawnAt - now) / 1000)
+  );
+  if (remainingSeconds === lastDisplayedRespawnSecond) return;
+
+  lastDisplayedRespawnSecond = remainingSeconds;
+  deathOverlaySubtitle.textContent = formatRespawnCountdown(remainingSeconds);
+}
 
 // A short window of no-damage right after respawning, so you can't be
 // killed the instant you reappear. Tracked the same way as the health
@@ -1294,6 +1318,12 @@ function handlePlayerDeath() {
     endMatch("RED");
     return;
   }
+
+  // Start the live countdown from the same clock setTimeout uses, so the
+  // subtitle stays in sync with the actual respawn (not a separate timer).
+  playerRespawnAt = performance.now() + RESPAWN_DELAY_MS;
+  lastDisplayedRespawnSecond = null;
+  updateDeathOverlayCountdown(performance.now());
 
   if (triggerPlayerRespawn) {
     setTimeout(triggerPlayerRespawn, RESPAWN_DELAY_MS);
@@ -1631,6 +1661,8 @@ function startRenderLoop({
 
   function respawnPlayer() {
     isDead = false;
+    playerRespawnAt = null;
+    lastDisplayedRespawnSecond = null;
     deathOverlay.classList.add("hidden");
     verticalVelocity = 0;
 
@@ -2241,6 +2273,13 @@ function startRenderLoop({
     );
     camera.rotation.y = yaw;
     camera.rotation.x = pitch;
+
+    // Live death-overlay countdown (3…2…1). Runs even while the simulation
+    // is frozen for isDead — uses performance.now() to stay aligned with
+    // the setTimeout scheduled in handlePlayerDeath().
+    if (isDead) {
+      updateDeathOverlayCountdown(performance.now());
+    }
 
     // Match timer HUD (Milestone 6). Runs even while paused so the display
     // doesn't glitch, but simply stops advancing once the match has ended -

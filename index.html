@@ -88,8 +88,8 @@
       Death overlay (Milestone 4; respawn added in Milestone 6). Hidden by
       default; shown by setPlayerHealth() in src/main.js once health
       reaches 0, and hidden again automatically once respawnPlayer() runs a
-      few seconds later. #death-overlay-subtitle's text is filled in from
-      src/main.js so it always matches the real RESPAWN_DELAY_MS constant.
+      few seconds later. #death-overlay-subtitle shows a live countdown
+      (3…2…1) driven from src/main.js against the real RESPAWN_DELAY_MS.
     -->
     <div id="death-overlay" class="hidden">
       <div id="death-overlay-title">You Died</div>
