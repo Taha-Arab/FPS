@@ -20,17 +20,49 @@
 // camera at a fixed fire rate, which already hits every wall/obstacle
 // collider from Milestone 3 for free. A tracer line + impact flash give
 // hit feedback, and a magazine/reload system (R to reload, ammo shown
-// near the crosshair) adds a bit of arcade-shooter pacing. Since
-// Milestone 5's real AI bot doesn't exist yet, this milestone adds two
-// TEMPORARY stand-ins so the damage pipeline can be tested end-to-end: a
-// shootable red capsule ("test target") at the reserved future-bot spawn
-// spot, and a debug "T" key that damages the player directly (since
-// nothing can shoot back yet). Both are commented where they appear so
-// they're easy to find and replace in Milestone 5.
+// near the crosshair) adds a bit of arcade-shooter pacing. This milestone
+// also added a debug "T" key that damages the player directly, kept
+// around as a convenience for quickly testing the health bar/death state.
+//
+// Milestone 5: One AI bot. An enemy capsule (RED, per the Visual Style
+// team-color rule), spawned at the spot the Milestone 3 layout reserved
+// for it. Every frame it casts a Rapier ray at the player to check for an
+// unobstructed line of sight - only that raycast is allowed to gate
+// tracking/aiming, never omniscience. Once it can see them, it turns to
+// face them (turn-speed capped, see below), waits a short "reaction
+// delay", then fires back with its own hitscan shot (a small random
+// spread keeps it from being a perfect laser), damaging the player via
+// damagePlayer(). It has its own health (equal to the player's max
+// health) and can be destroyed by the player's gun. Since a plain capsule
+// is rotationally symmetric, a small dark marker box is stuck to its
+// front purely so its facing is visible during testing - not a real gun
+// model.
+//
+// Post-Milestone-5 enhancement pass (movement, aim, health parity, health
+// bars, regen - requested directly, ahead of their originally scheduled
+// milestones; see AGENTS.md's Current Status for details):
+// - The bot now moves: it patrols between a handful of hand-placed
+//   waypoints near existing cover, or heads toward the player's last
+//   known position after losing sight, using its own kinematic body +
+//   character controller (separate from the player's - see the comment
+//   in initPhysics()). This is basic waypoint patrol, NOT the tactical
+//   cover-seeking AI reserved for Milestone 10's difficulty tiers.
+// - Turning (both to aim at the player and to face its movement
+//   direction) is rate-limited via rotateGroupTowards() instead of
+//   snapping instantly, and it must finish turning (within
+//   BOT_AIM_ANGLE_THRESHOLD_RADIANS) before it's allowed to fire.
+// - A small floating health bar (DOM/CSS overlay, team-colored) hovers
+//   above its head, built via createFloatingHealthBar().
+// - Both the player and the bot regenerate health gradually after a few
+//   seconds without taking damage - see regenPlayerHealth()/
+//   regenBotHealth(), called from tick().
 //
 // NOT built yet (later milestones):
 // - No platforms or crouch yet (7).
-// - No AI bots or respawn yet (5-6) - see the temporary stand-ins above.
+// - No respawn or win condition yet (6).
+// - No cover-seeking behavior or difficulty tiers yet (9-10) - the bot's
+//   patrol/chase movement above is a basic step ahead of that, not the
+//   real thing.
 // ---------------------------------------------------------------------------
 
 import * as THREE from "three";
@@ -177,10 +209,10 @@ for (const wall of wallDefs) {
 // plain solid shapes, no jump-on-top/walk-under "platforms" yet (Milestone
 // 7 adds that mechanic - see the note there about reusing these).
 //
-// The player spawns at (0, _, 5) (see playerBodyDesc below). There's no
-// enemy bot yet (Milestone 5 adds one), but we reserve a mirrored clear
-// spot at (0, _, -5) for its future spawn now, so this layout won't need
-// reworking later just to make room for it.
+// The player spawns at (0, _, 5) (see playerBodyDesc below), mirrored by
+// the enemy bot's spawn at (0, _, -5) (see the AI bot section further
+// down) - this layout was planned around both spawns from the start so it
+// never needed reworking once the bot was added.
 
 // Box obstacles. { hx, hy, hz } are half-extents, { x, z } is the center
 // position (each rests on the ground, so its world Y position is just its
@@ -293,7 +325,7 @@ scene.add(rampMesh);
 // -----------------------------------------------------------------------
 // Player movement tuning constants
 // -----------------------------------------------------------------------
-// Declared here (before the test target below, which reuses PLAYER_RADIUS/
+// Declared here (before the bot below, which reuses PLAYER_RADIUS/
 // PLAYER_HALF_HEIGHT for its own capsule shape) rather than further down
 // near the Rapier setup that mostly uses them, so both can rely on it.
 
@@ -318,7 +350,7 @@ const MAX_DELTA_TIME = 1 / 30;
 // Gun tuning constants (Milestone 4). The gun is "hitscan" - it's an
 // instant raycast rather than a physical bullet that travels over time,
 // which is standard for simple FPS games and much easier to get right.
-const GUN_DAMAGE = 25; // 4 hits destroys the 100-health test target
+const GUN_DAMAGE = 25; // 4 hits destroys the bot's 100 health
 const GUN_RANGE = 100; // meters
 
 // Where the tracer *looks* like it starts from - offset to the
@@ -347,41 +379,219 @@ const RELOAD_TIME_MS = 1800;
 // firing itself (that's still gated purely on currentAmmo > 0).
 const LOW_AMMO_RATIO = 0.2;
 
+// Declared here (rather than down in the Player Health + HUD section)
+// so the AI bot section below can set BOT_MAX_HEALTH equal to it - keeps
+// the two guaranteed to match for balance instead of just coincidentally
+// being the same number.
+const PLAYER_MAX_HEALTH = 100;
+
+// Health regeneration (both player and bot): after a stretch of time with
+// no damage taken, health gradually climbs back toward max on its own -
+// see regenPlayerHealth()/regenBotHealth() further down.
+const HEALTH_REGEN_DELAY_MS = 5000; // ~5 seconds of no damage before it starts
+const HEALTH_REGEN_RATE_PER_SECOND = 8; // ~12.5s for a full regen from 0
+
 // -----------------------------------------------------------------------
-// TEMPORARY: shootable test target (Milestone 4 stand-in for Milestone 5's
-// real AI bot)
+// AI bot (Milestone 5)
 // -----------------------------------------------------------------------
-// Milestone 4 needs *something* with health for the gun to damage, to prove
-// the raycast-hit -> damage pipeline actually works before real bots exist.
-// This is a plain red capsule (RED = enemy team color, per the Visual Style
-// rule in AGENTS.md) sitting at (0, _, -5) - the exact spot the Milestone 3
-// obstacle layout already reserved and kept clear for the future enemy bot
-// spawn. Milestone 5 should replace this whole section with the real bot
-// (reusing the same position/capsule look) instead of extending it further.
+// A single stationary enemy bot sitting at (0, _, -5) - the exact spot the
+// Milestone 3 obstacle layout reserved and kept clear for it. It doesn't
+// move or take cover yet (that's Milestone 10) - for now it just watches
+// for the player, turns to face them, and shoots back. RED = enemy team
+// color, per the Visual Style rule in AGENTS.md. This replaces the
+// Milestone 4 "test target" stand-in that used to live here.
 
-const TARGET_MAX_HEALTH = 100;
-const TARGET_POSITION = { x: 0, z: -5 };
-const TARGET_COLOR = 0xcc3333;
+// Kept equal to the player's own max health for balance - see the
+// PLAYER_MAX_HEALTH declaration above.
+const BOT_MAX_HEALTH = PLAYER_MAX_HEALTH;
+const BOT_SPAWN_POSITION = { x: 0, z: -5 };
+const BOT_COLOR = 0xcc3333;
 
-let targetHealth = TARGET_MAX_HEALTH;
-let targetDestroyed = false;
+// How far the bot can "see" the player - same scale as the player's own
+// GUN_RANGE above.
+const BOT_SIGHT_RANGE = 100;
+// Delay (ms) between first spotting the player and firing the first shot -
+// gives the bot a believable "reacting" pause instead of an instant snap
+// shot the moment it has line of sight. Fixed for now; Milestone 10 will
+// vary this per difficulty tier instead of adding new logic.
+const BOT_REACTION_DELAY_MS = 500;
+// Slower, single-shot pace compared to the player's 750rpm full-auto gun -
+// reads as the bot "aiming" rather than spraying.
+const BOT_FIRE_RATE_RPM = 300;
+const BOT_FIRE_INTERVAL_MS = 60000 / BOT_FIRE_RATE_RPM;
+const BOT_DAMAGE_PER_HIT = 10; // 10 hits to kill the player
+// Small random aim jitter (radians) applied in applyAimSpread() below, so
+// the bot's shots aren't a perfectly accurate laser.
+const BOT_AIM_SPREAD_RADIANS = 0.035;
 
-// Same capsule dimensions as the player, so it reads as a person-sized
-// target and can reuse the player's own collider size/shape below.
-const targetMaterial = new THREE.MeshStandardMaterial({ color: TARGET_COLOR });
-const targetGeometry = new THREE.CapsuleGeometry(
+// Bot movement (patrol/chase) tuning - see updateBot()/moveBotTowards()
+// further down for how these are used.
+const BOT_MOVE_SPEED = 3; // meters/second - slower than the player's 5
+// How fast the bot can turn to face a target, in radians/second - caps
+// both "aiming at the player" and "facing its own movement direction" so
+// it never snaps instantly (see rotateGroupTowards() below).
+const BOT_TURN_SPEED_RADIANS_PER_SEC = Math.PI; // 180 degrees/second
+// The bot must be turned to within this many radians of "dead on" before
+// it's allowed to fire - stops it from snap-firing the instant it regains
+// sight while still mid-turn.
+const BOT_AIM_ANGLE_THRESHOLD_RADIANS = 0.05; // ~3 degrees
+// How close (meters) counts as "arrived" at a patrol point or the
+// player's last known position.
+const BOT_WAYPOINT_ARRIVAL_RADIUS = 1.5;
+// Give up on the current patrol/chase target after this long even if it
+// hasn't been reached - a simple safety net against getting stuck on an
+// obstacle corner, without needing real pathfinding.
+const BOT_MOVE_TIMEOUT_MS = 6000;
+
+// Hand-placed patrol waypoints (meters), chosen near existing cover
+// (crates/pillars from the Interior Obstacles section above) rather than
+// out in the open lanes - this is simple waypoint patrol "using existing
+// obstacles for cover" as requested, NOT the tactical cover-seeking AI
+// that AGENTS.md reserves for Milestone 10's difficulty tiers.
+const BOT_PATROL_POINTS = [
+  { x: -9, z: 7.5 }, // near the west crate/ramp cluster
+  { x: -7, z: -12 }, // near the far west crate
+  { x: 10, z: -6 }, // near the east lone wall segment
+  { x: 9, z: 6 }, // near the east pillar
+  { x: 4, z: -10 }, // near the low wall, north of the bot's own spawn
+  { x: -4, z: -1 }, // near the central-west pillar, behind the chokepoint
+];
+
+let botHealth = BOT_MAX_HEALTH;
+let botDestroyed = false;
+// Timestamp (on the same clock as tick()'s requestAnimationFrame
+// timestamp) of the first frame the bot had line of sight to the player,
+// or null while it currently can't see them. Reset to null the instant
+// sight is lost, so re-spotting the player always requires waiting out
+// the reaction delay again.
+let botSpottedAtTime = null;
+// Timestamp of the bot's last shot, mirroring the player's own
+// lastShotTime fire-rate cooldown pattern further below.
+let lastBotShotTime = -Infinity;
+// Timestamp of the last time the bot took damage - see regenBotHealth().
+let botLastDamageTime = -Infinity;
+
+// The player's position the last time the bot actually saw them (only
+// {x, z} - movement is ground-level, so height doesn't matter here), or
+// null if it has none worth chasing. Set continuously while the player is
+// visible; consumed as a movement target once sight is lost.
+let botLastKnownPlayerPosition = null;
+// The {x, z} point the bot is currently walking toward - either
+// botLastKnownPlayerPosition or one of BOT_PATROL_POINTS - or null while
+// it doesn't have one (e.g. while actively engaging the player).
+let botMoveTarget = null;
+// Timestamp the current botMoveTarget was set, so moveBotTowards() can
+// give up on it after BOT_MOVE_TIMEOUT_MS.
+let botMoveTargetSetAt = 0;
+// Index into BOT_PATROL_POINTS most recently picked, so
+// pickNewPatrolTarget() can avoid immediately re-picking the same one
+// (which would look like the bot walking back and forth in place).
+let lastPatrolPointIndex = -1;
+
+// A plain capsule is rotationally symmetric - spinning it looks identical
+// from outside, so rotating it to "aim" wouldn't actually be visible. A
+// small dark marker box stuck to the front (purely a facing indicator, not
+// a real gun model) fixes that so its facing is visible while testing.
+// The capsule and marker are both children of a THREE.Group so rotating
+// the group turns them together; BOT_MARKER_OFFSET is also reused below as
+// the bot's own "muzzle" point for tracers, the same idea as the player's
+// MUZZLE_OFFSET.
+const botMaterial = new THREE.MeshStandardMaterial({ color: BOT_COLOR });
+const botGeometry = new THREE.CapsuleGeometry(
   PLAYER_RADIUS,
   PLAYER_HALF_HEIGHT * 2,
   4,
   8
 );
-const targetMesh = new THREE.Mesh(targetGeometry, targetMaterial);
-targetMesh.position.set(
-  TARGET_POSITION.x,
+const botMesh = new THREE.Mesh(botGeometry, botMaterial);
+
+const BOT_MARKER_OFFSET = new THREE.Vector3(0, 0.3, -(PLAYER_RADIUS + 0.1));
+const botMarkerMaterial = new THREE.MeshStandardMaterial({ color: 0x2b2b2b });
+const botMarkerGeometry = new THREE.BoxGeometry(0.15, 0.15, 0.3);
+const botMarkerMesh = new THREE.Mesh(botMarkerGeometry, botMarkerMaterial);
+botMarkerMesh.position.copy(BOT_MARKER_OFFSET);
+
+const botGroup = new THREE.Group();
+botGroup.add(botMesh);
+botGroup.add(botMarkerMesh);
+botGroup.position.set(
+  BOT_SPAWN_POSITION.x,
   PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
-  TARGET_POSITION.z
+  BOT_SPAWN_POSITION.z
 );
-scene.add(targetMesh);
+scene.add(botGroup);
+
+// -----------------------------------------------------------------------
+// Floating health bar (above the bot's head)
+// -----------------------------------------------------------------------
+// Built as a plain HTML/CSS overlay - the same approach every other HUD
+// element in this project already uses (#health-bar-fill, #ammo-hud,
+// etc.) - rather than a Three.js sprite, so it's simple to restyle via
+// CSS. Its screen position is re-projected from the bot's world position
+// every frame (see updateFloatingHealthBarPosition() below, called from
+// tick()). There's no occlusion test against walls, so it'll show through
+// obstacles - an accepted simplification for now, matching the project's
+// "keep v1 simple" philosophy; can be revisited in later polish.
+//
+// Colored by team per the Visual Style rule in AGENTS.md (green for
+// allies, red for enemies) - only the bot's red is exercised today since
+// there are no ally bots yet (Milestone 9/10), but createFloatingHealthBar
+// takes the color as a parameter so a future ally bot can reuse it as-is.
+// The player never gets one at all - there's no player mesh to attach it
+// to in first-person anyway, so "not shown for the player's own view of
+// themselves" is automatically true.
+
+// How far above the bot group's own origin (its capsule's vertical
+// center) the bar should float - just above the top of its head.
+const BOT_HEALTH_BAR_HEIGHT_OFFSET = PLAYER_HALF_HEIGHT + PLAYER_RADIUS + 0.35;
+
+function createFloatingHealthBar(color) {
+  const container = document.createElement("div");
+  container.className = "floating-health-bar";
+
+  const fill = document.createElement("div");
+  fill.className = "floating-health-bar-fill";
+  fill.style.backgroundColor = color;
+  container.appendChild(fill);
+
+  document.body.appendChild(container);
+  return { container, fill };
+}
+
+// Sets the bar's fill width to match a health percentage (0-100). Unlike
+// the player's own health bar, the color itself stays fixed at the
+// character's team color - it doesn't shift green/orange/red as health
+// drops.
+function updateFloatingHealthBarFill(bar, healthPercent) {
+  bar.fill.style.width = `${healthPercent}%`;
+}
+
+// Projects a world-space point onto 2D screen coordinates and moves the
+// bar there, hiding it if that point is behind the camera or off-screen.
+function updateFloatingHealthBarPosition(bar, worldPosition) {
+  const projected = new THREE.Vector3(
+    worldPosition.x,
+    worldPosition.y,
+    worldPosition.z
+  ).project(camera);
+
+  // project() maps anything in front of the camera's frustum to roughly
+  // [-1, 1] on each axis; z > 1 means the point is actually behind the
+  // camera (a quirk of the projection math), and |x| or |y| > 1 means
+  // it's outside the view horizontally/vertically.
+  const isBehindCamera = projected.z > 1;
+  const isOffScreen = Math.abs(projected.x) > 1 || Math.abs(projected.y) > 1;
+  if (isBehindCamera || isOffScreen) {
+    bar.container.style.display = "none";
+    return;
+  }
+
+  bar.container.style.display = "block";
+  bar.container.style.left = `${((projected.x + 1) / 2) * window.innerWidth}px`;
+  bar.container.style.top = `${((1 - projected.y) / 2) * window.innerHeight}px`;
+}
+
+const botHealthBar = createFloatingHealthBar(`#${BOT_COLOR.toString(16).padStart(6, "0")}`);
 
 // -----------------------------------------------------------------------
 // Input handling: keyboard state + mouse look + pointer lock
@@ -396,11 +606,12 @@ window.addEventListener("keydown", (event) => {
   // the page is a fixed full-screen canvas, but this avoids surprises.
   if (event.code === "Space") event.preventDefault();
 
-  // TEMPORARY (Milestone 4): pressing "T" deals test damage to the player,
-  // so the health bar/death state can be verified before Milestone 5 adds
-  // a real bot that can actually shoot back. Remove this once that exists.
-  // Checked once per key-press here (not via keysPressed each frame like
-  // WASD), since holding it down should not deal damage every frame.
+  // Debug helper (added in Milestone 4, before the bot could shoot back):
+  // pressing "T" deals test damage to the player. Left in as a quick way
+  // to test the health bar/death state without needing to walk into the
+  // bot's line of sight. Checked once per key-press here (not via
+  // keysPressed each frame like WASD), since holding it down should not
+  // deal damage every frame.
   if (event.code === "KeyT" && !isPaused && !isDead) {
     damagePlayer(20);
   }
@@ -557,25 +768,27 @@ document.addEventListener("mousemove", (event) => {
 // approach) plus a death state. There's no respawn yet - that's Milestone
 // 6's job - so dying just freezes the game and shows a message for now.
 
-const PLAYER_MAX_HEALTH = 100;
+// PLAYER_MAX_HEALTH itself now lives up near the Gun tuning constants
+// (see the comment there) so the AI bot section can reference it.
 // Below this health percentage, the screen-edge vignette fades in as a
 // warning cue - purely visual, doesn't affect gameplay.
 const LOW_HEALTH_VIGNETTE_THRESHOLD = 25;
 let playerHealth = PLAYER_MAX_HEALTH;
 let isDead = false;
+// Timestamp of the last time the player took damage - see
+// regenPlayerHealth() below.
+let playerLastDamageTime = -Infinity;
 
 const healthBarFill = document.getElementById("health-bar-fill");
 const deathOverlay = document.getElementById("death-overlay");
 const vignette = document.getElementById("vignette");
 
-// Reduces the player's health, updates the HUD bar, and triggers the death
-// state once health reaches 0. `amount` is however much damage was dealt -
-// currently only ever called by the temporary "T" debug key below, until
-// Milestone 5's bot can call this for real.
-function damagePlayer(amount) {
-  if (isDead) return;
-
-  playerHealth = Math.max(0, playerHealth - amount);
+// Applies a new health value (clamped to [0, PLAYER_MAX_HEALTH]) and
+// updates the HUD bar/color and low-health vignette to match - shared by
+// damagePlayer() (health going down) and regenPlayerHealth() (health
+// climbing back up) so the HUD always stays in sync either direction.
+function setPlayerHealth(newHealth) {
+  playerHealth = Math.max(0, Math.min(PLAYER_MAX_HEALTH, newHealth));
 
   const healthPercent = (playerHealth / PLAYER_MAX_HEALTH) * 100;
   healthBarFill.style.width = `${healthPercent}%`;
@@ -600,6 +813,23 @@ function damagePlayer(amount) {
     isDead = true;
     deathOverlay.classList.remove("hidden");
   }
+}
+
+function damagePlayer(amount) {
+  if (isDead) return;
+  playerLastDamageTime = performance.now();
+  setPlayerHealth(playerHealth - amount);
+}
+
+// Gradually restores the player's health once HEALTH_REGEN_DELAY_MS has
+// passed since the last hit, up to full - called every frame from tick()
+// (the same isPaused/isDead-guarded block the rest of the simulation runs
+// in), so it naturally stops the instant the player dies.
+function regenPlayerHealth(now, deltaTime) {
+  if (isDead) return;
+  if (playerHealth >= PLAYER_MAX_HEALTH) return;
+  if (now - playerLastDamageTime < HEALTH_REGEN_DELAY_MS) return;
+  setPlayerHealth(playerHealth + HEALTH_REGEN_RATE_PER_SECOND * deltaTime);
 }
 
 // -----------------------------------------------------------------------
@@ -693,24 +923,39 @@ function spawnImpactFlash(point) {
   }, IMPACT_FLASH_LIFETIME_MS);
 }
 
-// Briefly flashes the test target white to show a hit landed, then damages
-// it and destroys it (removes mesh + collider) once its health runs out.
-// TEMPORARY (Milestone 4) - see the comment where targetMesh is created;
-// Milestone 5 should replace this along with the rest of the test target.
-function damageTarget(world, targetCollider) {
-  if (targetDestroyed) return;
+// Applies a new health value (clamped to [0, BOT_MAX_HEALTH]) and updates
+// its floating health bar to match - shared by damageBot() (health going
+// down) and regenBotHealth() (health climbing back up).
+function setBotHealth(newHealth) {
+  botHealth = Math.max(0, Math.min(BOT_MAX_HEALTH, newHealth));
+  updateFloatingHealthBarFill(botHealthBar, (botHealth / BOT_MAX_HEALTH) * 100);
+}
 
-  targetHealth -= GUN_DAMAGE;
-  targetMaterial.color.set(0xffffff);
+function damageBot(world, botCollider) {
+  if (botDestroyed) return;
+
+  botLastDamageTime = performance.now();
+  setBotHealth(botHealth - GUN_DAMAGE);
+  botMaterial.color.set(0xffffff);
   setTimeout(() => {
-    if (!targetDestroyed) targetMaterial.color.set(TARGET_COLOR);
+    if (!botDestroyed) botMaterial.color.set(BOT_COLOR);
   }, 80);
 
-  if (targetHealth <= 0) {
-    targetDestroyed = true;
-    scene.remove(targetMesh);
-    world.removeCollider(targetCollider, true);
+  if (botHealth <= 0) {
+    botDestroyed = true;
+    scene.remove(botGroup);
+    botHealthBar.container.style.display = "none";
+    world.removeCollider(botCollider, true);
   }
+}
+
+// Gradually restores the bot's health once HEALTH_REGEN_DELAY_MS has
+// passed since its last hit, up to full - mirrors regenPlayerHealth().
+function regenBotHealth(now, deltaTime) {
+  if (botDestroyed) return;
+  if (botHealth >= BOT_MAX_HEALTH) return;
+  if (now - botLastDamageTime < HEALTH_REGEN_DELAY_MS) return;
+  setBotHealth(botHealth + HEALTH_REGEN_RATE_PER_SECOND * deltaTime);
 }
 
 // -----------------------------------------------------------------------
@@ -795,18 +1040,31 @@ async function initPhysics() {
     });
   world.createCollider(rampColliderDesc);
 
-  // TEMPORARY (Milestone 4): a static collider matching the test target
-  // mesh above, using the same capsule shape as the player. This is what
-  // lets the gun's raycast (below) actually detect a hit on the target.
-  const targetColliderDesc = RAPIER.ColliderDesc.capsule(
+  // Bot rigid body (movement pass): a kinematicPositionBased body just
+  // like the player's, so Rapier's character controller can slide it
+  // along walls/obstacles as it patrols instead of us hand-rolling
+  // collision. It never jumps and the arena floor is flat, so unlike the
+  // player it doesn't need a gravity/jump velocity state machine - see
+  // moveBotTowards() further down, which only ever feeds it horizontal
+  // movement.
+  const botBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
+    BOT_SPAWN_POSITION.x,
+    PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
+    BOT_SPAWN_POSITION.z
+  );
+  const botBody = world.createRigidBody(botBodyDesc);
+  const botColliderDesc = RAPIER.ColliderDesc.capsule(
     PLAYER_HALF_HEIGHT,
     PLAYER_RADIUS
-  ).setTranslation(
-    TARGET_POSITION.x,
-    PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
-    TARGET_POSITION.z
   );
-  const targetCollider = world.createCollider(targetColliderDesc);
+  const botCollider = world.createCollider(botColliderDesc, botBody);
+
+  // The bot needs its OWN character controller, separate from the
+  // player's below - computedGrounded()/computedMovement() are stateful
+  // results from whichever computeColliderMovement() call ran most
+  // recently on a given controller, so sharing one instance between the
+  // player and the bot would corrupt whichever one ran second each frame.
+  const botCharacterController = world.createCharacterController(0.01);
 
   // The player is a "kinematic" rigid body: we move it ourselves each frame
   // (via setNextKinematicTranslation) instead of letting Rapier's forces
@@ -836,7 +1094,9 @@ async function initPhysics() {
     playerBody,
     playerCollider,
     characterController,
-    targetCollider,
+    botBody,
+    botCollider,
+    botCharacterController,
   };
 }
 
@@ -849,7 +1109,9 @@ function startRenderLoop({
   playerBody,
   playerCollider,
   characterController,
-  targetCollider,
+  botBody,
+  botCollider,
+  botCharacterController,
 }) {
   // THREE.Timer is the modern replacement for the older THREE.Clock -
   // update() must be called once per frame (with the requestAnimationFrame
@@ -862,8 +1124,8 @@ function startRenderLoop({
   // Shooting (Milestone 4, full-auto extension): holding left-click fires
   // repeated instant raycasts from the camera at a fixed fire rate. Set up
   // here (rather than at module scope) because it needs
-  // `world`/`playerCollider`/`targetCollider`, which only exist once
-  // Rapier has finished initializing.
+  // `world`/`playerCollider`/`botCollider`, which only exist once Rapier
+  // has finished initializing.
   // -----------------------------------------------------------------
 
   // The timestamp (matching tick()'s requestAnimationFrame timestamp/
@@ -931,8 +1193,8 @@ function startRenderLoop({
       spawnTracer(muzzlePosition, hitPoint);
       spawnImpactFlash(hitPoint);
 
-      if (hit.collider === targetCollider) {
-        damageTarget(world, targetCollider);
+      if (hit.collider === botCollider) {
+        damageBot(world, botCollider);
       }
     } else {
       // Missed everything - draw the tracer out to the max range so a
@@ -967,6 +1229,310 @@ function startRenderLoop({
   renderer.domElement.addEventListener("mouseup", (event) => {
     if (event.button === 0) isFiring = false;
   });
+
+  // -----------------------------------------------------------------
+  // Bot AI: sees the player, aims, shoots back, and patrols/chases when it
+  // can't. Mirrors the player's own canFire()/tryFireShot()/fireShot()
+  // structure above for firing, gated on a line-of-sight raycast +
+  // reaction delay + turn-speed-limited aim instead of mouse input.
+  // -----------------------------------------------------------------
+
+  // Returns the bot's current "eye" position, read live from its physics
+  // body now that it moves - same "capsule center + EYE_HEIGHT" offset
+  // used for the player's own eye position below.
+  function getBotEyePosition() {
+    const botPosition = botBody.translation();
+    return {
+      x: botPosition.x,
+      y: botPosition.y + EYE_HEIGHT,
+      z: botPosition.z,
+    };
+  }
+
+  // Returns the player's current "eye" position (the same point the
+  // camera sits at), read directly from the physics body rather than
+  // camera.position, since the camera hasn't been updated yet this frame
+  // when updateBot() runs (see the order of calls inside tick() below).
+  function getPlayerEyePosition() {
+    const playerPosition = playerBody.translation();
+    return {
+      x: playerPosition.x,
+      y: playerPosition.y + EYE_HEIGHT,
+      z: playerPosition.z,
+    };
+  }
+
+  // Casts a ray from the bot's eye to the player's eye and returns true
+  // only if nothing else (a wall, obstacle, or the ground) is in the way -
+  // i.e. the ray's first hit is the player's own collider. Excludes the
+  // bot's own collider so the ray doesn't immediately hit itself at the
+  // origin point. This is the ONLY thing allowed to gate tracking/aiming -
+  // see updateBot() below, which only ever calls rotateGroupTowards() at
+  // the player while this returns true.
+  function botCanSeePlayer(playerEyePosition, botEyePosition) {
+    const toPlayer = {
+      x: playerEyePosition.x - botEyePosition.x,
+      y: playerEyePosition.y - botEyePosition.y,
+      z: playerEyePosition.z - botEyePosition.z,
+    };
+    const distance = Math.hypot(toPlayer.x, toPlayer.y, toPlayer.z);
+    if (distance === 0) return true;
+
+    const direction = {
+      x: toPlayer.x / distance,
+      y: toPlayer.y / distance,
+      z: toPlayer.z / distance,
+    };
+    const ray = new RAPIER.Ray(botEyePosition, direction);
+    const hit = world.castRayAndGetNormal(
+      ray,
+      distance,
+      true,
+      undefined,
+      undefined,
+      botCollider
+    );
+    return hit !== null && hit.collider === playerCollider;
+  }
+
+  // Computes the yaw angle (yaw 0 faces -Z, matching
+  // computeHorizontalMovement() below) that would point something
+  // standing at `fromPosition` directly at `toPosition`. Only x/z matter -
+  // both aiming and ground movement ignore height.
+  function computeYawTowards(fromPosition, toPosition) {
+    const dx = toPosition.x - fromPosition.x;
+    const dz = toPosition.z - fromPosition.z;
+    return Math.atan2(-dx, -dz);
+  }
+
+  // Turns `group`'s yaw toward `desiredYaw` by at most
+  // BOT_TURN_SPEED_RADIANS_PER_SEC * deltaTime, instead of snapping
+  // instantly - shared by both "aim at the player" and "face the
+  // direction I'm walking" below. Returns how far off-target the rotation
+  // still is (radians) after this frame's turn, so callers can tell
+  // whether it's turned far enough yet (see BOT_AIM_ANGLE_THRESHOLD_RADIANS).
+  function rotateGroupTowards(group, desiredYaw, deltaTime) {
+    let angleDiff = desiredYaw - group.rotation.y;
+    // Wrap into (-PI, PI] so e.g. turning from +179 degrees to -179
+    // degrees takes the 2-degree short way, not the 358-degree long way.
+    angleDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
+
+    const maxDelta = BOT_TURN_SPEED_RADIANS_PER_SEC * deltaTime;
+    const clampedDelta = Math.max(-maxDelta, Math.min(maxDelta, angleDiff));
+    group.rotation.y += clampedDelta;
+
+    return Math.abs(angleDiff - clampedDelta);
+  }
+
+  // Adds a small random jitter to a (normalized) aim direction so the
+  // bot's shots aren't a perfectly accurate laser. Builds two axes
+  // perpendicular to the aim direction, then nudges the direction
+  // slightly along each before re-normalizing - a simple, standard way to
+  // jitter a 3D direction within a small cone.
+  function applyAimSpread(direction) {
+    const forward = new THREE.Vector3(direction.x, direction.y, direction.z);
+    // Any "up" vector not parallel to forward works here - falls back to
+    // world +X in the (rare, given the bot never moves) case forward
+    // itself is nearly vertical, so the cross product below doesn't
+    // degenerate to zero.
+    const arbitraryUp =
+      Math.abs(forward.y) > 0.99
+        ? new THREE.Vector3(1, 0, 0)
+        : new THREE.Vector3(0, 1, 0);
+    const right = new THREE.Vector3()
+      .crossVectors(forward, arbitraryUp)
+      .normalize();
+    const up = new THREE.Vector3().crossVectors(right, forward).normalize();
+
+    const jitterRight = (Math.random() - 0.5) * 2 * BOT_AIM_SPREAD_RADIANS;
+    const jitterUp = (Math.random() - 0.5) * 2 * BOT_AIM_SPREAD_RADIANS;
+
+    return forward
+      .add(right.multiplyScalar(jitterRight))
+      .add(up.multiplyScalar(jitterUp))
+      .normalize();
+  }
+
+  // Does the actual raycast + damage + visual feedback for a single bot
+  // shot, mirroring the player's own fireShot() above. Assumes the caller
+  // has already checked line of sight, the reaction delay, the aim-angle
+  // threshold, and the fire-rate cooldown.
+  function botFireShot(playerEyePosition, botEyePosition) {
+    const toPlayer = {
+      x: playerEyePosition.x - botEyePosition.x,
+      y: playerEyePosition.y - botEyePosition.y,
+      z: playerEyePosition.z - botEyePosition.z,
+    };
+    const distance = Math.hypot(toPlayer.x, toPlayer.y, toPlayer.z);
+    const aimDirection = applyAimSpread({
+      x: toPlayer.x / distance,
+      y: toPlayer.y / distance,
+      z: toPlayer.z / distance,
+    });
+
+    // botGroup's rotation was just updated this frame by rotateGroupTowards()
+    // in updateBot(), so its matrixWorld needs a manual refresh before
+    // localToWorld() - normally Three.js only recomputes it during
+    // rendering, which hasn't happened yet this frame.
+    botGroup.updateMatrixWorld();
+    const muzzlePosition = botGroup.localToWorld(BOT_MARKER_OFFSET.clone());
+
+    const ray = new RAPIER.Ray(botEyePosition, aimDirection);
+    const hit = world.castRayAndGetNormal(
+      ray,
+      BOT_SIGHT_RANGE,
+      true,
+      undefined,
+      undefined,
+      botCollider
+    );
+
+    if (hit) {
+      const hitPoint = {
+        x: botEyePosition.x + aimDirection.x * hit.timeOfImpact,
+        y: botEyePosition.y + aimDirection.y * hit.timeOfImpact,
+        z: botEyePosition.z + aimDirection.z * hit.timeOfImpact,
+      };
+      spawnTracer(muzzlePosition, hitPoint);
+      spawnImpactFlash(hitPoint);
+
+      if (hit.collider === playerCollider) {
+        damagePlayer(BOT_DAMAGE_PER_HIT);
+      }
+    } else {
+      // Missed everything (or the spread pushed the shot wide) - draw the
+      // tracer out to max sight range so a whiffed shot still gets visual
+      // feedback, same as the player's own missed shots above.
+      const missPoint = {
+        x: botEyePosition.x + aimDirection.x * BOT_SIGHT_RANGE,
+        y: botEyePosition.y + aimDirection.y * BOT_SIGHT_RANGE,
+        z: botEyePosition.z + aimDirection.z * BOT_SIGHT_RANGE,
+      };
+      spawnTracer(muzzlePosition, missPoint);
+    }
+  }
+
+  // Picks a random patrol point to walk toward, avoiding immediately
+  // re-picking the one just abandoned (which would look like the bot
+  // walking back and forth between two spots). Caller is responsible for
+  // stamping botMoveTargetSetAt.
+  function pickNewPatrolTarget() {
+    let index;
+    do {
+      index = Math.floor(Math.random() * BOT_PATROL_POINTS.length);
+    } while (index === lastPatrolPointIndex && BOT_PATROL_POINTS.length > 1);
+    lastPatrolPointIndex = index;
+    botMoveTarget = BOT_PATROL_POINTS[index];
+  }
+
+  // Moves the bot toward a {x, z} world point using its OWN character
+  // controller (botCharacterController - see the comment in initPhysics()
+  // on why it can't share the player's), and turns to face the direction
+  // it's actually walking. Returns true once the target has been reached
+  // (within BOT_WAYPOINT_ARRIVAL_RADIUS) or given up on
+  // (BOT_MOVE_TIMEOUT_MS elapsed) - either way, the caller should pick a
+  // new target next frame.
+  function moveBotTowards(target, deltaTime, now) {
+    const botPosition = botBody.translation();
+    const dx = target.x - botPosition.x;
+    const dz = target.z - botPosition.z;
+    const distance = Math.hypot(dx, dz);
+
+    if (distance <= BOT_WAYPOINT_ARRIVAL_RADIUS) return true;
+    if (now - botMoveTargetSetAt >= BOT_MOVE_TIMEOUT_MS) return true;
+
+    rotateGroupTowards(botGroup, computeYawTowards(botPosition, target), deltaTime);
+
+    // The bot never jumps and the floor here is flat, so - unlike the
+    // player - no vertical component is needed; Rapier's character
+    // controller still handles sliding along obstacles (and the shallow
+    // ramp, if a route ever crosses it) from horizontal movement alone.
+    botCharacterController.computeColliderMovement(botCollider, {
+      x: (dx / distance) * BOT_MOVE_SPEED * deltaTime,
+      y: 0,
+      z: (dz / distance) * BOT_MOVE_SPEED * deltaTime,
+    });
+    const correctedMovement = botCharacterController.computedMovement();
+
+    const currentPosition = botBody.translation();
+    botBody.setNextKinematicTranslation({
+      x: currentPosition.x + correctedMovement.x,
+      y: currentPosition.y + correctedMovement.y,
+      z: currentPosition.z + correctedMovement.z,
+    });
+
+    return false;
+  }
+
+  // Ties the sight/reaction/aim/firing/movement pieces together - called
+  // once per frame from tick() below, only while the simulation is
+  // actually running (see the isPaused/isDead check there) and the bot
+  // hasn't been destroyed yet.
+  function updateBot(now, deltaTime) {
+    if (botDestroyed) return;
+
+    const botPosition = botBody.translation();
+    const botEyePosition = getBotEyePosition();
+    const playerEyePosition = getPlayerEyePosition();
+    const canSee = botCanSeePlayer(playerEyePosition, botEyePosition);
+
+    if (canSee) {
+      // Sighted: stop patrolling, turn to aim (turn-speed capped - see
+      // rotateGroupTowards()), and fire once actually aimed and ready.
+      botMoveTarget = null;
+      botLastKnownPlayerPosition = {
+        x: playerEyePosition.x,
+        z: playerEyePosition.z,
+      };
+      if (botSpottedAtTime === null) botSpottedAtTime = now;
+
+      const desiredYaw = computeYawTowards(botPosition, playerEyePosition);
+      const remainingAngle = rotateGroupTowards(botGroup, desiredYaw, deltaTime);
+
+      const hasReacted = now - botSpottedAtTime >= BOT_REACTION_DELAY_MS;
+      const isAimed = remainingAngle <= BOT_AIM_ANGLE_THRESHOLD_RADIANS;
+      const offCooldown = now - lastBotShotTime >= BOT_FIRE_INTERVAL_MS;
+      if (hasReacted && isAimed && offCooldown) {
+        lastBotShotTime = now;
+        botFireShot(playerEyePosition, botEyePosition);
+      }
+    } else {
+      // Not sighted (or never has been) - forget when it was first
+      // spotted, so re-spotting always requires the reaction delay again,
+      // and move: head toward wherever the player was last seen first,
+      // falling back to patrolling once that's reached or given up on.
+      botSpottedAtTime = null;
+
+      if (!botMoveTarget) {
+        if (botLastKnownPlayerPosition) {
+          botMoveTarget = botLastKnownPlayerPosition;
+        } else {
+          pickNewPatrolTarget();
+        }
+        botMoveTargetSetAt = now;
+      }
+
+      const reachedOrGaveUp = moveBotTowards(botMoveTarget, deltaTime, now);
+      if (reachedOrGaveUp) {
+        // If this was the last-known-position chase, give it up entirely
+        // (whether reached or timed out) rather than immediately chasing
+        // the same stale point again next frame.
+        if (botMoveTarget === botLastKnownPlayerPosition) {
+          botLastKnownPlayerPosition = null;
+        }
+        botMoveTarget = null;
+      }
+    }
+
+    // Note: botGroup's *position* is deliberately NOT synced here.
+    // moveBotTowards() above only queues the bot's next position via
+    // setNextKinematicTranslation() - like the player, that queued
+    // translation doesn't actually take effect on botBody.translation()
+    // until world.step() runs, which happens later in tick(), after
+    // updateBot() returns. Syncing here would read last frame's stale
+    // position. See the sync next to the player's own camera update in
+    // tick() below instead.
+  }
 
   function computeHorizontalMovement(deltaTime) {
     // Read WASD as a simple -1/0/1 input vector, "forward"/"right" relative
@@ -1013,6 +1579,15 @@ function startRenderLoop({
       // Full-auto: keep firing every frame the button is held, as long as
       // canFire()/the fire-rate cooldown allow it (see tryFireShot above).
       if (isFiring) tryFireShot(timestamp);
+
+      // Bot AI: sight check, aim/turn, fire-back, and patrol/chase
+      // movement - see updateBot() above.
+      updateBot(timestamp, deltaTime);
+
+      // Gradual health regeneration for both sides - see
+      // regenPlayerHealth()/regenBotHealth() above for the delay/rate.
+      regenPlayerHealth(timestamp, deltaTime);
+      regenBotHealth(timestamp, deltaTime);
 
       // computedGrounded() reflects the result of *last* frame's movement
       // computation. Using it to decide this frame's gravity/jump is a
@@ -1061,6 +1636,25 @@ function startRenderLoop({
     );
     camera.rotation.y = yaw;
     camera.rotation.x = pitch;
+
+    // Sync the bot's visual group to wherever physics actually put its
+    // body this frame (it may have been blocked/slid along a collision by
+    // moveBotTowards() above) - same reasoning and timing as the player's
+    // camera sync just above (must happen after world.step(), not before).
+    const botPosition = botBody.translation();
+    botGroup.position.set(botPosition.x, botPosition.y, botPosition.z);
+
+    // Keep the bot's floating health bar glued above its head on screen.
+    // Runs even while paused/dead (same reasoning as the camera follow
+    // above), and is skipped once the bot is destroyed - damageBot()
+    // already hid the bar for good at that point.
+    if (!botDestroyed) {
+      updateFloatingHealthBarPosition(botHealthBar, {
+        x: botGroup.position.x,
+        y: botGroup.position.y + BOT_HEALTH_BAR_HEIGHT_OFFSET,
+        z: botGroup.position.z,
+      });
+    }
 
     renderer.render(scene, camera);
     requestAnimationFrame(tick);

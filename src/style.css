@@ -252,6 +252,31 @@ canvas {
   opacity: 1;
 }
 
+/* Floating health bar (above a bot's head - see createFloatingHealthBar()
+   in src/main.js). Positioned every frame via inline left/top styles
+   (projected from the bot's 3D world position), so only the fixed layout
+   properties live here. Small and team-colored (the fill's background
+   color is set inline per-character), unlike the player's own health bar
+   which shifts color by remaining health. */
+.floating-health-bar {
+  position: fixed;
+  width: 60px;
+  height: 6px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 2px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 3;
+  overflow: hidden;
+}
+
+.floating-health-bar-fill {
+  height: 100%;
+  width: 100%;
+  transition: width 0.15s ease;
+}
+
 /* Death overlay (Milestone 4). Same full-screen-message pattern as
    #pause-overlay, but not clickable (no respawn yet - see main.js) and a
    higher z-index so it stays on top if the player also pauses after dying. */
