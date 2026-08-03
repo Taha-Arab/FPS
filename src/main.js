@@ -702,9 +702,10 @@ scene.add(botGroup);
 // etc.) - rather than a Three.js sprite, so it's simple to restyle via
 // CSS. Its screen position is re-projected from the bot's world position
 // every frame (see updateFloatingHealthBarPosition() below, called from
-// tick()). There's no occlusion test against walls, so it'll show through
-// obstacles - an accepted simplification for now, matching the project's
-// "keep v1 simple" philosophy; can be revisited in later polish.
+// tick()). Enemy bars are also gated on player→bot line of sight (same
+// Rapier raycast pattern as botCanSeePlayer, but from the player's eye) so
+// they hide behind cover; ally bars stay always-visible for team awareness
+// (no ally bots yet — Milestone 9/10 — but isEnemy: false is ready).
 //
 // Colored by team per the Visual Style rule in AGENTS.md (green for
 // allies, red for enemies) - only the bot's red is exercised today since
@@ -718,7 +719,9 @@ scene.add(botGroup);
 // center) the bar should float - just above the top of its head.
 const BOT_HEALTH_BAR_HEIGHT_OFFSET = PLAYER_HALF_HEIGHT + PLAYER_RADIUS + 0.35;
 
-function createFloatingHealthBar(color) {
+// isEnemy: when true, tick() hides the bar unless the player has LOS to
+// that bot. Allies pass false so the bar stays up through walls.
+function createFloatingHealthBar(color, { isEnemy = true } = {}) {
   const container = document.createElement("div");
   container.className = "floating-health-bar";
 
@@ -728,7 +731,7 @@ function createFloatingHealthBar(color) {
   container.appendChild(fill);
 
   document.body.appendChild(container);
-  return { container, fill };
+  return { container, fill, isEnemy };
 }
 
 // Sets the bar's fill width to match a health percentage (0-100). Unlike
@@ -740,8 +743,9 @@ function updateFloatingHealthBarFill(bar, healthPercent) {
 }
 
 // Projects a world-space point onto 2D screen coordinates and moves the
-// bar there, hiding it if that point is behind the camera or off-screen.
-function updateFloatingHealthBarPosition(bar, worldPosition) {
+// bar there. Hides it if behind the camera, off-screen, or when
+// `visible` is false (used for enemy LOS occlusion).
+function updateFloatingHealthBarPosition(bar, worldPosition, visible = true) {
   const projected = new THREE.Vector3(
     worldPosition.x,
     worldPosition.y,
@@ -754,7 +758,7 @@ function updateFloatingHealthBarPosition(bar, worldPosition) {
   // it's outside the view horizontally/vertically.
   const isBehindCamera = projected.z > 1;
   const isOffScreen = Math.abs(projected.x) > 1 || Math.abs(projected.y) > 1;
-  if (isBehindCamera || isOffScreen) {
+  if (!visible || isBehindCamera || isOffScreen) {
     bar.container.style.display = "none";
     return;
   }
@@ -764,7 +768,10 @@ function updateFloatingHealthBarPosition(bar, worldPosition) {
   bar.container.style.top = `${((1 - projected.y) / 2) * window.innerHeight}px`;
 }
 
-const botHealthBar = createFloatingHealthBar(`#${BOT_COLOR.toString(16).padStart(6, "0")}`);
+const botHealthBar = createFloatingHealthBar(
+  `#${BOT_COLOR.toString(16).padStart(6, "0")}`,
+  { isEnemy: true }
+);
 
 // -----------------------------------------------------------------------
 // Input handling: keyboard state + mouse look + pointer lock
@@ -1776,37 +1783,64 @@ function startRenderLoop({
     };
   }
 
-  // Casts a ray from the bot's eye to the player's eye and returns true
-  // only if nothing else (a wall, obstacle, or the ground) is in the way -
-  // i.e. the ray's first hit is the player's own collider. Excludes the
-  // bot's own collider so the ray doesn't immediately hit itself at the
-  // origin point. This is the ONLY thing allowed to gate tracking/aiming -
-  // see updateBot() below, which only ever calls rotateGroupTowards() at
-  // the player while this returns true.
-  function botCanSeePlayer(playerEyePosition, botEyePosition) {
-    const toPlayer = {
-      x: playerEyePosition.x - botEyePosition.x,
-      y: playerEyePosition.y - botEyePosition.y,
-      z: playerEyePosition.z - botEyePosition.z,
+  // Shared eye-to-eye Rapier raycast used by bot AI vision and by enemy
+  // floating-health-bar occlusion. Returns true only if the first hit
+  // along the ray is `targetCollider` (nothing else in the way). Excludes
+  // `excludeCollider` so a ray starting inside a capsule doesn't instantly
+  // hit its own body.
+  function hasLineOfSight(
+    fromEyePosition,
+    toEyePosition,
+    excludeCollider,
+    targetCollider
+  ) {
+    const toTarget = {
+      x: toEyePosition.x - fromEyePosition.x,
+      y: toEyePosition.y - fromEyePosition.y,
+      z: toEyePosition.z - fromEyePosition.z,
     };
-    const distance = Math.hypot(toPlayer.x, toPlayer.y, toPlayer.z);
+    const distance = Math.hypot(toTarget.x, toTarget.y, toTarget.z);
     if (distance === 0) return true;
 
     const direction = {
-      x: toPlayer.x / distance,
-      y: toPlayer.y / distance,
-      z: toPlayer.z / distance,
+      x: toTarget.x / distance,
+      y: toTarget.y / distance,
+      z: toTarget.z / distance,
     };
-    const ray = new RAPIER.Ray(botEyePosition, direction);
+    const ray = new RAPIER.Ray(fromEyePosition, direction);
     const hit = world.castRayAndGetNormal(
       ray,
       distance,
       true,
       undefined,
       undefined,
+      excludeCollider
+    );
+    return hit !== null && hit.collider === targetCollider;
+  }
+
+  // Bot AI vision gate — the ONLY thing allowed to gate tracking/aiming.
+  // See updateBot() below, which only ever calls rotateGroupTowards() at
+  // the player while this returns true.
+  function botCanSeePlayer(playerEyePosition, botEyePosition) {
+    return hasLineOfSight(
+      botEyePosition,
+      playerEyePosition,
+      botCollider,
+      playerCollider
+    );
+  }
+
+  // Player → enemy bot LOS for floating health bars (same raycast helper
+  // as bot vision, but from the player's eye and requiring the bot's
+  // collider as the first hit).
+  function playerCanSeeBot(playerEyePosition, botEyePosition) {
+    return hasLineOfSight(
+      playerEyePosition,
+      botEyePosition,
+      playerCollider,
       botCollider
     );
-    return hit !== null && hit.collider === playerCollider;
   }
 
   // Computes the yaw angle (yaw 0 faces -Z, matching
@@ -2200,13 +2234,26 @@ function startRenderLoop({
     // Keep the bot's floating health bar glued above its head on screen.
     // Runs even while paused/dead (same reasoning as the camera follow
     // above), and is skipped once the bot is destroyed - damageBot()
-    // already hid the bar for good at that point.
+    // already hid the bar for good at that point. Enemy bars also require
+    // clear player→bot LOS (allies would pass visible=true always).
     if (!botDestroyed) {
-      updateFloatingHealthBarPosition(botHealthBar, {
-        x: botGroup.position.x,
-        y: botGroup.position.y + BOT_HEALTH_BAR_HEIGHT_OFFSET,
-        z: botGroup.position.z,
-      });
+      const botEyePosition = {
+        x: botPosition.x,
+        y: botPosition.y + EYE_HEIGHT,
+        z: botPosition.z,
+      };
+      const barVisible =
+        !botHealthBar.isEnemy ||
+        playerCanSeeBot(getPlayerEyePosition(), botEyePosition);
+      updateFloatingHealthBarPosition(
+        botHealthBar,
+        {
+          x: botGroup.position.x,
+          y: botGroup.position.y + BOT_HEALTH_BAR_HEIGHT_OFFSET,
+          z: botGroup.position.z,
+        },
+        barVisible
+      );
     }
 
     renderer.render(scene, camera);
