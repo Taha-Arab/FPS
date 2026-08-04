@@ -120,16 +120,26 @@
 
 import * as THREE from "three";
 import RAPIER from "@dimforge/rapier3d-compat";
+import {
+  configureRenderer,
+  setupEnvironment,
+  fitSunShadowToArena,
+} from "./environment.js";
+import {
+  createAsphaltTexture,
+  createConcreteTexture,
+  createContainerTexture,
+  createMetalDeckTexture,
+  createBarrierTexture,
+} from "./textures.js";
+import { createWeaponViewmodel } from "./weapon.js";
+import { buildSoldierModel, HEADSHOT_MIN_Y_OFFSET } from "./botmodel.js";
 
 // -----------------------------------------------------------------------
 // Three.js setup: scene, camera, renderer
 // -----------------------------------------------------------------------
 
 const scene = new THREE.Scene();
-
-// A flat sky-blue background color. This is a placeholder "simple
-// background" for now - a skybox/skydome can replace this later in polish.
-scene.background = new THREE.Color(0x87ceeb);
 
 // PerspectiveCamera(fieldOfView, aspectRatio, nearClip, farClip).
 // 75 degrees FOV is a common, comfortable default for FPS-style games.
@@ -148,6 +158,12 @@ camera.rotation.order = "YXZ";
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
+// Modern-overhaul: filmic tone mapping + soft shadow maps.
+configureRenderer(renderer);
+
+// The camera must be in the scene graph for camera-parented children (the
+// first-person weapon viewmodel) to render.
+scene.add(camera);
 
 // Append the renderer's <canvas> into the #app div from index.html.
 document.getElementById("app").appendChild(renderer.domElement);
@@ -160,20 +176,14 @@ window.addEventListener("resize", () => {
 });
 
 // -----------------------------------------------------------------------
-// Lighting
+// Lighting + atmosphere (modern-overhaul)
 // -----------------------------------------------------------------------
-// Without any light, MeshStandardMaterial surfaces render pure black, so we
-// add a couple of simple lights to make the ground plane visible.
+// Atmospheric sky shader with a real sun position, distance fog, hemisphere
+// bounce fill, and a warm shadow-casting sun — see src/environment.js.
+const { sunLight } = setupEnvironment(scene);
 
-// Soft light from the "sky" (blue-ish) and "ground" (brownish) - gives
-// gentle all-over illumination without needing shadows yet.
-const hemisphereLight = new THREE.HemisphereLight(0x87ceeb, 0x444422, 1.2);
-scene.add(hemisphereLight);
-
-// A directional light acts like sunlight, giving surfaces some shading.
-const sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
-sunLight.position.set(10, 20, 10);
-scene.add(sunLight);
+// First-person rifle viewmodel, parented to the camera (src/weapon.js).
+const weaponViewmodel = createWeaponViewmodel(camera);
 
 // -----------------------------------------------------------------------
 // Arena ground + boundary walls (visual) — built after pre-match menu
@@ -216,8 +226,20 @@ const BOUNDARY_CONTAINMENT_HEIGHT = 20;
 // them back to spawn (failsafe if containment is ever bypassed).
 const OOB_MARGIN = 0.5;
 
-const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x3a7d44 });
-const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 });
+// Modern-overhaul surfaces: procedural canvas textures (src/textures.js),
+// so the map reads as a weathered military training compound instead of
+// flat colors — still zero image assets for the static Vercel deploy.
+const groundTexture = createAsphaltTexture(8);
+const groundMaterial = new THREE.MeshStandardMaterial({
+  map: groundTexture,
+  roughness: 0.95,
+  metalness: 0.0,
+});
+const wallMaterial = new THREE.MeshStandardMaterial({
+  map: createConcreteTexture(6, 1),
+  roughness: 0.9,
+  metalness: 0.0,
+});
 let groundMesh = null;
 const wallMeshes = [];
 
@@ -246,6 +268,9 @@ function buildArena(groundSize) {
   // default), so we rotate it -90 degrees around X to lay it flat on the
   // ground (the XZ plane) like a floor.
   groundMesh.rotation.x = -Math.PI / 2;
+  groundMesh.receiveShadow = true;
+  // Keep the asphalt tile scale constant across arena sizes (~1 tile / 4m).
+  groundTexture.repeat.set(GROUND_SIZE / 4, GROUND_SIZE / 4);
   scene.add(groundMesh);
 
   // North/south walls span the full width (including the corners), and
@@ -287,9 +312,14 @@ function buildArena(groundSize) {
     );
     const wallMesh = new THREE.Mesh(wallGeometry, wallMaterial);
     wallMesh.position.set(wall.x, WALL_HEIGHT / 2, wall.z);
+    wallMesh.castShadow = true;
+    wallMesh.receiveShadow = true;
     scene.add(wallMesh);
     wallMeshes.push(wallMesh);
   }
+
+  // Fit the sun's shadow camera to the chosen arena footprint.
+  fitSunShadowToArena(sunLight, GROUND_HALF);
 
   // Interior cover + platforms scale with arena size (not an empty rim).
   buildArenaCover(groundSize);
@@ -585,12 +615,24 @@ let pillarObstacleDefs = [];
 let rampObstacleDefs = [];
 let elevatedStructurePieceDefs = [];
 
-// A distinct crate-like color (vs. the neutral grey boundary walls) so
-// obstacles read as separate, purpose-placed cover at a glance.
-const obstacleMaterial = new THREE.MeshStandardMaterial({ color: 0x8a6d3f });
-// Slightly lighter than solid cover so elevated decks/legs read as
-// "platform" rather than another crate wall at a glance.
-const elevatedMaterial = new THREE.MeshStandardMaterial({ color: 0xa8885a });
+// Solid cover reads as olive-drab shipping-container / crate metal, while
+// pillars use concrete-barrier surfacing and platforms use scuffed deck
+// plating — three distinct materials so cover types read at a glance.
+const obstacleMaterial = new THREE.MeshStandardMaterial({
+  map: createContainerTexture("#5b6e58", 2, 1),
+  roughness: 0.65,
+  metalness: 0.35,
+});
+const pillarMaterial = new THREE.MeshStandardMaterial({
+  map: createBarrierTexture(1),
+  roughness: 0.9,
+  metalness: 0.0,
+});
+const elevatedMaterial = new THREE.MeshStandardMaterial({
+  map: createMetalDeckTexture(2, 2),
+  roughness: 0.55,
+  metalness: 0.5,
+});
 const arenaCoverMeshes = [];
 
 function clearArenaCoverMeshes() {
@@ -642,6 +684,8 @@ function buildArenaCover(groundSize) {
     );
     const boxMesh = new THREE.Mesh(boxGeometry, obstacleMaterial);
     boxMesh.position.set(box.x, box.hy, box.z);
+    boxMesh.castShadow = true;
+    boxMesh.receiveShadow = true;
     scene.add(boxMesh);
     arenaCoverMeshes.push(boxMesh);
   }
@@ -655,8 +699,10 @@ function buildArenaCover(groundSize) {
       pillar.height,
       12
     );
-    const pillarMesh = new THREE.Mesh(pillarGeometry, obstacleMaterial);
+    const pillarMesh = new THREE.Mesh(pillarGeometry, pillarMaterial);
     pillarMesh.position.set(pillar.x, pillar.height / 2, pillar.z);
+    pillarMesh.castShadow = true;
+    pillarMesh.receiveShadow = true;
     scene.add(pillarMesh);
     arenaCoverMeshes.push(pillarMesh);
   }
@@ -667,9 +713,11 @@ function buildArenaCover(groundSize) {
       ramp.hy * 2,
       ramp.hz * 2
     );
-    const rampMesh = new THREE.Mesh(rampGeometry, obstacleMaterial);
+    const rampMesh = new THREE.Mesh(rampGeometry, elevatedMaterial);
     rampMesh.position.set(ramp.x, ramp.hy, ramp.z);
     rampMesh.rotation.x = ramp.tiltRadians;
+    rampMesh.castShadow = true;
+    rampMesh.receiveShadow = true;
     scene.add(rampMesh);
     arenaCoverMeshes.push(rampMesh);
   }
@@ -685,6 +733,8 @@ function buildArenaCover(groundSize) {
     if (piece.type === "ramp") {
       mesh.rotation.x = piece.tiltRadians;
     }
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     scene.add(mesh);
     arenaCoverMeshes.push(mesh);
   }
@@ -724,7 +774,23 @@ const CROUCH_CENTER_OFFSET = PLAYER_HALF_HEIGHT - CROUCH_HALF_HEIGHT;
 const CROUCH_CAMERA_TRANSITION_SECONDS = 0.15;
 
 const MOVE_SPEED = 5; // meters/second
+// Sprint (modern-overhaul): hold Shift while moving forward. Blocked while
+// crouching, aiming, or firing — standard modern-FPS rules.
+const SPRINT_MOVE_SPEED = 7.6;
 const JUMP_SPEED = 6; // initial upward velocity, in meters/second
+
+// FOV states (modern-overhaul): base view, aim-down-sights zoom, and a
+// slight sprint widen for a sense of speed. Blended smoothly in tick().
+const BASE_FOV = 75;
+const ADS_FOV = 52;
+const SPRINT_FOV = 83;
+
+// Hip-fire vs ADS accuracy (modern-overhaul): shots now cone-spread when
+// firing from the hip; aiming down sights makes them near-laser accurate.
+const HIP_SPREAD_RADIANS = 0.016;
+const ADS_SPREAD_RADIANS = 0.002;
+// Headshots deal double damage (hit point above the bot's neck line).
+const HEADSHOT_MULTIPLIER = 2;
 // A bit stronger than real-world gravity (9.81) for a snappier game feel -
 // common in shooters so jumps don't feel floaty.
 const GRAVITY = 20;
@@ -738,16 +804,6 @@ const MAX_DELTA_TIME = 1 / 30;
 // which is standard for simple FPS games and much easier to get right.
 const GUN_DAMAGE = 25; // 4 hits destroys the bot's 100 health
 const GUN_RANGE = 100; // meters
-
-// Where the tracer *looks* like it starts from - offset to the
-// lower-right of the camera, like a held gun, in the camera's own local
-// space (+X = right, +Y = up, -Z = forward). This is ONLY used to draw the
-// tracer; the actual hit-detection ray below still fires from the exact
-// camera center for accuracy. Without this offset, shooting straight
-// ahead makes the tracer perfectly line up with the camera's view, so it
-// renders end-on and is invisible (a line viewed along its own length has
-// no visible width).
-const MUZZLE_OFFSET = new THREE.Vector3(0.25, -0.25, -0.5);
 
 // Full-auto fire rate, matched to BOT_FIRE_RATE_RPM so the player doesn't
 // melt bots with a much faster gun — fights stay about aim/positioning.
@@ -976,16 +1032,9 @@ function buildCoverSlots() {
 const bots = [];
 const colliderToBot = new Map();
 
-// Shared geometries (each bot gets its own materials for team color /
-// invuln opacity / hit flash).
-const sharedBotCapsuleGeometry = new THREE.CapsuleGeometry(
-  PLAYER_RADIUS,
-  PLAYER_HALF_HEIGHT * 2,
-  4,
-  8
-);
-const BOT_MARKER_OFFSET = new THREE.Vector3(0, 0.3, -(PLAYER_RADIUS + 0.1));
-const sharedBotMarkerGeometry = new THREE.BoxGeometry(0.15, 0.15, 0.3);
+// Where a bot's rifle muzzle sits in its local space (matches the soldier
+// model's held rifle in src/botmodel.js) — used for muzzle flash + tracers.
+const BOT_MUZZLE_OFFSET = new THREE.Vector3(0.05, 0.27, -0.8);
 
 // -----------------------------------------------------------------------
 // Floating health bars (one per bot, above its head)
@@ -1046,21 +1095,9 @@ function createMinimapDot(team) {
 // team is "blue" (ally) or "red" (enemy). tier is a DIFFICULTY_TIERS entry.
 function createBotInstance(world, team, spawnPoint, tier) {
   const teamColor = team === "blue" ? ALLY_BOT_COLOR : ENEMY_BOT_COLOR;
-  const material = new THREE.MeshStandardMaterial({
-    color: teamColor,
-    transparent: true,
-  });
-  const mesh = new THREE.Mesh(sharedBotCapsuleGeometry, material);
-  const markerMaterial = new THREE.MeshStandardMaterial({
-    color: 0x2b2b2b,
-    transparent: true,
-  });
-  const markerMesh = new THREE.Mesh(sharedBotMarkerGeometry, markerMaterial);
-  markerMesh.position.copy(BOT_MARKER_OFFSET);
-
-  const group = new THREE.Group();
-  group.add(mesh);
-  group.add(markerMesh);
+  // Humanoid soldier model (modern-overhaul) — origin at the capsule center.
+  const model = buildSoldierModel(team);
+  const group = model.group;
   const spawn = botStandingSpawnTranslation(spawnPoint);
   group.position.set(spawn.x, spawn.y, spawn.z);
   scene.add(group);
@@ -1093,8 +1130,11 @@ function createBotInstance(world, team, spawnPoint, tier) {
     collider,
     characterController,
     group,
-    material,
-    markerMaterial,
+    model,
+    materials: model.materials,
+    // Set true by moveBotTowards() each frame the bot actually walks;
+    // consumed (and cleared) by the per-frame model sync for the walk cycle.
+    isWalking: false,
     healthBar,
     minimapDot: createMinimapDot(team),
     health: BOT_MAX_HEALTH,
@@ -1515,6 +1555,7 @@ function showPauseOverlay() {
   // true, since mouseup never fires while the tab isn't focused, and the
   // gun would start full-auto firing the instant the player resumes.
   isFiring = false;
+  isAiming = false;
 }
 
 function hidePauseOverlay() {
@@ -1603,10 +1644,19 @@ document.addEventListener("mousemove", (event) => {
   // would spin whenever the mouse merely passes over the page.
   if (document.pointerLockElement !== renderer.domElement) return;
 
-  yaw -= event.movementX * mouseSensitivity;
-  pitch -= event.movementY * mouseSensitivity;
+  // ADS slows the look speed (standard FPS behavior for precise aiming).
+  const adsFactor = 1 - 0.45 * weaponViewmodel.getAdsBlend();
+  yaw -= event.movementX * mouseSensitivity * adsFactor;
+  pitch -= event.movementY * mouseSensitivity * adsFactor;
   pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch));
+
+  // Feed the raw motion into the viewmodel's sway.
+  weaponViewmodel.addLookSway(event.movementX, event.movementY);
 });
+
+// Right-click is aim-down-sights, so the browser context menu must never
+// open over the game canvas.
+window.addEventListener("contextmenu", (event) => event.preventDefault());
 
 // -----------------------------------------------------------------------
 // Player health + HUD (Milestone 4)
@@ -1637,6 +1687,7 @@ const deathOverlaySubtitle = document.getElementById("death-overlay-subtitle");
 const vignette = document.getElementById("vignette");
 const spawnInvulnOverlay = document.getElementById("spawn-invuln-overlay");
 const hitMarkerEl = document.getElementById("hit-marker");
+const crosshairEl = document.getElementById("crosshair");
 let hitMarkerTimeoutId = null;
 
 // Applies a new health value (clamped to [0, PLAYER_MAX_HEALTH]) and
@@ -1731,6 +1782,8 @@ let isReloading = false;
 // locked - checked every frame in tick() so holding the button fires
 // continuously (full-auto) instead of once per click.
 let isFiring = false;
+// True while right mouse is held (aim-down-sights, modern-overhaul).
+let isAiming = false;
 
 const ammoHud = document.getElementById("ammo-hud");
 const ammoText = document.getElementById("ammo-text");
@@ -1831,11 +1884,13 @@ function applyRecoilKick() {
   recoilYaw += (Math.random() - 0.5) * 2 * RECOIL_YAW_KICK_MAX;
 }
 
-function showHitMarker() {
+function showHitMarker(isHeadshot = false) {
   hitMarkerEl.classList.add("active");
+  hitMarkerEl.classList.toggle("headshot", isHeadshot);
   if (hitMarkerTimeoutId !== null) clearTimeout(hitMarkerTimeoutId);
   hitMarkerTimeoutId = setTimeout(() => {
     hitMarkerEl.classList.remove("active");
+    hitMarkerEl.classList.remove("headshot");
     hitMarkerTimeoutId = null;
   }, HIT_MARKER_LIFETIME_MS);
 }
@@ -1861,10 +1916,13 @@ function damageBot(bot, amount = GUN_DAMAGE, killerInfo = null) {
 
   bot.lastDamageTime = performance.now();
   setBotHealth(bot, bot.health - amount);
-  bot.material.color.set(0xffffff);
+  // Hit flash: pulse every material's emissive white briefly.
+  for (const m of bot.materials) m.emissive.setHex(0x888888);
   trackTimeout(
     setTimeout(() => {
-      if (!bot.destroyed) bot.material.color.set(bot.teamColor);
+      if (!bot.destroyed) {
+        for (const m of bot.materials) m.emissive.setHex(0x000000);
+      }
     }, 80)
   );
 
@@ -2463,6 +2521,11 @@ function startRenderLoop({
   const timer = new THREE.Timer();
   // Vertical speed accumulated by gravity/jumping. Positive = moving up.
   let verticalVelocity = 0;
+  // Sprint state (modern-overhaul): recomputed each frame from held keys +
+  // blocking conditions in computeHorizontalMovement().
+  let isSprinting = false;
+  // 0..1 "how much horizontal movement input this frame" for weapon bob.
+  let moveInput01 = 0;
   // Milestone 7: true while the player's collider is the shorter crouch
   // capsule. Driven by hold-C plus a headroom check when standing up.
   let isCrouching = false;
@@ -2541,7 +2604,8 @@ function startRenderLoop({
   }
 
   function updateCrouch() {
-    const wantCrouch = !!keysPressed["KeyC"];
+    // C or left Ctrl (modern PC standard) both crouch.
+    const wantCrouch = !!keysPressed["KeyC"] || !!keysPressed["ControlLeft"];
     if (wantCrouch) {
       if (!isCrouching) setPlayerCrouch(true);
     } else if (isCrouching) {
@@ -2621,7 +2685,7 @@ function startRenderLoop({
     bot.collider.setEnabled(true);
     bot.group.visible = true;
     bot.minimapDot.style.display = "block";
-    bot.material.color.set(bot.teamColor);
+    for (const m of bot.materials) m.emissive.setHex(0x000000);
 
     // Random team spawn each respawn (same pools as match start).
     const spawnPosition =
@@ -2681,6 +2745,7 @@ function startRenderLoop({
     currentAmmo -= 1;
     updateAmmoDisplay();
     applyRecoilKick();
+    weaponViewmodel.triggerRecoil();
     playGunshotSound();
 
     // Auto-reload (Milestone 4 extension): as soon as the last round is
@@ -2690,17 +2755,22 @@ function startRenderLoop({
     if (currentAmmo === 0) startReload();
 
     const origin = camera.position;
-    const direction = camera.getWorldDirection(new THREE.Vector3());
+    // Hip-fire cone spread vs near-perfect ADS accuracy, blended by how far
+    // into the aim the viewmodel currently is.
+    const adsBlend = weaponViewmodel.getAdsBlend();
+    const spread =
+      HIP_SPREAD_RADIANS + (ADS_SPREAD_RADIANS - HIP_SPREAD_RADIANS) * adsBlend;
+    const direction = applyAimSpread(
+      camera.getWorldDirection(new THREE.Vector3()),
+      spread
+    );
     const ray = new RAPIER.Ray(origin, direction);
 
-    // The tracer's visual start point only - see the MUZZLE_OFFSET comment
-    // above for why. localToWorld() converts a point from the camera's
-    // local space into world space using its current matrix, so this
-    // "muzzle" always stays glued to the lower-right of wherever the
-    // camera is currently looking.
+    // Tracer start: the actual rifle muzzle on the viewmodel (the muzzle
+    // flash itself is part of the viewmodel — see weapon.js).
     camera.updateMatrixWorld();
-    const muzzlePosition = camera.localToWorld(MUZZLE_OFFSET.clone());
-    spawnMuzzleFlash(muzzlePosition);
+    const muzzlePosition = new THREE.Vector3();
+    weaponViewmodel.muzzleTip.getWorldPosition(muzzlePosition);
 
     // Exclude the player's own collider so the ray can't hit ourselves
     // point-blank. `solid: true` treats every shape as solid rather than
@@ -2726,8 +2796,15 @@ function startRenderLoop({
       // Player only damages RED enemy bots — never blue allies (no FF).
       const hitBot = colliderToBot.get(hit.collider);
       if (hitBot && hitBot.team === "red") {
-        if (damageBot(hitBot, GUN_DAMAGE, { label: "You", team: "blue" })) {
-          showHitMarker();
+        // Headshot: hit landed above the soldier's neck line (double damage).
+        const isHeadshot =
+          hitPoint.y >
+          hitBot.body.translation().y + HEADSHOT_MIN_Y_OFFSET;
+        const damage = isHeadshot
+          ? GUN_DAMAGE * HEADSHOT_MULTIPLIER
+          : GUN_DAMAGE;
+        if (damageBot(hitBot, damage, { label: "You", team: "blue" })) {
+          showHitMarker(isHeadshot);
         }
       }
     } else {
@@ -2759,12 +2836,20 @@ function startRenderLoop({
   if (!shootInputBound) {
     shootInputBound = true;
     renderer.domElement.addEventListener("mousedown", (event) => {
+      if (event.button === 2) {
+        // Right mouse: aim-down-sights (only meaningful while playing).
+        if (document.pointerLockElement === renderer.domElement) {
+          isAiming = true;
+        }
+        return;
+      }
       if (event.button !== 0) return;
       isFiring = true;
       if (tryFireShotRef) tryFireShotRef(performance.now());
     });
     renderer.domElement.addEventListener("mouseup", (event) => {
       if (event.button === 0) isFiring = false;
+      if (event.button === 2) isAiming = false;
     });
   }
 
@@ -2986,7 +3071,7 @@ function startRenderLoop({
       bot.aimSpreadRadians
     );
     bot.group.updateMatrixWorld();
-    const muzzlePosition = bot.group.localToWorld(BOT_MARKER_OFFSET.clone());
+    const muzzlePosition = bot.group.localToWorld(BOT_MUZZLE_OFFSET.clone());
     spawnMuzzleFlash(muzzlePosition);
     playGunshotSound(muzzlePosition);
     const ray = new RAPIER.Ray(botEyePosition, aimDirection);
@@ -3083,6 +3168,7 @@ function startRenderLoop({
       y: currentPosition.y + correctedMovement.y,
       z: currentPosition.z + correctedMovement.z,
     });
+    bot.isWalking = true;
     // Spatial footstep while actively walking (cadence-gated, not every frame).
     if (now - bot.lastFootstepAt >= BOT_FOOTSTEP_INTERVAL_MS) {
       bot.lastFootstepAt = now;
@@ -3232,8 +3318,24 @@ function startRenderLoop({
     const worldX = inputForward * -sinYaw + inputRight * cosYaw;
     const worldZ = inputForward * -cosYaw + inputRight * -sinYaw;
 
+    moveInput01 = inputLength > 0 ? 1 : 0;
+
+    // Sprint: Shift + forward movement, blocked while crouching, aiming,
+    // firing, or reloading — the standard modern-FPS rule set.
+    isSprinting =
+      (!!keysPressed["ShiftLeft"] || !!keysPressed["ShiftRight"]) &&
+      inputForward > 0 &&
+      !isCrouching &&
+      !isAiming &&
+      !isFiring &&
+      !isReloading;
+
     // Crouch is a static speed reduction only (no slide) — see Milestone 7.
-    const speed = isCrouching ? CROUCH_MOVE_SPEED : MOVE_SPEED;
+    const speed = isCrouching
+      ? CROUCH_MOVE_SPEED
+      : isSprinting
+        ? SPRINT_MOVE_SPEED
+        : MOVE_SPEED;
     return {
       x: worldX * speed * deltaTime,
       z: worldZ * speed * deltaTime,
@@ -3364,6 +3466,33 @@ function startRenderLoop({
       Math.min(PITCH_LIMIT, pitch + recoilPitch)
     );
 
+    // --- Modern-overhaul: FOV blending + weapon viewmodel animation ---
+    const playing = !isPaused && !isDead && !matchEnded;
+    if (!playing) {
+      isSprinting = false;
+      moveInput01 = 0;
+    }
+    const targetFov =
+      isAiming && !isSprinting && playing
+        ? ADS_FOV
+        : isSprinting
+          ? SPRINT_FOV
+          : BASE_FOV;
+    const fovStep = 1 - Math.exp(-12 * deltaTime);
+    if (Math.abs(camera.fov - targetFov) > 0.01) {
+      camera.fov += (targetFov - camera.fov) * fovStep;
+      camera.updateProjectionMatrix();
+    }
+    weaponViewmodel.update(deltaTime, {
+      wantAds: isAiming && playing,
+      sprinting: isSprinting,
+      moveSpeed01: moveInput01,
+      grounded: characterController.computedGrounded(),
+    });
+
+    // Hide the crosshair while ADS (the iron sights are the aim reference).
+    crosshairEl.classList.toggle("hidden", weaponViewmodel.getAdsBlend() > 0.5);
+
     updateAudioListenerFromCamera();
     renderKillFeed();
 
@@ -3403,11 +3532,15 @@ function startRenderLoop({
 
       const botIsInvulnerable = timestamp < bot.invulnerableUntil;
       const botOpacity = botIsInvulnerable ? 0.5 : 1;
-      bot.material.opacity = botOpacity;
-      bot.markerMaterial.opacity = botOpacity;
+      for (const m of bot.materials) m.opacity = botOpacity;
 
       const botPosition = bot.body.translation();
       bot.group.position.set(botPosition.x, botPosition.y, botPosition.z);
+
+      // Advance the walk cycle if the AI moved this frame (flag set in
+      // moveBotTowards), then clear the flag for next frame.
+      bot.model.walk(deltaTime, bot.isWalking ? 1 : 0);
+      bot.isWalking = false;
 
       const barVisible =
         !bot.healthBar.isEnemy || playerCanSeeBot(playerEyeForBars, bot);
@@ -3520,8 +3653,7 @@ titleSplashContinue.addEventListener("click", () => {
 function disposeAllBots() {
   for (const bot of bots) {
     scene.remove(bot.group);
-    bot.material.dispose();
-    bot.markerMaterial.dispose();
+    for (const m of bot.materials) m.dispose();
     if (bot.healthBar?.container?.parentNode) {
       bot.healthBar.container.parentNode.removeChild(bot.healthBar.container);
     }
