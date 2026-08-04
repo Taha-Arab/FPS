@@ -124,6 +124,7 @@ import {
   configureRenderer,
   setupEnvironment,
   fitSunShadowToArena,
+  buildSkyline,
 } from "./environment.js";
 import {
   createAsphaltTexture,
@@ -242,6 +243,16 @@ const wallMaterial = new THREE.MeshStandardMaterial({
 });
 let groundMesh = null;
 const wallMeshes = [];
+// Distant decorative skyline blocks (rebuilt per arena size, no colliders).
+let skylineMeshes = [];
+
+function clearSkyline() {
+  for (const mesh of skylineMeshes) {
+    scene.remove(mesh);
+    mesh.geometry.dispose();
+  }
+  skylineMeshes = [];
+}
 
 // Creates (or replaces) the ground plane + four boundary wall meshes for
 // the given arena size in meters. Called once from startMatch() before
@@ -320,6 +331,10 @@ function buildArena(groundSize) {
 
   // Fit the sun's shadow camera to the chosen arena footprint.
   fitSunShadowToArena(sunLight, GROUND_HALF);
+
+  // Decorative horizon buildings outside the walls.
+  clearSkyline();
+  skylineMeshes = buildSkyline(scene, GROUND_HALF);
 
   // Interior cover + platforms scale with arena size (not an empty rim).
   buildArenaCover(groundSize);
@@ -3705,6 +3720,7 @@ function returnToPrematchMenu() {
     mesh.geometry.dispose();
   }
   wallMeshes.length = 0;
+  clearSkyline();
   if (minimapLayoutEl) minimapLayoutEl.innerHTML = "";
 
   matchReady = false;

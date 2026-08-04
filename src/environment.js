@@ -65,6 +65,43 @@ export function setupEnvironment(scene) {
   return { sunLight };
 }
 
+// Distant industrial silhouettes outside the arena walls so the horizon
+// isn't an empty void — purely visual, no colliders (unreachable). Fog
+// fades them naturally. Returns the meshes so main.js can dispose them
+// when the arena is rebuilt at a different size.
+export function buildSkyline(scene, groundHalf) {
+  const meshes = [];
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x5c6166,
+    roughness: 0.95,
+    metalness: 0.05,
+  });
+  // Deterministic pseudo-random ring of "warehouse" blocks.
+  let seed = 42;
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+  const count = 26;
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * Math.PI * 2 + rand() * 0.15;
+    const dist = groundHalf + 20 + rand() * 30;
+    const w = 6 + rand() * 14;
+    const h = 4 + rand() * 12;
+    const d = 6 + rand() * 14;
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    mesh.position.set(
+      Math.cos(angle) * dist,
+      h / 2,
+      Math.sin(angle) * dist
+    );
+    mesh.rotation.y = rand() * Math.PI;
+    scene.add(mesh);
+    meshes.push(mesh);
+  }
+  return meshes;
+}
+
 // Fits the sun's orthographic shadow camera tightly around the current
 // arena so shadow-map resolution isn't wasted (called from buildArena()).
 export function fitSunShadowToArena(sunLight, groundHalf) {
