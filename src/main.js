@@ -832,6 +832,7 @@ const HIT_MARKER_LIFETIME_MS = 120;
 // Footstep cadence (Milestone 12). Separate from movement code so we never
 // spawn a sound every frame.
 const PLAYER_FOOTSTEP_INTERVAL_MS = 360;
+const PLAYER_SPRINT_FOOTSTEP_INTERVAL_MS = 270;
 const PLAYER_CROUCH_FOOTSTEP_INTERVAL_MS = 520;
 const BOT_FOOTSTEP_INTERVAL_MS = 420;
 
@@ -1495,6 +1496,11 @@ function sliderValueFromSensitivity(sensitivity) {
 // right now". Milestone 14 adds a Resume button + sensitivity slider; the
 // pointer-lock / focus pipeline itself is unchanged.
 
+// Dev/testing escape hatch: "?devplay" in the URL runs the simulation
+// without pointer lock (bots move/shoot, player stands idle). Lets
+// automated checks exercise live-match code; harmless if a player uses it.
+const DEV_AUTOPLAY = new URLSearchParams(window.location.search).has("devplay");
+
 let isPaused = true;
 // False until startMatch() finishes applying the menu config. Keeps the
 // pause overlay / focus handlers from covering the pre-match menu early.
@@ -1533,6 +1539,7 @@ function showPauseOverlay() {
   // Don't steal the screen while the player is still on Match Setup / splash,
   // or once the match-end summary owns the screen.
   if (!matchReady || matchEnded) return;
+  if (DEV_AUTOPLAY) return; // never pause in devplay test mode
 
   isPaused = true;
   const title = hasPlayedBefore
@@ -3408,7 +3415,9 @@ function startRenderLoop({
       ) {
         const interval = isCrouching
           ? PLAYER_CROUCH_FOOTSTEP_INTERVAL_MS
-          : PLAYER_FOOTSTEP_INTERVAL_MS;
+          : isSprinting
+            ? PLAYER_SPRINT_FOOTSTEP_INTERVAL_MS
+            : PLAYER_FOOTSTEP_INTERVAL_MS;
         if (timestamp - lastPlayerFootstepAt >= interval) {
           lastPlayerFootstepAt = timestamp;
           playFootstepSound(null, isCrouching);
@@ -3725,6 +3734,9 @@ function returnToPrematchMenu() {
   currentAmmo = MAGAZINE_SIZE;
   isReloading = false;
   isFiring = false;
+  isAiming = false;
+  camera.fov = BASE_FOV;
+  camera.updateProjectionMatrix();
   updateAmmoDisplay();
   vignette.classList.remove("active");
   spawnInvulnOverlay.classList.remove("active");
@@ -3795,7 +3807,11 @@ function startMatch() {
       // so the player can't lock the pointer into a half-initialized match.
       matchReady = true;
       prematchMenu.classList.add("hidden");
-      showPauseOverlay();
+      if (DEV_AUTOPLAY) {
+        hidePauseOverlay();
+      } else {
+        showPauseOverlay();
+      }
     })
     .catch((error) => {
       console.error("Failed to initialize Rapier physics:", error);

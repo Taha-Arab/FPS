@@ -435,3 +435,21 @@ This is a common failure point in browser FPS projects — handle it deliberatel
 - If something requires a decision (e.g. "how big should the arena be"),
   make a reasonable choice and say what you chose and why, rather than
   stopping to ask, unless it's a significant scope/library decision.
+
+## Modern Overhaul (branch: modern-overhaul, Aug 2026)
+The game was visually and mechanically modernized on top of the completed
+v3 milestones ("OUTPOST" rebrand). New modules (all still zero-asset /
+static-site friendly):
+- `src/environment.js` — ACES tone mapping, PCF soft shadows, atmospheric
+  Sky shader + sun, distance fog, shadow camera fitted per arena size.
+- `src/textures.js` — procedural canvas textures (asphalt, concrete,
+  shipping-container metal, deck plating, barrier concrete, team camo).
+- `src/weapon.js` — first-person rifle viewmodel: hip/ADS/sprint poses,
+  walk bob, mouse sway, recoil kick, muzzle flash.
+- `src/botmodel.js` — humanoid soldier bot models with camo, walk cycle,
+  and a headshot line (`HEADSHOT_MIN_Y_OFFSET`).
+Gameplay additions in `src/main.js`: Shift sprint (blocked by crouch/ADS/
+fire/reload), right-click ADS with FOV zoom + reduced spread + slower look,
+hip-fire cone spread, 2x headshot damage, Ctrl or C to crouch, FOV blending,
+`?devplay` URL flag to run the sim without pointer lock (for automated
+testing). UI restyled in `src/style.css` (dark tactical theme, amber accent).
