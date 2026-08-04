@@ -52,6 +52,18 @@
     <div id="crosshair"></div>
 
     <!--
+      Hit marker (Milestone 11). Brief flash on a successful player hit on
+      an enemy — purely visual, toggled via the "active" class from JS.
+    -->
+    <div id="hit-marker"></div>
+
+    <!--
+      Kill feed (Milestone 13). Recent killer → victim lines, updated from
+      src/main.js. Top-left so it doesn't fight the match HUD.
+    -->
+    <div id="kill-feed"></div>
+
+    <!--
       Ammo HUD (Milestone 4 extension: full-auto + magazine). Fixed to the
       bottom-right corner, styled like a typical FPS ammo counter - a small
       CSS-drawn bullet icon (#ammo-icon, no image asset needed) next to the
@@ -110,27 +122,45 @@
     </div>
 
     <!--
-      Match-end overlay (Milestone 6). Hidden by default; shown by
-      endMatch() in src/main.js once either team reaches the kill target.
-      Higher z-index than #death-overlay so it naturally covers it if the
-      match-ending kill happens to be the player's own death. No "Play
-      Again" button yet (that's Milestone 13 polish) - refreshing the page
-      starts a new match.
+      Match-end overlay (Milestones 6 + 13). Shown by endMatch(); includes
+      team score, player K/D, and Play Again (returns to pre-match menu).
     -->
     <div id="match-end-overlay" class="hidden">
       <div id="match-end-title"></div>
       <div id="match-end-subtitle"></div>
+      <div id="match-end-kd"></div>
+      <button type="button" id="match-end-play-again">Play Again</button>
     </div>
 
     <!--
-      Pre-match menu (Milestone 9). Shown on page load before the match
-      starts. Choosing team size / difficulty / kill target and clicking
-      Start Match applies the config in src/main.js (arena size, bot
-      difficulty params, win condition), then reveals #pause-overlay.
-      Multi-bot spawning per team size is Milestone 10 — the menu stores
-      the intended counts now even though only one enemy bot exists yet.
+      Title / splash screen (Milestone 15). Shown first; Continue reveals
+      the pre-match menu. Name field is branding/placeholder only.
     -->
-    <div id="prematch-menu">
+    <div id="title-splash">
+      <div id="title-splash-panel">
+        <div id="title-splash-title">ARENA</div>
+        <div id="title-splash-tagline">Browser FPS &middot; Portfolio Demo</div>
+        <label id="title-splash-name-label" for="title-splash-name">
+          Player name
+          <input
+            type="text"
+            id="title-splash-name"
+            maxlength="24"
+            value="Your Name"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <button type="button" id="title-splash-continue">Continue</button>
+      </div>
+    </div>
+
+    <!--
+      Pre-match menu (Milestone 9). Hidden until the splash Continue button
+      runs. Choosing team size / difficulty / kill target and clicking
+      Start Match applies the config in src/main.js, then reveals #pause-overlay.
+    -->
+    <div id="prematch-menu" class="hidden">
       <div id="prematch-menu-panel">
         <div id="prematch-menu-title">Match Setup</div>
 
@@ -170,17 +200,28 @@
     </div>
 
     <!--
-      Click-to-play / pause overlay (Milestone 2.5). Hidden until the
-      pre-match menu's Start Match runs. After that, shown whenever the
-      game isn't pointer-locked (first click, Escape, focus loss, etc).
-      Clicking it requests pointer lock again — see the click listener on
-      #pause-overlay in src/main.js.
+      Pause menu (Milestones 2.5 + 14). Shown whenever the game isn't
+      pointer-locked after Start Match. Resume requests pointer lock;
+      sensitivity slider is usable without resuming (see src/main.js).
     -->
     <div id="pause-overlay" class="hidden">
-      <div id="pause-overlay-title">Click to Play</div>
-      <div id="pause-overlay-subtitle">
-        WASD to move &middot; Mouse to look &middot; Space to jump &middot;
-        Hold Click to shoot &middot; R to reload
+      <div id="pause-overlay-panel">
+        <div id="pause-overlay-title">Click to Play</div>
+        <div id="pause-overlay-subtitle">
+          WASD to move &middot; Mouse to look &middot; Space to jump &middot;
+          Hold Click to shoot &middot; R to reload &middot; C to crouch
+        </div>
+        <label id="pause-sensitivity-label" for="pause-sensitivity">
+          Mouse sensitivity
+          <input
+            type="range"
+            id="pause-sensitivity"
+            min="1"
+            max="100"
+            value="40"
+          />
+        </label>
+        <button type="button" id="pause-resume-button">Click to Play</button>
       </div>
     </div>
 

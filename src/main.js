@@ -102,8 +102,20 @@
 // per team-size counting rule is still Milestone 10; the menu stores the
 // intended ally/enemy counts now even though only one enemy bot exists.
 //
-// NOT built yet (later milestones):
-// - Multiple bots per team + tactical cover-seeking (Milestone 10).
+// Milestone 10: Multiple bots + difficulty tiers (COMPLETE).
+//
+// Milestone 11: Weapon feedback — recoil kick, muzzle flash, hit markers
+// (tracers/impact flashes already existed from Milestone 4).
+//
+// Milestone 12: Audio via Web Audio API (synthesized one-shots, no asset
+// pack / no new npm deps) — gunshot, footsteps, reload, hit, regen, kill/death.
+//
+// Milestone 13: Kill feed + post-match K/D + Play Again soft-reset to menu.
+//
+// Milestone 14: Pause menu with mouse sensitivity slider (pointer-lock /
+// focus handling from 2.5 preserved).
+//
+// Milestone 15: Title splash with player-name placeholder before Match Setup.
 // ---------------------------------------------------------------------------
 
 import * as THREE from "three";
@@ -752,6 +764,21 @@ const RELOAD_TIME_MS = 1800;
 // firing itself (that's still gated purely on currentAmmo > 0).
 const LOW_AMMO_RATIO = 0.2;
 
+// Weapon feedback (Milestone 11). Recoil is a temporary camera offset that
+// decays each frame — mouse yaw/pitch themselves are not permanently nudged,
+// so look direction stays predictable after the kick settles.
+const RECOIL_PITCH_KICK = 0.028;
+const RECOIL_YAW_KICK_MAX = 0.01;
+const RECOIL_RECOVERY_PER_SECOND = 8;
+const MUZZLE_FLASH_LIFETIME_MS = 50;
+const HIT_MARKER_LIFETIME_MS = 120;
+
+// Footstep cadence (Milestone 12). Separate from movement code so we never
+// spawn a sound every frame.
+const PLAYER_FOOTSTEP_INTERVAL_MS = 360;
+const PLAYER_CROUCH_FOOTSTEP_INTERVAL_MS = 520;
+const BOT_FOOTSTEP_INTERVAL_MS = 420;
+
 // Declared here (rather than down in the Player Health + HUD section)
 // so the AI bot section below can set BOT_MAX_HEALTH equal to it - keeps
 // the two guaranteed to match for balance instead of just coincidentally
@@ -1084,6 +1111,7 @@ function createBotInstance(world, team, spawnPoint, tier) {
     // After arriving at a cover slot, stay put until the under-fire window
     // ends so Hard bots don't immediately path to another slot.
     holdingCover: false,
+    lastFootstepAt: -Infinity,
     // Copied from the match difficulty tier — same AI, different knobs.
     reactionDelayMs: tier.reactionDelayMs,
     aimSpreadRadians: tier.aimSpreadRadians,
@@ -1119,6 +1147,239 @@ function spawnBotsForMatch(world, blueSpawns, redSpawns, allyStartIndex) {
 }
 
 // -----------------------------------------------------------------------
+// Audio (Milestone 12) — Web Audio API, synthesized one-shots
+// -----------------------------------------------------------------------
+// No sound files / no Howler: short oscillators + noise keep the project
+// dependency-free and Vercel-static friendly. AudioContext must start
+// (or resume) from a user gesture — splash Continue / Start Match / Resume.
+
+let audioCtx = null;
+let masterGain = null;
+let sfxGain = null;
+let audioListener = null;
+
+function ensureAudio() {
+  if (!audioCtx) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return null;
+    audioCtx = new AudioContextClass();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.45;
+    masterGain.connect(audioCtx.destination);
+    sfxGain = audioCtx.createGain();
+    sfxGain.gain.value = 1;
+    sfxGain.connect(masterGain);
+    // Spatial footsteps/gunshots need a listener that tracks the camera.
+    if (audioCtx.listener) {
+      audioListener = audioCtx.listener;
+    }
+  }
+  if (audioCtx.state === "suspended") {
+    audioCtx.resume().catch(() => {});
+  }
+  return audioCtx;
+}
+
+function updateAudioListenerFromCamera() {
+  if (!audioCtx || !audioListener) return;
+  const pos = camera.position;
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+  const up = new THREE.Vector3(0, 1, 0);
+  if (typeof audioListener.positionX !== "undefined") {
+    audioListener.positionX.value = pos.x;
+    audioListener.positionY.value = pos.y;
+    audioListener.positionZ.value = pos.z;
+    audioListener.forwardX.value = forward.x;
+    audioListener.forwardY.value = forward.y;
+    audioListener.forwardZ.value = forward.z;
+    audioListener.upX.value = up.x;
+    audioListener.upY.value = up.y;
+    audioListener.upZ.value = up.z;
+  } else if (audioListener.setPosition) {
+    audioListener.setPosition(pos.x, pos.y, pos.z);
+    audioListener.setOrientation(
+      forward.x,
+      forward.y,
+      forward.z,
+      up.x,
+      up.y,
+      up.z
+    );
+  }
+}
+
+function createNoiseBuffer(durationSeconds) {
+  const ctx = ensureAudio();
+  if (!ctx) return null;
+  const sampleCount = Math.max(1, Math.floor(ctx.sampleRate * durationSeconds));
+  const buffer = ctx.createBuffer(1, sampleCount, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < sampleCount; i++) {
+    data[i] = Math.random() * 2 - 1;
+  }
+  return buffer;
+}
+
+// Plays a short tone burst. Optional worldPosition enables a PannerNode
+// so bot footsteps/gunshots feel spatial without a full 3D audio system.
+function playSynthSound({
+  type = "square",
+  frequency = 440,
+  duration = 0.08,
+  volume = 0.2,
+  frequencyEnd = null,
+  noise = false,
+  worldPosition = null,
+}) {
+  const ctx = ensureAudio();
+  if (!ctx || !sfxGain) return;
+
+  const now = ctx.currentTime;
+  const gainNode = ctx.createGain();
+  gainNode.gain.setValueAtTime(0.0001, now);
+  gainNode.gain.exponentialRampToValueAtTime(Math.max(0.0001, volume), now + 0.005);
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+  let source;
+  if (noise) {
+    const buffer = createNoiseBuffer(duration);
+    if (!buffer) return;
+    source = ctx.createBufferSource();
+    source.buffer = buffer;
+  } else {
+    source = ctx.createOscillator();
+    source.type = type;
+    source.frequency.setValueAtTime(frequency, now);
+    if (frequencyEnd !== null) {
+      source.frequency.exponentialRampToValueAtTime(
+        Math.max(1, frequencyEnd),
+        now + duration
+      );
+    }
+  }
+
+  if (worldPosition && ctx.createPanner) {
+    const panner = ctx.createPanner();
+    panner.panningModel = "HRTF";
+    panner.distanceModel = "inverse";
+    panner.refDistance = 4;
+    panner.maxDistance = 60;
+    panner.rolloffFactor = 1.2;
+    if (typeof panner.positionX !== "undefined") {
+      panner.positionX.value = worldPosition.x;
+      panner.positionY.value = worldPosition.y;
+      panner.positionZ.value = worldPosition.z;
+    } else if (panner.setPosition) {
+      panner.setPosition(worldPosition.x, worldPosition.y, worldPosition.z);
+    }
+    source.connect(gainNode);
+    gainNode.connect(panner);
+    panner.connect(sfxGain);
+  } else {
+    source.connect(gainNode);
+    gainNode.connect(sfxGain);
+  }
+
+  source.start(now);
+  source.stop(now + duration + 0.02);
+}
+
+function playGunshotSound(worldPosition = null) {
+  playSynthSound({
+    noise: true,
+    duration: 0.07,
+    volume: worldPosition ? 0.12 : 0.22,
+    worldPosition,
+  });
+  playSynthSound({
+    type: "triangle",
+    frequency: 180,
+    frequencyEnd: 60,
+    duration: 0.09,
+    volume: worldPosition ? 0.08 : 0.14,
+    worldPosition,
+  });
+}
+
+function playFootstepSound(worldPosition = null, quiet = false) {
+  playSynthSound({
+    noise: true,
+    duration: 0.04,
+    volume: quiet ? 0.04 : worldPosition ? 0.05 : 0.08,
+    worldPosition,
+  });
+}
+
+function playReloadSound() {
+  playSynthSound({
+    type: "square",
+    frequency: 220,
+    frequencyEnd: 140,
+    duration: 0.12,
+    volume: 0.1,
+  });
+  setTimeout(() => {
+    playSynthSound({
+      type: "triangle",
+      frequency: 320,
+      duration: 0.06,
+      volume: 0.08,
+    });
+  }, 200);
+}
+
+function playHitTakenSound() {
+  playSynthSound({
+    type: "sawtooth",
+    frequency: 140,
+    frequencyEnd: 70,
+    duration: 0.12,
+    volume: 0.16,
+  });
+}
+
+function playRegenStartSound() {
+  playSynthSound({
+    type: "sine",
+    frequency: 520,
+    frequencyEnd: 680,
+    duration: 0.15,
+    volume: 0.07,
+  });
+}
+
+function playRegenCompleteSound() {
+  playSynthSound({
+    type: "sine",
+    frequency: 700,
+    frequencyEnd: 900,
+    duration: 0.18,
+    volume: 0.08,
+  });
+}
+
+function playDeathSound() {
+  playSynthSound({
+    type: "sawtooth",
+    frequency: 110,
+    frequencyEnd: 40,
+    duration: 0.35,
+    volume: 0.18,
+  });
+}
+
+function playKillSound() {
+  playSynthSound({
+    type: "square",
+    frequency: 660,
+    frequencyEnd: 990,
+    duration: 0.1,
+    volume: 0.1,
+  });
+}
+
+// -----------------------------------------------------------------------
 // Input handling: keyboard state + mouse look + pointer lock
 // -----------------------------------------------------------------------
 
@@ -1138,7 +1399,7 @@ window.addEventListener("keydown", (event) => {
   // keysPressed each frame like WASD), since holding it down should not
   // deal damage every frame.
   if (event.code === "KeyT" && !isPaused && !isDead && !matchEnded) {
-    damagePlayer(20);
+    damagePlayer(20, { label: "Enemy", team: "red" });
   }
 
   // Manual reload (Milestone 4 extension). Checked once per key-press,
@@ -1156,18 +1417,43 @@ window.addEventListener("keyup", (event) => {
 // camera each frame in the render loop.
 let yaw = 0;
 let pitch = 0;
-const MOUSE_SENSITIVITY = 0.0022;
+// Mutable so the Milestone 14 pause-menu slider can change it live.
+// Default 0.0022 matches the old hardcoded feel (~40 on the 1–100 slider).
+let mouseSensitivity = 0.0022;
+const DEFAULT_MOUSE_SENSITIVITY = 0.0022;
+const MOUSE_SENSITIVITY_MIN = 0.0005;
+const MOUSE_SENSITIVITY_MAX = 0.0055;
+// Temporary camera kick from firing (Milestone 11); decays in tick().
+let recoilPitch = 0;
+let recoilYaw = 0;
 // Clamp pitch so you can't look past straight up/down and flip the camera.
 const PITCH_LIMIT = Math.PI / 2 - 0.01;
 
+function sensitivityFromSliderValue(sliderValue) {
+  const t = Number(sliderValue) / 100;
+  return (
+    MOUSE_SENSITIVITY_MIN +
+    (MOUSE_SENSITIVITY_MAX - MOUSE_SENSITIVITY_MIN) * t
+  );
+}
+
+function sliderValueFromSensitivity(sensitivity) {
+  const t =
+    (sensitivity - MOUSE_SENSITIVITY_MIN) /
+    (MOUSE_SENSITIVITY_MAX - MOUSE_SENSITIVITY_MIN);
+  return Math.round(Math.max(0, Math.min(1, t)) * 100);
+}
+
 // -----------------------------------------------------------------------
-// Pause state + click-to-play/resume overlay (Milestone 2.5)
+// Pause state + click-to-play/resume overlay (Milestones 2.5 + 14)
 // -----------------------------------------------------------------------
-// The game starts paused (isPaused = true). Milestone 9's pre-match menu
-// sits in front first; only after Start Match do we reveal #pause-overlay
-// and allow pointer lock. It pauses again any time pointer lock is lost —
-// Escape, browser force-release, or focus-loss — so there's a single
-// source of truth for "is the game actually playable right now".
+// The game starts paused (isPaused = true). Milestone 15 splash then
+// Milestone 9's pre-match menu sit in front first; only after Start Match
+// do we reveal #pause-overlay and allow pointer lock. It pauses again any
+// time pointer lock is lost — Escape, browser force-release, or focus-loss
+// — so there's a single source of truth for "is the game actually playable
+// right now". Milestone 14 adds a Resume button + sensitivity slider; the
+// pointer-lock / focus pipeline itself is unchanged.
 
 let isPaused = true;
 // False until startMatch() finishes applying the menu config. Keeps the
@@ -1180,15 +1466,40 @@ let hasPlayedBefore = false;
 
 const pauseOverlay = document.getElementById("pause-overlay");
 const pauseOverlayTitle = document.getElementById("pause-overlay-title");
+const pauseResumeButton = document.getElementById("pause-resume-button");
+const pauseSensitivitySlider = document.getElementById("pause-sensitivity");
+
+pauseSensitivitySlider.value = String(
+  sliderValueFromSensitivity(DEFAULT_MOUSE_SENSITIVITY)
+);
+pauseSensitivitySlider.addEventListener("input", () => {
+  mouseSensitivity = sensitivityFromSliderValue(pauseSensitivitySlider.value);
+});
+// Don't let slider interaction bubble into anything that might request lock.
+pauseSensitivitySlider.addEventListener("click", (event) => {
+  event.stopPropagation();
+});
+pauseSensitivitySlider.addEventListener("mousedown", (event) => {
+  event.stopPropagation();
+});
+
+function requestResumePointerLock() {
+  ensureAudio();
+  clearLockRetry();
+  renderer.domElement.requestPointerLock();
+}
 
 function showPauseOverlay() {
-  // Don't steal the screen while the player is still on Match Setup.
-  if (!matchReady) return;
+  // Don't steal the screen while the player is still on Match Setup / splash,
+  // or once the match-end summary owns the screen.
+  if (!matchReady || matchEnded) return;
 
   isPaused = true;
-  pauseOverlayTitle.textContent = hasPlayedBefore
+  const title = hasPlayedBefore
     ? "Paused \u2014 Click to Resume"
     : "Click to Play";
+  pauseOverlayTitle.textContent = title;
+  pauseResumeButton.textContent = hasPlayedBefore ? "Resume" : "Click to Play";
   pauseOverlay.classList.remove("hidden");
 
   // Release any keys that were held down when we paused. Without this, if
@@ -1235,16 +1546,15 @@ function clearLockRetry() {
   }
 }
 
-// Clicking the overlay is the only way to (re-)request pointer lock. Once
-// locked, the overlay is hidden, so this listener simply can't fire again
-// until we're paused - no risk of accidentally re-requesting an active lock.
-pauseOverlay.addEventListener("click", () => {
-  clearLockRetry();
-  renderer.domElement.requestPointerLock();
+// Resume via the dedicated button (Milestone 14) so the sensitivity slider
+// stays usable without accidentally re-locking the pointer.
+pauseResumeButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  requestResumePointerLock();
 });
 
 // This single handler covers every way pointer lock can be gained or lost:
-// clicking the overlay (locked), pressing Escape (browser releases the lock
+// clicking Resume (locked), pressing Escape (browser releases the lock
 // natively), and our own document.exitPointerLock() calls below.
 document.addEventListener("pointerlockchange", () => {
   const isLocked = document.pointerLockElement === renderer.domElement;
@@ -1265,7 +1575,7 @@ document.addEventListener("pointerlockerror", () => {
   clearLockRetry();
   lockRetryTimeoutId = setTimeout(() => {
     lockRetryTimeoutId = null;
-    if (isPaused && document.hasFocus()) {
+    if (isPaused && document.hasFocus() && matchReady && !matchEnded) {
       renderer.domElement.requestPointerLock();
     }
   }, 150);
@@ -1293,8 +1603,8 @@ document.addEventListener("mousemove", (event) => {
   // would spin whenever the mouse merely passes over the page.
   if (document.pointerLockElement !== renderer.domElement) return;
 
-  yaw -= event.movementX * MOUSE_SENSITIVITY;
-  pitch -= event.movementY * MOUSE_SENSITIVITY;
+  yaw -= event.movementX * mouseSensitivity;
+  pitch -= event.movementY * mouseSensitivity;
   pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch));
 });
 
@@ -1317,12 +1627,17 @@ let isDead = false;
 // Timestamp of the last time the player took damage - see
 // regenPlayerHealth() below.
 let playerLastDamageTime = -Infinity;
+// Edge-detect flags for regen SFX (Milestone 12) — so we don't chirp every frame.
+let playerRegenActive = false;
+let playerRegenWasFull = true;
 
 const healthBarFill = document.getElementById("health-bar-fill");
 const deathOverlay = document.getElementById("death-overlay");
 const deathOverlaySubtitle = document.getElementById("death-overlay-subtitle");
 const vignette = document.getElementById("vignette");
 const spawnInvulnOverlay = document.getElementById("spawn-invuln-overlay");
+const hitMarkerEl = document.getElementById("hit-marker");
+let hitMarkerTimeoutId = null;
 
 // Applies a new health value (clamped to [0, PLAYER_MAX_HEALTH]) and
 // updates the HUD bar/color and low-health vignette to match - shared by
@@ -1356,7 +1671,7 @@ function setPlayerHealth(newHealth) {
   }
 }
 
-function damagePlayer(amount) {
+function damagePlayer(amount, killerInfo = null) {
   if (isDead || matchEnded) return;
   // No-op during the post-respawn invulnerability window (see
   // SPAWN_INVULNERABILITY_MS) - shots still visually land, they just
@@ -1364,8 +1679,11 @@ function damagePlayer(amount) {
   if (performance.now() < playerInvulnerableUntil) return;
 
   playerLastDamageTime = performance.now();
+  playerRegenActive = false;
+  playerRegenWasFull = false;
+  playHitTakenSound();
   setPlayerHealth(playerHealth - amount);
-  if (playerHealth === 0) handlePlayerDeath();
+  if (playerHealth === 0) handlePlayerDeath(killerInfo);
 }
 
 // Gradually restores the player's health once HEALTH_REGEN_DELAY_MS has
@@ -1374,9 +1692,28 @@ function damagePlayer(amount) {
 // in), so it naturally stops the instant the player dies.
 function regenPlayerHealth(now, deltaTime) {
   if (isDead) return;
-  if (playerHealth >= PLAYER_MAX_HEALTH) return;
-  if (now - playerLastDamageTime < HEALTH_REGEN_DELAY_MS) return;
+  if (playerHealth >= PLAYER_MAX_HEALTH) {
+    if (playerRegenActive && !playerRegenWasFull) {
+      playRegenCompleteSound();
+    }
+    playerRegenActive = false;
+    playerRegenWasFull = true;
+    return;
+  }
+  if (now - playerLastDamageTime < HEALTH_REGEN_DELAY_MS) {
+    playerRegenActive = false;
+    return;
+  }
+  if (!playerRegenActive) {
+    playerRegenActive = true;
+    playRegenStartSound();
+  }
   setPlayerHealth(playerHealth + HEALTH_REGEN_RATE_PER_SECOND * deltaTime);
+  if (playerHealth >= PLAYER_MAX_HEALTH && !playerRegenWasFull) {
+    playRegenCompleteSound();
+    playerRegenActive = false;
+    playerRegenWasFull = true;
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -1420,22 +1757,23 @@ function startReload() {
 
   isReloading = true;
   updateAmmoDisplay();
+  playReloadSound();
 
-  setTimeout(() => {
+  const reloadTimeoutId = setTimeout(() => {
     currentAmmo = MAGAZINE_SIZE;
     isReloading = false;
     updateAmmoDisplay();
   }, RELOAD_TIME_MS);
+  trackTimeout(reloadTimeoutId);
 }
 
 // -----------------------------------------------------------------------
-// Shooting visual feedback: tracer line + impact flash (Milestone 4)
+// Shooting visual feedback (Milestones 4 + 11)
 // -----------------------------------------------------------------------
 // Per the Visual Style spec: "a thin glowing tracer line from gun to
 // impact point, plus a small flash/particle at the impact point" - no
-// bullet model needed. Both are just added to the scene and removed a
-// few milliseconds later with setTimeout, so they read as a fast instant
-// flash rather than a persistent laser beam.
+// bullet model needed. Milestone 11 adds muzzle flash + hit markers;
+// recoil is applied as camera offsets in tick().
 
 const TRACER_LIFETIME_MS = 70;
 const IMPACT_FLASH_LIFETIME_MS = 120;
@@ -1470,6 +1808,38 @@ function spawnImpactFlash(point) {
   }, IMPACT_FLASH_LIFETIME_MS);
 }
 
+function spawnMuzzleFlash(point) {
+  const flashGeometry = new THREE.SphereGeometry(0.07, 8, 8);
+  const flashMaterial = new THREE.MeshBasicMaterial({
+    color: 0xffee88,
+    transparent: true,
+    opacity: 0.95,
+  });
+  const flashMesh = new THREE.Mesh(flashGeometry, flashMaterial);
+  flashMesh.position.set(point.x, point.y, point.z);
+  scene.add(flashMesh);
+
+  setTimeout(() => {
+    scene.remove(flashMesh);
+    flashGeometry.dispose();
+    flashMaterial.dispose();
+  }, MUZZLE_FLASH_LIFETIME_MS);
+}
+
+function applyRecoilKick() {
+  recoilPitch += RECOIL_PITCH_KICK;
+  recoilYaw += (Math.random() - 0.5) * 2 * RECOIL_YAW_KICK_MAX;
+}
+
+function showHitMarker() {
+  hitMarkerEl.classList.add("active");
+  if (hitMarkerTimeoutId !== null) clearTimeout(hitMarkerTimeoutId);
+  hitMarkerTimeoutId = setTimeout(() => {
+    hitMarkerEl.classList.remove("active");
+    hitMarkerTimeoutId = null;
+  }, HIT_MARKER_LIFETIME_MS);
+}
+
 // Applies a new health value (clamped to [0, BOT_MAX_HEALTH]) and updates
 // that bot's floating health bar - shared by damageBot() and regen.
 function setBotHealth(bot, newHealth) {
@@ -1482,17 +1852,21 @@ function setBotHealth(bot, newHealth) {
 
 // Damages one bot instance. amount defaults to the player's gun damage so
 // player hitscan can call damageBot(bot); bot-vs-bot passes BOT_DAMAGE_PER_HIT.
-function damageBot(bot, amount = GUN_DAMAGE) {
-  if (!bot || bot.destroyed || matchEnded) return;
+// killerInfo ({ label, team }) feeds the kill feed when this hit is lethal.
+// Returns true if damage was actually applied (for hit markers).
+function damageBot(bot, amount = GUN_DAMAGE, killerInfo = null) {
+  if (!bot || bot.destroyed || matchEnded) return false;
   // No-op during post-respawn invulnerability — tracers still land.
-  if (performance.now() < bot.invulnerableUntil) return;
+  if (performance.now() < bot.invulnerableUntil) return false;
 
   bot.lastDamageTime = performance.now();
   setBotHealth(bot, bot.health - amount);
   bot.material.color.set(0xffffff);
-  setTimeout(() => {
-    if (!bot.destroyed) bot.material.color.set(bot.teamColor);
-  }, 80);
+  trackTimeout(
+    setTimeout(() => {
+      if (!bot.destroyed) bot.material.color.set(bot.teamColor);
+    }, 80)
+  );
 
   if (bot.health <= 0) {
     bot.destroyed = true;
@@ -1500,8 +1874,9 @@ function damageBot(bot, amount = GUN_DAMAGE) {
     bot.healthBar.container.style.display = "none";
     bot.minimapDot.style.display = "none";
     bot.collider.setEnabled(false);
-    handleBotDeath(bot);
+    handleBotDeath(bot, killerInfo);
   }
+  return true;
 }
 
 // Gradually restores every living bot's health after HEALTH_REGEN_DELAY_MS.
@@ -1566,6 +1941,10 @@ const SPAWN_INVULNERABILITY_MS = 1500;
 let blueScore = 0;
 let redScore = 0;
 let matchEnded = false;
+// Personal K/D for the post-match summary (Milestone 13). Team scores
+// above still decide the win; these only track the human player's kills/deaths.
+let playerKills = 0;
+let playerDeaths = 0;
 // Set once, the first time the player actually starts playing (see
 // hidePauseOverlay()) - null beforehand so the timer HUD knows not to
 // start counting yet.
@@ -1581,12 +1960,84 @@ let triggerPlayerRespawn = null;
 // scheduleBotRespawn(bot) — per-bot respawn after RESPAWN_DELAY_MS.
 let scheduleBotRespawn = null;
 
+// Soft-reset bookkeeping (Milestone 13 Play Again): cancel the rAF loop,
+// clear pending respawn/reload timeouts, and drop the live Rapier world.
+let animationFrameId = null;
+let activeWorld = null;
+const pendingTimeoutIds = [];
+// tryFireShot lives inside startRenderLoop; this ref lets a single
+// mousedown listener (registered once) call whichever match is live.
+let tryFireShotRef = null;
+let shootInputBound = false;
+let lastPlayerFootstepAt = -Infinity;
+
+function trackTimeout(id) {
+  pendingTimeoutIds.push(id);
+  return id;
+}
+
+function clearTrackedTimeouts() {
+  for (const id of pendingTimeoutIds) {
+    clearTimeout(id);
+  }
+  pendingTimeoutIds.length = 0;
+}
+
 const matchScoreBlueEl = document.getElementById("score-blue-value");
 const matchScoreRedEl = document.getElementById("score-red-value");
 const matchTimerEl = document.getElementById("match-timer");
 const matchEndOverlay = document.getElementById("match-end-overlay");
 const matchEndTitle = document.getElementById("match-end-title");
 const matchEndSubtitle = document.getElementById("match-end-subtitle");
+const matchEndKd = document.getElementById("match-end-kd");
+const matchEndPlayAgainButton = document.getElementById("match-end-play-again");
+const killFeedEl = document.getElementById("kill-feed");
+
+// Kill feed entries (Milestone 13). Oldest fall off when we exceed the cap.
+const KILL_FEED_MAX_ENTRIES = 5;
+const KILL_FEED_LIFETIME_MS = 4000;
+const killFeedEntries = [];
+
+function victimLabelForBot(bot) {
+  return bot.team === "blue" ? "Ally" : "Enemy";
+}
+
+function pushKillFeedEntry(killerInfo, victimLabel, victimTeam) {
+  const killer = killerInfo ?? { label: "Unknown", team: "red" };
+  killFeedEntries.unshift({
+    killerLabel: killer.label,
+    killerTeam: killer.team,
+    victimLabel,
+    victimTeam,
+    expiresAt: performance.now() + KILL_FEED_LIFETIME_MS,
+  });
+  while (killFeedEntries.length > KILL_FEED_MAX_ENTRIES) {
+    killFeedEntries.pop();
+  }
+  renderKillFeed();
+}
+
+function renderKillFeed() {
+  const now = performance.now();
+  for (let i = killFeedEntries.length - 1; i >= 0; i--) {
+    if (killFeedEntries[i].expiresAt <= now) killFeedEntries.splice(i, 1);
+  }
+  killFeedEl.innerHTML = "";
+  for (const entry of killFeedEntries) {
+    const row = document.createElement("div");
+    row.className = "kill-feed-entry";
+    row.innerHTML =
+      `<span class="kill-feed-name ${entry.killerTeam}">${entry.killerLabel}</span>` +
+      `<span class="kill-feed-sep">eliminated</span>` +
+      `<span class="kill-feed-name ${entry.victimTeam}">${entry.victimLabel}</span>`;
+    killFeedEl.appendChild(row);
+  }
+}
+
+function clearKillFeed() {
+  killFeedEntries.length = 0;
+  killFeedEl.innerHTML = "";
+}
 
 // Minimap DOM nodes (Milestone 8). Layout shapes are built once into
 // #minimap-layout; player + per-bot dots are written every frame by
@@ -1732,10 +2183,13 @@ function formatMatchTime(elapsedMs) {
 
 // Ends the match for good: freezes the whole simulation (tick() checks
 // `matchEnded` the same way it already checks `isDead`) and shows the
-// final result. Refreshing the page is still the only way to start a new
-// match - a real "Play Again" button is Milestone 13 polish, not this one.
+// final result + personal K/D. Play Again returns to the pre-match menu.
 function endMatch(winningTeamName) {
   matchEnded = true;
+  isFiring = false;
+  if (document.pointerLockElement === renderer.domElement) {
+    document.exitPointerLock();
+  }
 
   const blueWon = winningTeamName === "BLUE";
   matchEndTitle.textContent = blueWon ? "BLUE TEAM WINS" : "RED TEAM WINS";
@@ -1743,15 +2197,26 @@ function endMatch(winningTeamName) {
   matchEndSubtitle.innerHTML =
     `Final Score: <span class="score-blue">${blueScore}</span> &mdash; ` +
     `<span class="score-red">${redScore}</span>` +
-    ` (first to ${killTarget})<br />` +
-    "Refresh the page to play again.";
+    ` (first to ${killTarget})`;
+  matchEndKd.textContent = `Your K/D: ${playerKills} / ${playerDeaths}`;
   matchEndOverlay.classList.remove("hidden");
+  // Keep pause / death overlays from covering the summary while lock is released.
+  pauseOverlay.classList.add("hidden");
+  deathOverlay.classList.add("hidden");
 }
 
 // Called from damagePlayer() the instant the player's health reaches 0.
 // Awards the kill to RED (the bot's team), then either ends the match or
 // schedules the player's respawn - never both.
-function handlePlayerDeath() {
+function handlePlayerDeath(killerInfo = null) {
+  playerDeaths += 1;
+  playDeathSound();
+  pushKillFeedEntry(
+    killerInfo ?? { label: "Enemy", team: "red" },
+    "You",
+    "blue"
+  );
+
   redScore += 1;
   updateScoreHud();
 
@@ -1767,13 +2232,29 @@ function handlePlayerDeath() {
   updateDeathOverlayCountdown(performance.now());
 
   if (triggerPlayerRespawn) {
-    setTimeout(triggerPlayerRespawn, RESPAWN_DELAY_MS);
+    trackTimeout(setTimeout(triggerPlayerRespawn, RESPAWN_DELAY_MS));
   }
 }
 
 // Called from damageBot() when a bot's health reaches 0. Red deaths award
 // BLUE; blue (ally) deaths award RED — team kills, not per-character.
-function handleBotDeath(bot) {
+function handleBotDeath(bot, killerInfo = null) {
+  const victimLabel = victimLabelForBot(bot);
+  const victimTeam = bot.team;
+  const resolvedKiller =
+    killerInfo ??
+    (bot.team === "red"
+      ? { label: "Ally", team: "blue" }
+      : { label: "Enemy", team: "red" });
+
+  pushKillFeedEntry(resolvedKiller, victimLabel, victimTeam);
+
+  // Player personal kill credit only when the human got the elimination.
+  if (resolvedKiller.label === "You" && bot.team === "red") {
+    playerKills += 1;
+    playKillSound();
+  }
+
   if (bot.team === "red") {
     blueScore += 1;
     updateScoreHud();
@@ -1791,7 +2272,7 @@ function handleBotDeath(bot) {
   }
 
   if (scheduleBotRespawn) {
-    setTimeout(() => scheduleBotRespawn(bot), RESPAWN_DELAY_MS);
+    trackTimeout(setTimeout(() => scheduleBotRespawn(bot), RESPAWN_DELAY_MS));
   }
 }
 
@@ -1969,6 +2450,13 @@ function startRenderLoop({
   playerCollider,
   characterController,
 }) {
+  // Cancel any previous match loop before starting a new one (Play Again).
+  if (animationFrameId !== null) {
+    cancelAnimationFrame(animationFrameId);
+    animationFrameId = null;
+  }
+  activeWorld = world;
+
   // THREE.Timer is the modern replacement for the older THREE.Clock -
   // update() must be called once per frame (with the requestAnimationFrame
   // timestamp) before getDelta() returns the correct value.
@@ -2116,6 +2604,8 @@ function startRenderLoop({
 
     setPlayerHealth(PLAYER_MAX_HEALTH);
     playerLastDamageTime = -Infinity;
+    playerRegenActive = false;
+    playerRegenWasFull = true;
     playerInvulnerableUntil = performance.now() + SPAWN_INVULNERABILITY_MS;
 
     // Fairness: respawning shouldn't leave the player stuck reloading (or
@@ -2190,6 +2680,8 @@ function startRenderLoop({
   function fireShot() {
     currentAmmo -= 1;
     updateAmmoDisplay();
+    applyRecoilKick();
+    playGunshotSound();
 
     // Auto-reload (Milestone 4 extension): as soon as the last round is
     // fired, automatically start reloading - on top of the existing
@@ -2208,6 +2700,7 @@ function startRenderLoop({
     // camera is currently looking.
     camera.updateMatrixWorld();
     const muzzlePosition = camera.localToWorld(MUZZLE_OFFSET.clone());
+    spawnMuzzleFlash(muzzlePosition);
 
     // Exclude the player's own collider so the ray can't hit ourselves
     // point-blank. `solid: true` treats every shape as solid rather than
@@ -2233,7 +2726,9 @@ function startRenderLoop({
       // Player only damages RED enemy bots — never blue allies (no FF).
       const hitBot = colliderToBot.get(hit.collider);
       if (hitBot && hitBot.team === "red") {
-        damageBot(hitBot);
+        if (damageBot(hitBot, GUN_DAMAGE, { label: "You", team: "blue" })) {
+          showHitMarker();
+        }
       }
     } else {
       // Missed everything - draw the tracer out to the max range so a
@@ -2258,16 +2753,20 @@ function startRenderLoop({
     fireShot();
   }
 
-  renderer.domElement.addEventListener("mousedown", (event) => {
-    if (event.button !== 0) return;
-    isFiring = true;
-    // Fire immediately on click rather than waiting for the next tick(),
-    // so single taps still feel responsive instead of having a tiny delay.
-    tryFireShot(performance.now());
-  });
-  renderer.domElement.addEventListener("mouseup", (event) => {
-    if (event.button === 0) isFiring = false;
-  });
+  // Expose to the single module-level mousedown listener so Play Again can
+  // restart the match without stacking duplicate shoot handlers.
+  tryFireShotRef = tryFireShot;
+  if (!shootInputBound) {
+    shootInputBound = true;
+    renderer.domElement.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      isFiring = true;
+      if (tryFireShotRef) tryFireShotRef(performance.now());
+    });
+    renderer.domElement.addEventListener("mouseup", (event) => {
+      if (event.button === 0) isFiring = false;
+    });
+  }
 
   // -----------------------------------------------------------------
   // Bot AI (Milestone 10): shared logic for every ally/enemy bot.
@@ -2488,6 +2987,8 @@ function startRenderLoop({
     );
     bot.group.updateMatrixWorld();
     const muzzlePosition = bot.group.localToWorld(BOT_MARKER_OFFSET.clone());
+    spawnMuzzleFlash(muzzlePosition);
+    playGunshotSound(muzzlePosition);
     const ray = new RAPIER.Ray(botEyePosition, aimDirection);
     const hit = world.castRayAndGetNormal(
       ray,
@@ -2497,6 +2998,10 @@ function startRenderLoop({
       undefined,
       bot.collider
     );
+    const killerInfo =
+      bot.team === "blue"
+        ? { label: "Ally", team: "blue" }
+        : { label: "Enemy", team: "red" };
     if (hit) {
       const hitPoint = {
         x: botEyePosition.x + aimDirection.x * hit.timeOfImpact,
@@ -2506,11 +3011,11 @@ function startRenderLoop({
       spawnTracer(muzzlePosition, hitPoint);
       spawnImpactFlash(hitPoint);
       if (bot.team === "red" && hit.collider === playerCollider) {
-        damagePlayer(BOT_DAMAGE_PER_HIT);
+        damagePlayer(BOT_DAMAGE_PER_HIT, killerInfo);
       } else {
         const hitBot = colliderToBot.get(hit.collider);
         if (hitBot && hitBot.team !== bot.team) {
-          damageBot(hitBot, BOT_DAMAGE_PER_HIT);
+          damageBot(hitBot, BOT_DAMAGE_PER_HIT, killerInfo);
         }
       }
     } else {
@@ -2578,6 +3083,14 @@ function startRenderLoop({
       y: currentPosition.y + correctedMovement.y,
       z: currentPosition.z + correctedMovement.z,
     });
+    // Spatial footstep while actively walking (cadence-gated, not every frame).
+    if (now - bot.lastFootstepAt >= BOT_FOOTSTEP_INTERVAL_MS) {
+      bot.lastFootstepAt = now;
+      playFootstepSound(
+        { x: currentPosition.x, y: currentPosition.y, z: currentPosition.z },
+        true
+      );
+    }
     return false;
   }
   // Per-bot AI tick. Same logic for every tier — only parameters differ.
@@ -2785,6 +3298,21 @@ function startRenderLoop({
         z: currentPosition.z + correctedMovement.z,
       });
 
+      // Player footsteps: grounded + actually moving horizontally, cadence-gated.
+      const horizontalSpeed = Math.hypot(horizontal.x, horizontal.z);
+      if (
+        characterController.computedGrounded() &&
+        horizontalSpeed > 0.0001
+      ) {
+        const interval = isCrouching
+          ? PLAYER_CROUCH_FOOTSTEP_INTERVAL_MS
+          : PLAYER_FOOTSTEP_INTERVAL_MS;
+        if (timestamp - lastPlayerFootstepAt >= interval) {
+          lastPlayerFootstepAt = timestamp;
+          playFootstepSound(null, isCrouching);
+        }
+      }
+
       world.step();
 
       // After physics commits the new position — catch escapes past the
@@ -2821,8 +3349,23 @@ function startRenderLoop({
       standingBodyY + visualEyeFromStanding,
       playerPosition.z
     );
-    camera.rotation.y = yaw;
-    camera.rotation.x = pitch;
+
+    // Recoil kick decays toward zero each frame (Milestone 11). Applied as
+    // a temporary offset so mouse look yaw/pitch stay the "true" aim.
+    const recoilDecay = Math.exp(-RECOIL_RECOVERY_PER_SECOND * deltaTime);
+    recoilPitch *= recoilDecay;
+    recoilYaw *= recoilDecay;
+    if (Math.abs(recoilPitch) < 0.0001) recoilPitch = 0;
+    if (Math.abs(recoilYaw) < 0.0001) recoilYaw = 0;
+
+    camera.rotation.y = yaw + recoilYaw;
+    camera.rotation.x = Math.max(
+      -PITCH_LIMIT,
+      Math.min(PITCH_LIMIT, pitch + recoilPitch)
+    );
+
+    updateAudioListenerFromCamera();
+    renderKillFeed();
 
     // Live death-overlay countdown (3…2…1). Runs even while the simulation
     // is frozen for isDead — uses performance.now() to stay aligned with
@@ -2883,9 +3426,9 @@ function startRenderLoop({
     updateMinimap(playerPosition, yaw);
 
     renderer.render(scene, camera);
-    requestAnimationFrame(tick);
+    animationFrameId = requestAnimationFrame(tick);
   }
-  tick();
+  animationFrameId = requestAnimationFrame(tick);
 }
 
 // -----------------------------------------------------------------------
@@ -2955,9 +3498,128 @@ wirePrematchOptionGroup(document.getElementById("prematch-difficulty"));
 wirePrematchOptionGroup(document.getElementById("prematch-kill-target"));
 updatePrematchTeamHint();
 
+// -----------------------------------------------------------------------
+// Title splash (Milestone 15) + soft reset / Play Again (Milestone 13)
+// -----------------------------------------------------------------------
+
+const titleSplash = document.getElementById("title-splash");
+const titleSplashContinue = document.getElementById("title-splash-continue");
+const titleSplashNameInput = document.getElementById("title-splash-name");
+// Branding placeholder only — kill feed still uses "You".
+let playerDisplayName = "Your Name";
+
+titleSplashContinue.addEventListener("click", () => {
+  ensureAudio();
+  const trimmed = titleSplashNameInput.value.trim();
+  playerDisplayName = trimmed.length > 0 ? trimmed : "Your Name";
+  titleSplashNameInput.value = playerDisplayName;
+  titleSplash.classList.add("hidden");
+  prematchMenu.classList.remove("hidden");
+});
+
+function disposeAllBots() {
+  for (const bot of bots) {
+    scene.remove(bot.group);
+    bot.material.dispose();
+    bot.markerMaterial.dispose();
+    if (bot.healthBar?.container?.parentNode) {
+      bot.healthBar.container.parentNode.removeChild(bot.healthBar.container);
+    }
+    if (bot.minimapDot?.parentNode) {
+      bot.minimapDot.parentNode.removeChild(bot.minimapDot);
+    }
+  }
+  bots.length = 0;
+  colliderToBot.clear();
+}
+
+// Tears down the live match and returns to Match Setup without a page reload
+// so Play Again can start a fresh match with new menu choices.
+function returnToPrematchMenu() {
+  clearLockRetry();
+  clearTrackedTimeouts();
+  if (animationFrameId !== null) {
+    cancelAnimationFrame(animationFrameId);
+    animationFrameId = null;
+  }
+  if (document.pointerLockElement === renderer.domElement) {
+    document.exitPointerLock();
+  }
+
+  disposeAllBots();
+  activeWorld = null;
+  tryFireShotRef = null;
+  triggerPlayerRespawn = null;
+  scheduleBotRespawn = null;
+
+  // Drop arena visuals; next startMatch() rebuilds for the chosen size.
+  clearArenaCoverMeshes();
+  if (groundMesh) {
+    scene.remove(groundMesh);
+    groundMesh.geometry.dispose();
+    groundMesh = null;
+  }
+  for (const mesh of wallMeshes) {
+    scene.remove(mesh);
+    mesh.geometry.dispose();
+  }
+  wallMeshes.length = 0;
+  if (minimapLayoutEl) minimapLayoutEl.innerHTML = "";
+
+  matchReady = false;
+  matchEnded = false;
+  isPaused = true;
+  hasPlayedBefore = false;
+  matchStartTime = null;
+  blueScore = 0;
+  redScore = 0;
+  playerKills = 0;
+  playerDeaths = 0;
+  killTarget = pendingMatchSettings.killTarget;
+  updateScoreHud();
+  matchTimerEl.textContent = "0:00";
+  clearKillFeed();
+
+  isDead = false;
+  playerRespawnAt = null;
+  lastDisplayedRespawnSecond = null;
+  deathOverlay.classList.add("hidden");
+  deathOverlaySubtitle.textContent = "";
+  setPlayerHealth(PLAYER_MAX_HEALTH);
+  playerLastDamageTime = -Infinity;
+  playerRegenActive = false;
+  playerRegenWasFull = true;
+  playerInvulnerableUntil = -Infinity;
+  currentAmmo = MAGAZINE_SIZE;
+  isReloading = false;
+  isFiring = false;
+  updateAmmoDisplay();
+  vignette.classList.remove("active");
+  spawnInvulnOverlay.classList.remove("active");
+  hitMarkerEl.classList.remove("active");
+  recoilPitch = 0;
+  recoilYaw = 0;
+  yaw = 0;
+  pitch = 0;
+  lastPlayerFootstepAt = -Infinity;
+
+  matchEndOverlay.classList.add("hidden");
+  pauseOverlay.classList.add("hidden");
+  titleSplash.classList.add("hidden");
+  prematchMenu.classList.remove("hidden");
+  prematchStartButton.disabled = false;
+  prematchStartButton.textContent = "Start Match";
+}
+
+matchEndPlayAgainButton.addEventListener("click", () => {
+  returnToPrematchMenu();
+});
+
 // Applies menu choices, builds the sized arena, then starts physics + the
-// render loop. Called once from the Start Match button.
+// render loop. Safe to call again after Play Again → returnToPrematchMenu().
 function startMatch() {
+  ensureAudio();
+
   const teamSize = pendingMatchSettings.teamSize;
   const difficulty = pendingMatchSettings.difficulty;
   const chosenKillTarget = pendingMatchSettings.killTarget;
@@ -2973,6 +3635,19 @@ function startMatch() {
     enemyBots: botCounts.enemyBots,
   };
   killTarget = chosenKillTarget;
+
+  // Reset per-match counters in case Start Match is used after a soft reset
+  // that somehow left scores non-zero (Play Again already clears these).
+  blueScore = 0;
+  redScore = 0;
+  playerKills = 0;
+  playerDeaths = 0;
+  matchEnded = false;
+  hasPlayedBefore = false;
+  matchStartTime = null;
+  updateScoreHud();
+  matchTimerEl.textContent = "0:00";
+  clearKillFeed();
 
   buildArena(ARENA_SIZES[teamSize] ?? ARENA_SIZES["1v1"]);
   buildMinimapLayout();

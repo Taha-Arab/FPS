@@ -19,11 +19,9 @@ canvas {
   display: block; /* removes the tiny inline-element gap under the canvas */
 }
 
-/* Click-to-play / pause overlay (Milestone 2.5). Covers the whole viewport
-   whenever the game isn't pointer-locked, so the player always has an
-   obvious, clickable way back into the game (initial load, after Escape,
-   after alt-tabbing away, etc). Unlike the old hint text, this DOES capture
-   clicks (no pointer-events: none) since clicking it is how you resume. */
+/* Pause menu (Milestones 2.5 + 14). Full-screen dimmer; Resume button
+   requests pointer lock. Sensitivity slider must stay interactive without
+   accidentally resuming — default cursor on the overlay, button gets pointer. */
 #pause-overlay {
   position: fixed;
   inset: 0;
@@ -31,15 +29,24 @@ canvas {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.5em;
   background: rgba(0, 0, 0, 0.6);
   color: white;
   font-family: sans-serif;
   text-align: center;
-  cursor: pointer;
   user-select: none;
-  /* Sit above the canvas so it's clickable while shown. */
   z-index: 10;
+}
+
+#pause-overlay-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1em;
+  min-width: 300px;
+  max-width: 380px;
+  padding: 1.75em 2em;
+  background: rgba(20, 24, 32, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 #pause-overlay-title {
@@ -48,8 +55,42 @@ canvas {
 }
 
 #pause-overlay-subtitle {
-  font-size: 1rem;
+  font-size: 0.9rem;
   opacity: 0.8;
+  line-height: 1.4;
+}
+
+#pause-sensitivity-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.85;
+  text-align: left;
+}
+
+#pause-sensitivity {
+  width: 100%;
+  cursor: pointer;
+  accent-color: #3366cc;
+}
+
+#pause-resume-button {
+  margin-top: 0.25em;
+  padding: 0.75em 1.25em;
+  border: none;
+  background: #3366cc;
+  color: white;
+  font-family: inherit;
+  font-size: 1.1rem;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+#pause-resume-button:hover {
+  background: #4076e0;
 }
 
 #pause-overlay.hidden {
@@ -278,6 +319,97 @@ canvas {
   width: 2px;
   height: 100%;
   transform: translateX(-50%);
+}
+
+/* Hit marker (Milestone 11). Small X over the crosshair; shown briefly
+   when the player damages an enemy. */
+#hit-marker {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 6;
+  opacity: 0;
+}
+
+#hit-marker::before,
+#hit-marker::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: #ffffff;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.8);
+}
+
+#hit-marker::before {
+  transform: translateY(-50%) rotate(45deg);
+}
+
+#hit-marker::after {
+  transform: translateY(-50%) rotate(-45deg);
+}
+
+#hit-marker.active {
+  opacity: 1;
+  animation: hit-marker-flash 0.12s ease-out;
+}
+
+@keyframes hit-marker-flash {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.15);
+  }
+  to {
+    opacity: 0.85;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+/* Kill feed (Milestone 13). Recent kills, top-left. */
+#kill-feed {
+  position: fixed;
+  top: 24px;
+  left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+  user-select: none;
+  z-index: 5;
+  font-family: sans-serif;
+  font-size: 0.85rem;
+  color: white;
+  max-width: 280px;
+}
+
+.kill-feed-entry {
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.45);
+  border-left: 3px solid rgba(255, 255, 255, 0.35);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kill-feed-entry .kill-feed-name.blue {
+  color: #3366cc;
+  font-weight: bold;
+}
+
+.kill-feed-entry .kill-feed-name.red {
+  color: #cc3333;
+  font-weight: bold;
+}
+
+.kill-feed-entry .kill-feed-sep {
+  opacity: 0.7;
+  margin: 0 0.35em;
 }
 
 /* Ammo HUD (Milestone 4 extension: full-auto + magazine). Fixed to the
@@ -527,14 +659,123 @@ canvas {
   opacity: 0.9;
 }
 
+#match-end-kd {
+  font-size: 1.1rem;
+  opacity: 0.95;
+  margin-top: 0.25em;
+}
+
+#match-end-play-again {
+  margin-top: 0.75em;
+  padding: 0.75em 1.5em;
+  border: none;
+  background: #3366cc;
+  color: white;
+  font-family: inherit;
+  font-size: 1.1rem;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+#match-end-play-again:hover {
+  background: #4076e0;
+}
+
 #match-end-overlay.hidden {
   display: none;
+}
+
+/* Title splash (Milestone 15). Above prematch until Continue. */
+#title-splash {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.82);
+  color: white;
+  font-family: sans-serif;
+  text-align: center;
+  user-select: none;
+  z-index: 30;
+}
+
+#title-splash.hidden {
+  display: none;
+}
+
+#title-splash-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1em;
+  min-width: 320px;
+  max-width: 420px;
+  padding: 2.25em 2.5em;
+  background: rgba(20, 24, 32, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+#title-splash-title {
+  font-size: 3rem;
+  font-weight: bold;
+  letter-spacing: 0.18em;
+  color: #3366cc;
+}
+
+#title-splash-tagline {
+  font-size: 0.95rem;
+  opacity: 0.75;
+  margin-top: -0.35em;
+}
+
+#title-splash-name-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.85;
+  text-align: left;
+}
+
+#title-splash-name {
+  padding: 0.55em 0.7em;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.35);
+  color: white;
+  font-family: inherit;
+  font-size: 1rem;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+#title-splash-name:focus {
+  outline: none;
+  border-color: #3366cc;
+}
+
+#title-splash-continue {
+  margin-top: 0.35em;
+  padding: 0.75em 1.25em;
+  border: none;
+  background: #3366cc;
+  color: white;
+  font-family: inherit;
+  font-size: 1.1rem;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+#title-splash-continue:hover {
+  background: #4076e0;
 }
 
 /* Pre-match menu (Milestone 9). Full-screen gate before Click to Play —
    same overlay pattern as #pause-overlay / #match-end-overlay, with a
    compact centered panel for the preset buttons. z-index above pause so
-   it stays on top until Start Match hides it. */
+   it stays on top until Start Match hides it. Hidden until splash Continue. */
 #prematch-menu {
   position: fixed;
   inset: 0;

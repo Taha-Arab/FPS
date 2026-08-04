@@ -36,21 +36,24 @@ one is checked off. After finishing a milestone, update this checklist
 (change [ ] to [x]) and tell the user exactly how to verify it themselves
 in the browser before moving on.
 
-### Current Status (Milestones 1–10 complete — v2 done)
-**v1 (Playable Core) is complete**, and **v2 (Milestones 7–10) is
-complete** — platforms + crouch (M7), minimap (M8), pre-match menu (M9),
-and multiple bots + full difficulty tiers / cover-seeking (M10).
-Next up is **v3 polish**, starting with **Milestone 11** (weapon
-feedback: recoil, muzzle flash, tracers, hit markers).
+### Current Status (Milestones 1–15 complete — v3 done)
+**v1 (Playable Core)**, **v2 (Milestones 7–10)**, and **v3 polish
+(Milestones 11–15)** are complete — weapon feedback (M11), Web Audio SFX
+(M12), kill feed + K/D + Play Again (M13), pause menu + sensitivity
+(M14), and title splash (M15).
 
 Everything still lives in one file (`src/main.js`, plus `index.html` /
 `src/style.css`); it hasn't been split into modules yet since it's still
 small enough to stay readable. Uses `THREE.Timer` (not the deprecated
-`THREE.Clock`) for per-frame delta-time.
+`THREE.Clock`) for per-frame delta-time. Audio uses the browser Web
+Audio API with synthesized one-shots (no new npm deps / no sound files).
 
 **Working summary (what a fresh session can rely on):**
-- **Pre-match menu (Milestone 9 complete):** `#prematch-menu` gates
-  startup before the match. Player picks team size (`1v1`/`3v3`/`5v5`),
+- **Title splash (Milestone 15 complete):** `#title-splash` shows first
+  with game title + editable name placeholder; **Continue** reveals the
+  pre-match menu (and resumes AudioContext on that gesture).
+- **Pre-match menu (Milestone 9 complete):** `#prematch-menu` (hidden
+  until splash Continue). Player picks team size (`1v1`/`3v3`/`5v5`),
   bot difficulty (Easy/Medium/Hard), and kill target (`5`/`10`/`15`),
   then **Start Match** runs `startMatch()` →
   `buildArena(ARENA_SIZES[preset])` (ground/walls +
@@ -62,6 +65,19 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   hints (`TEAM_SIZE_HINTS`) describe the real spawned counts. Follow-ups
   from M9: arena cover density scales with preset size; player fire rate
   matched to bots; crouch camera eases instead of snapping.
+- **Weapon feedback (Milestone 11 complete):** Player fire kicks
+  `recoilPitch`/`recoilYaw` (decays in `tick`), `spawnMuzzleFlash` at
+  `MUZZLE_OFFSET`, existing `spawnTracer`/`spawnImpactFlash`, and
+  `#hit-marker` on successful damage to red bots.
+- **Audio (Milestone 12 complete):** Gunshot, cadence-gated footsteps
+  (player + spatial bots), reload, hit-taken, regen start/complete,
+  death + player-kill cues via Web Audio helpers (`ensureAudio`,
+  `playSynthSound`, etc.).
+- **Kill feed + post-match (Milestone 13 complete):** `#kill-feed`
+  shows recent eliminations (You/Ally/Enemy, team-colored).
+  `playerKills`/`playerDeaths` on `#match-end-kd`; **Play Again** runs
+  `returnToPrematchMenu()` (soft teardown, back to Match Setup — no
+  page refresh).
 - **Movement:** WASD + mouse look + Space jump + hold **C** crouch.
   Player is a Rapier `kinematicPositionBased` capsule
   (`PLAYER_RADIUS = 0.4`, `PLAYER_HALF_HEIGHT = 0.6` standing /
@@ -78,13 +94,15 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   jump/fall track the body with no lag. Respawn / OOB recovery call
   `snapCameraHeightToPlayer()`. Yaw/pitch are plain variables applied to
   `camera.rotation` (`rotation.order = "YXZ"`).
-- **Pointer lock / focus handling:** After Start Match, game starts
-  paused with `#pause-overlay` ("Click to Play"). `pointerlockchange`
-  plus `blur`/`visibilitychange` pause on Escape / focus loss; resume
-  re-locks the pointer (with Chrome Escape-cooldown retry). Clears
-  `keysPressed` / `isFiring` on pause so held inputs can't stick across
-  alt-tab. `matchReady` keeps pause/focus handlers from covering the
-  pre-match menu before Start Match.
+- **Pointer lock / pause menu (Milestones 2.5 + 14 complete):** After
+  Start Match, game starts paused with `#pause-overlay` (Click to Play /
+  Paused + **Resume** button + mouse sensitivity slider writing
+  `mouseSensitivity`). `pointerlockchange` plus `blur`/`visibilitychange`
+  pause on Escape / focus loss; Resume re-locks the pointer (with Chrome
+  Escape-cooldown retry). Slider clicks `stopPropagation` so adjusting
+  sensitivity never requests lock. Clears `keysPressed` / `isFiring` on
+  pause. `matchReady` / `matchEnded` keep pause from covering splash,
+  pre-match, or the match-end summary.
 - **Arena + platforms:** Sized via `ARENA_SIZES` (`1v1`/`3v3`/`5v5` →
   30/45/60m); `GROUND_SIZE` / ground + boundary wall meshes come from
   `buildArena()` using the pre-match team-size preset.
@@ -121,11 +139,12 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   `BOT_FIRE_RATE_RPM` so kills aren't trivial from RPM alone),
   magazine/reload (`MAGAZINE_SIZE` / `RELOAD_TIME_MS`, manual R or auto
   on empty), tracers (`spawnTracer()` via `MUZZLE_OFFSET`) + impact
-  flashes. Hit resolution uses `colliderToBot` Map — player damages
-  **red bots only** (no friendly fire on blue allies). HUD: crosshair,
-  ammo pill (low-ammo flash), health bar, low-health vignette. Debug "T"
-  key still calls `damagePlayer(20)` for quick health/death testing. No
-  visible gun model yet (polish later).
+  flashes, muzzle flash, recoil, hit markers. Hit resolution uses
+  `colliderToBot` Map — player damages **red bots only** (no friendly
+  fire on blue allies). HUD: crosshair, hit marker, kill feed, ammo pill
+  (low-ammo flash), health bar, low-health vignette. Debug "T" key still
+  calls `damagePlayer(20)` for quick health/death testing. No visible
+  gun model yet.
 - **Multiple AI bots (Milestone 10 complete):** Live `bots[]` from
   `spawnBotsForMatch()` / `createBotInstance()` using
   `matchConfig.allyBots` / `enemyBots` via `TEAM_SIZE_BOT_COUNTS`:
@@ -176,8 +195,8 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   `blueScore++`; player death or blue ally death → `redScore++`
   (`handleBotDeath(bot)` / `handlePlayerDeath()`). First team to
   `killTarget` (menu: 5 / 10 / 15) wins via `endMatch()` →
-  `#match-end-overlay` + `matchEnded` freezes simulation. Refresh page to
-  play again (real "Play Again" is Milestone 13).
+  `#match-end-overlay` + `matchEnded` freezes simulation; Play Again
+  calls `returnToPrematchMenu()` back to Match Setup.
 - **Minimap (Milestone 8 complete, multi-bot in M10):** Top-right
   `#minimap` (140×140 DOM panel). Static layout layer
   (`buildMinimapLayout()` → `#minimap-layout`) draws simplified XZ
@@ -321,20 +340,23 @@ default 5), `RESPAWN_DELAY_MS = 3000`, `SPAWN_INVULNERABILITY_MS = 1500`.
       damage.
 
 ### v3 — Polish (portfolio-ready)
-- [ ] 11. Weapon feedback: recoil, muzzle flash, tracers, hit markers.
-- [ ] 12. Audio: footsteps, gunshot, hit sound.
-- [ ] 13. Kill feed + post-match summary screen (K/D) + Play Again button.
-- [ ] 14. Pause menu with sensitivity slider, click-to-play/pointer lock
+- [x] 11. Weapon feedback: recoil, muzzle flash, tracers, hit markers.
+- [x] 12. Audio: footsteps, gunshot, hit sound (plus reload, regen,
+      death/kill cues via Web Audio).
+- [x] 13. Kill feed + post-match summary screen (K/D) + Play Again button.
+- [x] 14. Pause menu with sensitivity slider, click-to-play/pointer lock
       handling.
-- [ ] 15. Title/splash screen with player's name.
+- [x] 15. Title/splash screen with player's name.
 
 
 ## Pointer Lock / Focus Handling (get this right early, not as an afterthought)
 This is a common failure point in browser FPS projects — handle it deliberately:
 - Game starts paused with a "Click to Play" overlay. Mouse-look does NOT
   work until the user clicks and pointer lock is granted.
-- Clicking the overlay requests the browser's Pointer Lock API. Once
-  granted, cursor disappears and mouse movement drives camera look.
+- Clicking **Resume** / Click to Play on the pause menu requests the
+  browser's Pointer Lock API. Once granted, cursor disappears and mouse
+  movement drives camera look. A sensitivity slider on the same menu
+  adjusts look speed without requesting lock.
 - Pressing Escape (or the browser auto-releasing pointer lock) must pause
   the game AND show a resume overlay — never leave the game running with
   dead/broken mouse-look.
