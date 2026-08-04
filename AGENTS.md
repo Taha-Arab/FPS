@@ -36,11 +36,12 @@ one is checked off. After finishing a milestone, update this checklist
 (change [ ] to [x]) and tell the user exactly how to verify it themselves
 in the browser before moving on.
 
-### Current Status (Milestones 1–9 complete)
-**v1 (Playable Core) is complete**, and **Milestones 7–9** are done —
-platforms + crouch (M7), minimap (M8), and the pre-match menu (M9).
-Next up is **Milestone 10** (multiple bots + full difficulty tiers /
-cover-seeking).
+### Current Status (Milestones 1–10 complete — v2 done)
+**v1 (Playable Core) is complete**, and **v2 (Milestones 7–10) is
+complete** — platforms + crouch (M7), minimap (M8), pre-match menu (M9),
+and multiple bots + full difficulty tiers / cover-seeking (M10).
+Next up is **v3 polish**, starting with **Milestone 11** (weapon
+feedback: recoil, muzzle flash, tracers, hit markers).
 
 Everything still lives in one file (`src/main.js`, plus `index.html` /
 `src/style.css`); it hasn't been split into modules yet since it's still
@@ -53,17 +54,14 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   bot difficulty (Easy/Medium/Hard), and kill target (`5`/`10`/`15`),
   then **Start Match** runs `startMatch()` →
   `buildArena(ARENA_SIZES[preset])` (ground/walls +
-  `buildArenaCover()`) → `buildMinimapLayout()` → `initPhysics()` →
-  `startRenderLoop()`, then reveals `#pause-overlay` ("Click to Play").
-  `matchConfig` stores the choices plus intended `allyBots`/`enemyBots`
-  counts per the team-size counting rule (for Milestone 10); only the
-  existing single enemy bot still spawns today. Difficulty applies
-  `DIFFICULTY_TIERS` into `botReactionDelayMs` / `botAimSpreadRadians`
-  (and stores `botUsesCover` for Milestone 10 cover-seeking — unused by
-  today's patrol/chase AI). Follow-ups beyond the original M9 checklist
-  (also reflected below): arena cover density scales with preset size;
-  player fire rate matched to the bot; crouch camera eases instead of
-  snapping.
+  `buildArenaCover()` + `buildCoverSlots()`) → `buildMinimapLayout()` →
+  `initPhysics()` / `spawnBotsForMatch()` → `startRenderLoop()`, then
+  reveals `#pause-overlay` ("Click to Play"). `matchConfig` stores
+  `teamSize`, `difficulty`, `killTarget`, plus `allyBots`/`enemyBots`
+  from `TEAM_SIZE_BOT_COUNTS` (player counts as one BLUE member). Menu
+  hints (`TEAM_SIZE_HINTS`) describe the real spawned counts. Follow-ups
+  from M9: arena cover density scales with preset size; player fire rate
+  matched to bots; crouch camera eases instead of snapping.
 - **Movement:** WASD + mouse look + Space jump + hold **C** crouch.
   Player is a Rapier `kinematicPositionBased` capsule
   (`PLAYER_RADIUS = 0.4`, `PLAYER_HALF_HEIGHT = 0.6` standing /
@@ -96,94 +94,115 @@ small enough to stay readable. Uses `THREE.Timer` (not the deprecated
   (original 1v1 center cluster), `MID_RING_*` (3v3+), `OUTER_RING_*`
   (5v5) — same competitive language (center chokepoint, denser west,
   sparser east, N/S sightline breakers), not an empty rim around the
-  same few props. Solid cover stays ground-resting blockers (shorter
-  ones still jump-on-top via the character controller — not walk-under).
-  Elevated decks (east bridge, west raised platform, low crouch
-  underpass, plus extra decks/underpasses on larger presets) have
-  visible legs, open undercroft (stand-under ~2.25m on tall decks;
-  crouch-only ~1.35m on low underpasses), and access ramps. Boundary
-  walls use `WALL_HEIGHT = 6` plus invisible collision-only containment
-  cuboids (`BOUNDARY_CONTAINMENT_HEIGHT = 20`) so players cannot climb
-  over the rim from tall decks. Soft OOB recovery
+  same few props. End of `buildArenaCover()` also calls
+  `buildCoverSlots()` (Hard-tier AI stand-points beside boxes/pillars).
+  Solid cover stays ground-resting blockers (shorter ones still
+  jump-on-top via the character controller — not walk-under). Elevated
+  decks (east bridge, west raised platform, low crouch underpass, plus
+  extra decks/underpasses on larger presets) have visible legs, open
+  undercroft (stand-under ~2.25m on tall decks; crouch-only ~1.35m on
+  low underpasses), and access ramps. Boundary walls use
+  `WALL_HEIGHT = 6` plus invisible collision-only containment cuboids
+  (`BOUNDARY_CONTAINMENT_HEIGHT = 20`) so players cannot climb over the
+  rim from tall decks. Soft OOB recovery
   (`recoverPlayerFromOutOfBounds`, `OOB_MARGIN`) teleports the player to
   a random blue-team spawn if they somehow leave the ground pad — no
   death/score change.
 - **Team spawns:** BLUE (`BLUE_TEAM_SPAWN_POINTS`, +Z / player side) vs
-  RED (`RED_TEAM_SPAWN_POINTS`, -Z / enemy side). On match start and each
-  respawn, pick randomly among that team's candidates (player drop-in
-  `y = PLAYER_SPAWN_DROP_Y`). Points are clear of the base-cluster
-  obstacles/platforms and stay on opposite sides of the chokepoint so
-  neither team can immediately see/shoot into the other's spawn zone.
+  RED (`RED_TEAM_SPAWN_POINTS`, -Z / enemy side), 5 candidates each.
+  Match start shuffles both pools (`shuffleSpawnPoints()`): player takes
+  blue `[0]`, ally bots take blue `[1…]`, enemies take shuffled red —
+  avoids stacking at load. Respawn still picks randomly from that team's
+  pool (player drop-in `y = PLAYER_SPAWN_DROP_Y`). Zones stay on opposite
+  sides of the chokepoint so neither can immediately see/shoot into the
+  other's spawn area.
 - **Shooting + player HUD:** Hitscan gun (`world.castRayAndGetNormal()`),
   full-auto via `isFiring` + `FIRE_RATE_RPM` (**300**, matched to
   `BOT_FIRE_RATE_RPM` so kills aren't trivial from RPM alone),
   magazine/reload (`MAGAZINE_SIZE` / `RELOAD_TIME_MS`, manual R or auto
   on empty), tracers (`spawnTracer()` via `MUZZLE_OFFSET`) + impact
-  flashes. HUD: crosshair, ammo pill (low-ammo flash), health bar,
-  low-health vignette. Debug "T" key still calls `damagePlayer(20)` for
-  quick health/death testing. No visible gun model yet (polish later).
-- **One AI bot:** Red capsule + facing marker (`botGroup` /
-  `BOT_MARKER_OFFSET`), own kinematic body + own character controller
-  (`botCharacterController` — must stay separate from the player's).
-  Shared LOS helper `hasLineOfSight()`; bot AI vision via
-  `botCanSeePlayer()` only (never omniscient); turn-speed-limited aim
-  (`rotateGroupTowards()` / `BOT_TURN_SPEED_RADIANS_PER_SEC`); fires after
-  `botReactionDelayMs` (from pre-match difficulty) once aimed within
-  `BOT_AIM_ANGLE_THRESHOLD_RADIANS`, with `botAimSpreadRadians` jitter;
-  fire cadence `BOT_FIRE_RATE_RPM = 300` (same as the player — bot
-  difficulty comes from reaction/aim/cover, not a slower gun). When it
-  can't see the player: chases `botLastKnownPlayerPosition`, else
-  patrols hand-placed `BOT_PATROL_POINTS` near cover (`moveBotTowards()`)
-  — simple waypoint patrol, NOT Milestone 10's tactical cover-seeking.
-  Health equals `PLAYER_MAX_HEALTH`; both sides regen after
-  `HEALTH_REGEN_DELAY_MS` at `HEALTH_REGEN_RATE_PER_SECOND`.
-- **Floating health bars:** `createFloatingHealthBar({ isEnemy })`. Enemy
-  bars show only when the player has LOS (`playerCanSeeBot()` — same
-  raycast pattern as bot vision, from the player's eye); ally bars stay
-  always visible for team awareness (`isEnemy: false` when ally bots
-  exist). No ally bots yet (Milestone 10 — menu already stores intended
-  counts in `matchConfig`).
+  flashes. Hit resolution uses `colliderToBot` Map — player damages
+  **red bots only** (no friendly fire on blue allies). HUD: crosshair,
+  ammo pill (low-ammo flash), health bar, low-health vignette. Debug "T"
+  key still calls `damagePlayer(20)` for quick health/death testing. No
+  visible gun model yet (polish later).
+- **Multiple AI bots (Milestone 10 complete):** Live `bots[]` from
+  `spawnBotsForMatch()` / `createBotInstance()` using
+  `matchConfig.allyBots` / `enemyBots` via `TEAM_SIZE_BOT_COUNTS`:
+  - 1v1 = 0 allies + 1 enemy
+  - 3v3 = 2 allies + 3 enemies
+  - 5v5 = 4 allies + 5 enemies
+  Blue allies (`ALLY_BOT_COLOR = 0x3366cc`) + red enemies
+  (`ENEMY_BOT_COLOR = 0xcc3333`); each owns kinematic body, own
+  character controller, capsule + facing marker (`BOT_MARKER_OFFSET`),
+  floating health bar, minimap dot. Shared AI (`updateAllBots()` →
+  `updateBot()`): LOS via `hasLineOfSight()`; nearest visible hostile
+  via `pickVisibleHostile()` / `getHostileCandidates()` — **team-gated**
+  (blue → living red bots only, never the player or other blues; red →
+  living player + living blue bots only, never other reds). Bot shots
+  re-check team on hit (`damagePlayer` / `damageBot(target,
+  BOT_DAMAGE_PER_HIT)`). Same logic all tiers; per-bot knobs from
+  `DIFFICULTY_TIERS` copied at spawn:
+  - Easy: reaction 900ms, spread 0.08, turn ~100°/s, no cover
+  - Medium: reaction 500ms, spread 0.035, turn 180°/s, no cover
+  - Hard: reaction 250ms, spread 0.015, turn ~270°/s, `usesCover: true`
+  Hard cover-seeking: after damage within `COVER_SEEK_WINDOW_MS` (3s),
+  path to a `coverSlots` stand-point that breaks threat LOS
+  (`pickCoverSlot()` / `isSlotHiddenFromThreat()`), then
+  `holdingCover` until the under-fire window ends (avoids slot hopping).
+  When not engaging: chase `lastKnownTargetPosition`, else patrol
+  `BOT_PATROL_POINTS` (`moveBotTowards()`). Fire cadence
+  `BOT_FIRE_RATE_RPM = 300` (difficulty is reaction/aim/turn/cover, not
+  RPM). Health = `PLAYER_MAX_HEALTH`; regen via `regenAllBotsHealth()`.
+- **Floating health bars:** one `createFloatingHealthBar({ isEnemy })`
+  per bot. Enemy bars LOS-gated (`playerCanSeeBot()`); ally bars always
+  visible (`isEnemy: false`).
 - **Respawn + spawn invulnerability:** On death, player shows
   `#death-overlay` with a live countdown on `#death-overlay-subtitle`
   (3…2…1 via `playerRespawnAt` / `updateDeathOverlayCountdown()`, synced
   to `RESPAWN_DELAY_MS`), then `respawnPlayer()` (random blue spawn, full
-  health/ammo, camera crouch-blend snapped). Bot disables collider +
-  hides mesh, then `respawnBot()` re-enables/shows, picks a random red
-  spawn, and resets AI state. Both get `SPAWN_INVULNERABILITY_MS` (1.5s)
-  of no-damage (`playerInvulnerableUntil` / `botInvulnerableUntil` —
-  early returns in `damagePlayer()` / `damageBot()`; tracers still land).
+  health/ammo, camera crouch-blend snapped). Each bot disables collider +
+  hides mesh/dot/bar, then `scheduleBotRespawn` → `respawnBot(bot)`
+  re-enables/shows, picks a random team spawn, resets AI state
+  (including `coverTarget` / `holdingCover`). `SPAWN_INVULNERABILITY_MS`
+  (1.5s) via `playerInvulnerableUntil` / per-bot `invulnerableUntil`
+  (early returns in `damagePlayer()` / `damageBot()`; tracers still land).
   Cues: pulsing blue `#spawn-invuln-overlay` for the player;
-  `botMaterial.opacity = 0.5` for the bot.
+  `material.opacity = 0.5` per invulnerable bot.
 - **Team score / timer HUD + win condition:** Top-center `#match-hud`
   shows BLUE/RED team scores (`blueScore` / `redScore`) and a count-up
   match timer (starts on first pointer-lock; doesn't subtract paused time —
-  accepted v1 simplification). First team to `killTarget` (from the
-  pre-match menu: 5 / 10 / 15) wins via `endMatch()` →
+  accepted v1 simplification). Scoring is team-based: red bot death →
+  `blueScore++`; player death or blue ally death → `redScore++`
+  (`handleBotDeath(bot)` / `handlePlayerDeath()`). First team to
+  `killTarget` (menu: 5 / 10 / 15) wins via `endMatch()` →
   `#match-end-overlay` + `matchEnded` freezes simulation. Refresh page to
   play again (real "Play Again" is Milestone 13).
-- **Minimap (Milestone 8 complete):** Top-right `#minimap` (140×140 DOM
-  panel) for spatial awareness — not dots-only. Static layout layer
-  (`buildMinimapLayout()` → `#minimap-layout`, called after
-  `buildArena()` / `buildArenaCover()` on Start Match) draws simplified
-  XZ footprints from the runtime cover/platform defs (boxes, pillars,
-  ground ramps, elevated decks/access ramps; thin support legs omitted).
-  Cover vs platform use distinct CSS fills. Each frame `updateMinimap()`
-  maps `playerBody` / `botBody` XZ via `GROUND_SIZE` onto blue
-  (`#3366cc`) player + red (`#cc3333`) enemy dots. Player marker rotates
-  with `yaw` (facing chevron). Enemy dot hidden while `botDestroyed`.
-  Larger arenas show the extra mid/outer-ring footprints. No ally-bot
-  dots yet (Milestone 10).
+- **Minimap (Milestone 8 complete, multi-bot in M10):** Top-right
+  `#minimap` (140×140 DOM panel). Static layout layer
+  (`buildMinimapLayout()` → `#minimap-layout`) draws simplified XZ
+  footprints from runtime cover/platform defs (boxes, pillars, ground
+  ramps, elevated decks/access ramps; thin support legs omitted). Cover
+  vs platform use distinct CSS fills. Each frame `updateMinimap()` maps
+  `playerBody` + every living bot via `GROUND_SIZE` onto blue player /
+  ally dots (`#3366cc`) and red enemy dots (`#cc3333`). Player marker
+  rotates with `yaw` (facing chevron). Destroyed bots hide their dots.
+  Bot dots created in JS (`createMinimapDot()`); `#minimap-player` stays
+  in HTML. Larger arenas show the extra mid/outer-ring footprints.
 
 Key tuning constants in `src/main.js` include: `ARENA_SIZES`,
-`WALL_HEIGHT = 6`, `BOUNDARY_CONTAINMENT_HEIGHT = 20`, `OOB_MARGIN = 0.5`,
-`MOVE_SPEED = 5`, `JUMP_SPEED = 6`, `GRAVITY = 20`, `PLAYER_RADIUS = 0.4`,
+`TEAM_SIZE_BOT_COUNTS`, `WALL_HEIGHT = 6`,
+`BOUNDARY_CONTAINMENT_HEIGHT = 20`, `OOB_MARGIN = 0.5`, `MOVE_SPEED = 5`,
+`JUMP_SPEED = 6`, `GRAVITY = 20`, `PLAYER_RADIUS = 0.4`,
 `PLAYER_HALF_HEIGHT = 0.6`, `EYE_HEIGHT = 0.8`, `CROUCH_HALF_HEIGHT = 0.15`,
 `CROUCH_EYE_HEIGHT = 0.35`, `CROUCH_MOVE_SPEED = 2.5`,
 `CROUCH_CAMERA_TRANSITION_SECONDS = 0.15`, `GUN_DAMAGE = 25`,
 `FIRE_RATE_RPM = 300` (= `BOT_FIRE_RATE_RPM`), `MAGAZINE_SIZE = 30`,
-`RELOAD_TIME_MS = 1800`, `PLAYER_MAX_HEALTH = 100`,
+`RELOAD_TIME_MS = 1800`, `PLAYER_MAX_HEALTH = 100` (= `BOT_MAX_HEALTH`),
 `HEALTH_REGEN_DELAY_MS = 5000`, `HEALTH_REGEN_RATE_PER_SECOND = 8`,
-`BOT_*` AI/movement/aim constants, `DIFFICULTY_TIERS`,
+`BOT_MOVE_SPEED = 3`, `BOT_AIM_ANGLE_THRESHOLD_RADIANS`,
+`COVER_SEEK_WINDOW_MS = 3000`, `DIFFICULTY_TIERS` (Easy/Medium/Hard
+reaction / aim spread / turn speed / `usesCover`),
 `BLUE_TEAM_SPAWN_POINTS` / `RED_TEAM_SPAWN_POINTS`, `killTarget` (menu
 default 5), `RESPAWN_DELAY_MS = 3000`, `SPAWN_INVULNERABILITY_MS = 1500`.
 
@@ -248,12 +267,14 @@ default 5), `RESPAWN_DELAY_MS = 3000`, `SPAWN_INVULNERABILITY_MS = 1500`.
           respawn; zones stay separated by the center chokepoint.
         - Live respawn countdown on `#death-overlay-subtitle` (3…2…1)
           synced to `RESPAWN_DELAY_MS` via `playerRespawnAt`.
-- [x] 8. Minimap: COMPLETE. Top-down indicator of player + bot positions
-      that updates live, plus a simplified obstacle/platform layout for
-      arena spatial awareness. Top-right `#minimap` DOM panel; blue
-      player dot (yaw-facing chevron) + red enemy bot dot via
-      `updateMinimap()` / `worldToMinimapPercent()` using `GROUND_SIZE`
-      (enemy dot hidden while `botDestroyed`). Static layout layer via
+- [x] 8. Minimap: COMPLETE (later extended by M10 for N bots). Top-down
+      indicator of player + bot positions that updates live, plus a
+      simplified obstacle/platform layout for arena spatial awareness.
+      Top-right `#minimap` DOM panel; blue player dot (yaw-facing
+      chevron) + per-bot dots via `updateMinimap()` /
+      `worldToMinimapPercent()` using `GROUND_SIZE` (destroyed bots hide
+      their dots; ally dots added in Milestone 10 via
+      `createMinimapDot()`). Static layout layer via
       `buildMinimapLayout()` → `#minimap-layout`: Milestone 3 cover
       footprints + Milestone 7 elevated decks/ramps (support legs
       omitted). Verify: move around and confirm dots track live over a
@@ -262,14 +283,11 @@ default 5), `RESPAWN_DELAY_MS = 3000`, `SPAWN_INVULNERABILITY_MS = 1500`.
       (1v1/3v3/5v5), bot difficulty (Easy/Medium/Hard), and kill target
       (5/10/15) shown in `#prematch-menu` before the match starts. Start
       Match applies arena size via `buildArena(ARENA_SIZES[preset])`,
-      stores intended bot counts in `matchConfig` (player counts as one
-      team member), sets `killTarget`, and applies Easy/Medium/Hard
-      reaction delay + aim spread to the existing single bot
-      (`DIFFICULTY_TIERS` → `botReactionDelayMs` / `botAimSpreadRadians`;
-      `botUsesCover` stored for Milestone 10). Multi-bot spawning per
-      preset is intentionally still Milestone 10 — 3v3/5v5 still play
-      with one enemy bot for now. Also includes follow-ups beyond the
-      original M9 checklist — see "Current Status" above for details:
+      stores bot counts in `matchConfig` (player counts as one team
+      member), sets `killTarget`; Milestone 10 consumes those counts for
+      real multi-bot spawn + applies `DIFFICULTY_TIERS` knobs to every
+      bot. Also includes follow-ups beyond the original M9 checklist —
+      see "Current Status" above for details:
         - Arena cover density scaling: `buildArenaCover()` keeps the 1v1
           `BASE_*` cluster and adds `MID_RING_*` (3v3+) / `OUTER_RING_*`
           (5v5) obstacles/platforms so larger pads keep similar density
@@ -284,20 +302,23 @@ default 5), `RESPAWN_DELAY_MS = 3000`, `SPAWN_INVULNERABILITY_MS = 1500`.
       ends the match at the chosen N; Easy vs Hard aim/reaction feels
       different; hold C camera eases (no snap); player fire rate feels
       comparable to the bot's.
-- [ ] 10. Multiple bots + difficulty tiers: spawn the correct ally/enemy
-      bot counts from `matchConfig`, and make reaction delay / aim spread /
-      cover usage fully differ by tier (including real cover-seeking).
-      Verify: selecting each preset spawns the correct bot counts; Easy
-      bots miss more and react slower than Hard bots (rough eyeball test
-      is fine).
-      NOTE: basic single-bot patrol/chase movement (`moveBotTowards()`,
-      `BOT_PATROL_POINTS` in `src/main.js`) was already added ahead of
-      schedule, and Milestone 9 already wires Easy/Medium/Hard reaction/
-      aim params onto that one bot — see "Current Status" above. What's
-      still missing and IS this milestone's job: multiple simultaneous
-      bots, and real cover-seeking behavior that honors `botUsesCover`
-      (today's patrol points are just hand-placed waypoints near cover,
-      not bots reacting tactically to incoming fire).
+- [x] 10. Multiple bots + difficulty tiers: COMPLETE. Spawns correct
+      ally/enemy counts from `matchConfig` / `TEAM_SIZE_BOT_COUNTS`
+      (`spawnBotsForMatch()` / `createBotInstance()` → live `bots[]`).
+      Shared AI (`updateBot`) with explicit team-gated targeting
+      (`pickVisibleHostile` / `getHostileCandidates`) — allies never
+      target the player or each other; enemies never target other reds;
+      player hitscan ignores blue allies (`colliderToBot`). Same AI
+      logic all tiers; Easy/Medium/Hard differ by `reactionDelayMs`,
+      `aimSpreadRadians`, `turnSpeedRadiansPerSec`, and Hard-only
+      cover-seeking (`buildCoverSlots()` → `coverSlots`,
+      `usesCover` + `COVER_SEEK_WINDOW_MS` / `holdingCover` after
+      damage). Also wires per-bot floating bars, minimap dots, respawn,
+      and team scoring (red death → BLUE; player/ally death → RED).
+      Verify: each preset spawns the right bot counts on the minimap;
+      allies never shoot you/each other; Easy misses more / reacts
+      slower than Hard; Hard bots peel to crates/pillars after taking
+      damage.
 
 ### v3 — Polish (portfolio-ready)
 - [ ] 11. Weapon feedback: recoil, muzzle flash, tracers, hit markers.

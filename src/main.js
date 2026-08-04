@@ -175,9 +175,8 @@ scene.add(sunLight);
 
 const ARENA_SIZES = { "1v1": 30, "3v3": 45, "5v5": 60 };
 
-// Intended bot counts per team-size preset (player counts as one BLUE
-// member — see AGENTS.md). Stored on Start Match for Milestone 10; this
-// milestone still spawns only the single existing enemy bot.
+// Bot counts per team-size preset (player counts as one BLUE member —
+// see AGENTS.md). Consumed by spawnBotsForMatch() on Start Match.
 const TEAM_SIZE_BOT_COUNTS = {
   "1v1": { allyBots: 0, enemyBots: 1 },
   "3v3": { allyBots: 2, enemyBots: 3 },
@@ -677,6 +676,10 @@ function buildArenaCover(groundSize) {
     scene.add(mesh);
     arenaCoverMeshes.push(mesh);
   }
+
+  // Cover stand-points for Hard-tier bots (Milestone 10) — rebuilt whenever
+  // the arena cover layout changes with the team-size preset.
+  buildCoverSlots();
 }
 
 // -----------------------------------------------------------------------
@@ -757,24 +760,21 @@ const PLAYER_MAX_HEALTH = 100;
 
 // Health regeneration (both player and bot): after a stretch of time with
 // no damage taken, health gradually climbs back toward max on its own -
-// see regenPlayerHealth()/regenBotHealth() further down.
+// see regenPlayerHealth()/regenAllBotsHealth() further down.
 const HEALTH_REGEN_DELAY_MS = 5000; // ~5 seconds of no damage before it starts
 const HEALTH_REGEN_RATE_PER_SECOND = 8; // ~12.5s for a full regen from 0
 
 // -----------------------------------------------------------------------
-// AI bot (Milestone 5)
+// AI bots (Milestones 5 + 10)
 // -----------------------------------------------------------------------
-// A single stationary enemy bot sitting at (0, _, -5) - the exact spot the
-// Milestone 3 obstacle layout reserved and kept clear for it. It doesn't
-// move or take cover yet (that's Milestone 10) - for now it just watches
-// for the player, turns to face them, and shoots back. RED = enemy team
-// color, per the Visual Style rule in AGENTS.md. This replaces the
-// Milestone 4 "test target" stand-in that used to live here.
+// Multiple ally/enemy bots share one AI path; only difficulty parameters
+// and team affiliation differ. BLUE = player + allies, RED = enemies
+// (Visual Style in AGENTS.md).
 
-// Kept equal to the player's own max health for balance - see the
-// PLAYER_MAX_HEALTH declaration above.
+// Kept equal to the player's own max health for balance.
 const BOT_MAX_HEALTH = PLAYER_MAX_HEALTH;
-const BOT_COLOR = 0xcc3333;
+const ENEMY_BOT_COLOR = 0xcc3333;
+const ALLY_BOT_COLOR = 0x3366cc;
 
 // -----------------------------------------------------------------------
 // Team spawn points (variety on match start + each respawn)
@@ -809,6 +809,19 @@ function pickRandomSpawnPoint(spawnPoints) {
   return spawnPoints[Math.floor(Math.random() * spawnPoints.length)];
 }
 
+// Fisher-Yates shuffle of a shallow copy — used so match-start spawns don't
+// stack multiple bots on the same point when counts > 1.
+function shuffleSpawnPoints(spawnPoints) {
+  const copy = spawnPoints.map((point) => ({ x: point.x, z: point.z }));
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = copy[i];
+    copy[i] = copy[j];
+    copy[j] = tmp;
+  }
+  return copy;
+}
+
 function getBlueTeamSpawnTranslation() {
   const point = pickRandomSpawnPoint(BLUE_TEAM_SPAWN_POINTS);
   return { x: point.x, y: PLAYER_SPAWN_DROP_Y, z: point.z };
@@ -823,182 +836,139 @@ function getRedTeamSpawnTranslation() {
   };
 }
 
-// How far the bot can "see" the player - same scale as the player's own
-// GUN_RANGE above.
+function botStandingSpawnTranslation(point) {
+  return {
+    x: point.x,
+    y: PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
+    z: point.z,
+  };
+}
+
+// How far a bot can "see" a hostile - same scale as the player's GUN_RANGE.
 const BOT_SIGHT_RANGE = 100;
 // Medium-tier defaults (also the pre-match menu's default difficulty).
-// Milestone 9 applies Easy/Medium/Hard via DIFFICULTY_TIERS into the
-// mutable botReactionDelayMs / botAimSpreadRadians used by the AI below.
-// Milestone 10 will also honor botUsesCover for real cover-seeking.
 const BOT_REACTION_DELAY_MS = 500;
 // Same cadence as the player's gun — bot pacing comes from reaction delay
-// + aim spread + turn speed, not a slower RPM.
+// + aim spread + turn speed + cover, not a slower RPM.
 const BOT_FIRE_RATE_RPM = 300;
 const BOT_FIRE_INTERVAL_MS = 60000 / BOT_FIRE_RATE_RPM;
 const BOT_DAMAGE_PER_HIT = 10; // 10 hits to kill the player
-// Small random aim jitter (radians) applied in applyAimSpread() below, so
-// the bot's shots aren't a perfectly accurate laser.
 const BOT_AIM_SPREAD_RADIANS = 0.035;
 
 // Difficulty tiers from the pre-match menu. Same AI logic for all three —
-// only these parameters change (per AGENTS.md). usesCover is stored now
-// but cover-seeking behavior itself is Milestone 10.
+// only these parameters change (per AGENTS.md).
 const DIFFICULTY_TIERS = {
   easy: {
     reactionDelayMs: 900,
     aimSpreadRadians: 0.08,
+    turnSpeedRadiansPerSec: Math.PI * 0.55, // ~100 deg/s — sluggish
     usesCover: false,
   },
   medium: {
     reactionDelayMs: BOT_REACTION_DELAY_MS,
     aimSpreadRadians: BOT_AIM_SPREAD_RADIANS,
+    turnSpeedRadiansPerSec: Math.PI, // 180 deg/s
     usesCover: false,
   },
   hard: {
     reactionDelayMs: 250,
     aimSpreadRadians: 0.015,
+    turnSpeedRadiansPerSec: Math.PI * 1.5, // ~270 deg/s — snappy
     usesCover: true,
   },
 };
 
-// Live bot aim/reaction knobs — set from DIFFICULTY_TIERS on Start Match.
-let botReactionDelayMs = BOT_REACTION_DELAY_MS;
-let botAimSpreadRadians = BOT_AIM_SPREAD_RADIANS;
-// Milestone 10 will read this; unused by today's patrol/chase movement.
-let botUsesCover = false;
-
-// Bot movement (patrol/chase) tuning - see updateBot()/moveBotTowards()
-// further down for how these are used.
+// Bot movement (patrol/chase/cover) tuning - see updateBot()/moveBotTowards().
 const BOT_MOVE_SPEED = 3; // meters/second - slower than the player's 5
-// How fast the bot can turn to face a target, in radians/second - caps
-// both "aiming at the player" and "facing its own movement direction" so
-// it never snaps instantly (see rotateGroupTowards() below).
-const BOT_TURN_SPEED_RADIANS_PER_SEC = Math.PI; // 180 degrees/second
-// The bot must be turned to within this many radians of "dead on" before
-// it's allowed to fire - stops it from snap-firing the instant it regains
-// sight while still mid-turn.
 const BOT_AIM_ANGLE_THRESHOLD_RADIANS = 0.05; // ~3 degrees
-// How close (meters) counts as "arrived" at a patrol point or the
-// player's last known position.
 const BOT_WAYPOINT_ARRIVAL_RADIUS = 1.5;
-// Give up on the current patrol/chase target after this long even if it
-// hasn't been reached - a simple safety net against getting stuck on an
-// obstacle corner, without needing real pathfinding.
 const BOT_MOVE_TIMEOUT_MS = 6000;
+// After taking damage, Hard bots keep seeking cover for this long.
+const COVER_SEEK_WINDOW_MS = 3000;
 
-// Hand-placed patrol waypoints (meters), chosen near existing cover
-// (crates/pillars from the Interior Obstacles section above) rather than
-// out in the open lanes - this is simple waypoint patrol "using existing
-// obstacles for cover" as requested, NOT the tactical cover-seeking AI
-// that AGENTS.md reserves for Milestone 10's difficulty tiers.
+// Fallback patrol waypoints near the base-cluster cover (not tactical
+// cover-seeking — that's buildCoverSlots() + usesCover below).
 const BOT_PATROL_POINTS = [
-  { x: -9, z: 7.5 }, // near the west crate/ramp cluster
-  { x: -7, z: -12 }, // near the far west crate
-  { x: 10, z: -6 }, // near the east lone wall segment
-  { x: 9, z: 6 }, // near the east pillar
-  { x: 4, z: -10 }, // near the low wall, north of the bot's own spawn
-  { x: -4, z: -1 }, // near the central-west pillar, behind the chokepoint
+  { x: -9, z: 7.5 },
+  { x: -7, z: -12 },
+  { x: 10, z: -6 },
+  { x: 9, z: 6 },
+  { x: 4, z: -10 },
+  { x: -4, z: -1 },
 ];
 
-let botHealth = BOT_MAX_HEALTH;
-let botDestroyed = false;
-// Timestamp (on the same clock as tick()'s requestAnimationFrame
-// timestamp) of the first frame the bot had line of sight to the player,
-// or null while it currently can't see them. Reset to null the instant
-// sight is lost, so re-spotting the player always requires waiting out
-// the reaction delay again.
-let botSpottedAtTime = null;
-// Timestamp of the bot's last shot, mirroring the player's own
-// lastShotTime fire-rate cooldown pattern further below.
-let lastBotShotTime = -Infinity;
-// Timestamp of the last time the bot took damage - see regenBotHealth().
-let botLastDamageTime = -Infinity;
+// Stand-points beside solid cover, rebuilt by buildCoverSlots() after
+// buildArenaCover(). Hard bots peel here after taking damage.
+let coverSlots = [];
 
-// The player's position the last time the bot actually saw them (only
-// {x, z} - movement is ground-level, so height doesn't matter here), or
-// null if it has none worth chasing. Set continuously while the player is
-// visible; consumed as a movement target once sight is lost.
-let botLastKnownPlayerPosition = null;
-// The {x, z} point the bot is currently walking toward - either
-// botLastKnownPlayerPosition or one of BOT_PATROL_POINTS - or null while
-// it doesn't have one (e.g. while actively engaging the player).
-let botMoveTarget = null;
-// Timestamp the current botMoveTarget was set, so moveBotTowards() can
-// give up on it after BOT_MOVE_TIMEOUT_MS.
-let botMoveTargetSetAt = 0;
-// Index into BOT_PATROL_POINTS most recently picked, so
-// pickNewPatrolTarget() can avoid immediately re-picking the same one
-// (which would look like the bot walking back and forth in place).
-let lastPatrolPointIndex = -1;
+function pointOverlapsSolidCover(x, z) {
+  for (const box of boxObstacleDefs) {
+    if (
+      Math.abs(x - box.x) < box.hx + PLAYER_RADIUS * 0.5 &&
+      Math.abs(z - box.z) < box.hz + PLAYER_RADIUS * 0.5
+    ) {
+      return true;
+    }
+  }
+  for (const pillar of pillarObstacleDefs) {
+    if (Math.hypot(x - pillar.x, z - pillar.z) < pillar.radius + PLAYER_RADIUS * 0.5) {
+      return true;
+    }
+  }
+  return false;
+}
 
-// A plain capsule is rotationally symmetric - spinning it looks identical
-// from outside, so rotating it to "aim" wouldn't actually be visible. A
-// small dark marker box stuck to the front (purely a facing indicator, not
-// a real gun model) fixes that so its facing is visible while testing.
-// The capsule and marker are both children of a THREE.Group so rotating
-// the group turns them together; BOT_MARKER_OFFSET is also reused below as
-// the bot's own "muzzle" point for tracers, the same idea as the player's
-// MUZZLE_OFFSET.
-// transparent: true is needed up front (Three.js won't pick up opacity
-// changes on a material created as opaque) so Milestone 6's spawn-
-// invulnerability effect can fade the bot out/in via `.opacity` later -
-// see the invulnerability check in tick().
-const botMaterial = new THREE.MeshStandardMaterial({
-  color: BOT_COLOR,
-  transparent: true,
-});
-const botGeometry = new THREE.CapsuleGeometry(
+function buildCoverSlots() {
+  coverSlots = [];
+  const margin = PLAYER_RADIUS + 0.4;
+  // Stay inside the pad so bots don't path into boundary walls.
+  const padLimit = GROUND_HALF - 1;
+
+  function tryAddSlot(x, z) {
+    if (Math.abs(x) > padLimit || Math.abs(z) > padLimit) return;
+    if (pointOverlapsSolidCover(x, z)) return;
+    coverSlots.push({ x, z });
+  }
+
+  for (const box of boxObstacleDefs) {
+    tryAddSlot(box.x + box.hx + margin, box.z);
+    tryAddSlot(box.x - box.hx - margin, box.z);
+    tryAddSlot(box.x, box.z + box.hz + margin);
+    tryAddSlot(box.x, box.z - box.hz - margin);
+  }
+  for (const pillar of pillarObstacleDefs) {
+    const distance = pillar.radius + margin;
+    tryAddSlot(pillar.x + distance, pillar.z);
+    tryAddSlot(pillar.x - distance, pillar.z);
+    tryAddSlot(pillar.x, pillar.z + distance);
+    tryAddSlot(pillar.x, pillar.z - distance);
+  }
+}
+
+// Live bot list for the current match + collider→bot lookup for hitscan.
+const bots = [];
+const colliderToBot = new Map();
+
+// Shared geometries (each bot gets its own materials for team color /
+// invuln opacity / hit flash).
+const sharedBotCapsuleGeometry = new THREE.CapsuleGeometry(
   PLAYER_RADIUS,
   PLAYER_HALF_HEIGHT * 2,
   4,
   8
 );
-const botMesh = new THREE.Mesh(botGeometry, botMaterial);
-
 const BOT_MARKER_OFFSET = new THREE.Vector3(0, 0.3, -(PLAYER_RADIUS + 0.1));
-const botMarkerMaterial = new THREE.MeshStandardMaterial({
-  color: 0x2b2b2b,
-  transparent: true,
-});
-const botMarkerGeometry = new THREE.BoxGeometry(0.15, 0.15, 0.3);
-const botMarkerMesh = new THREE.Mesh(botMarkerGeometry, botMarkerMaterial);
-botMarkerMesh.position.copy(BOT_MARKER_OFFSET);
-
-const botGroup = new THREE.Group();
-botGroup.add(botMesh);
-botGroup.add(botMarkerMesh);
-// Placeholder until initPhysics() picks a random red spawn and
-// startRenderLoop() syncs the group to the live body each frame.
-botGroup.position.set(0, PLAYER_HALF_HEIGHT + PLAYER_RADIUS, -5);
-scene.add(botGroup);
+const sharedBotMarkerGeometry = new THREE.BoxGeometry(0.15, 0.15, 0.3);
 
 // -----------------------------------------------------------------------
-// Floating health bar (above the bot's head)
+// Floating health bars (one per bot, above its head)
 // -----------------------------------------------------------------------
-// Built as a plain HTML/CSS overlay - the same approach every other HUD
-// element in this project already uses (#health-bar-fill, #ammo-hud,
-// etc.) - rather than a Three.js sprite, so it's simple to restyle via
-// CSS. Its screen position is re-projected from the bot's world position
-// every frame (see updateFloatingHealthBarPosition() below, called from
-// tick()). Enemy bars are also gated on player→bot line of sight (same
-// Rapier raycast pattern as botCanSeePlayer, but from the player's eye) so
-// they hide behind cover; ally bars stay always-visible for team awareness
-// (no ally bots yet — Milestone 9/10 — but isEnemy: false is ready).
-//
-// Colored by team per the Visual Style rule in AGENTS.md (green for
-// allies, red for enemies) - only the bot's red is exercised today since
-// there are no ally bots yet (Milestone 9/10), but createFloatingHealthBar
-// takes the color as a parameter so a future ally bot can reuse it as-is.
-// The player never gets one at all - there's no player mesh to attach it
-// to in first-person anyway, so "not shown for the player's own view of
-// themselves" is automatically true.
+// HTML/CSS overlay like the rest of the HUD. Enemy bars are LOS-gated;
+// ally bars stay always-visible for team awareness. Team colors match
+// capsules / minimap (blue allies, red enemies).
 
-// How far above the bot group's own origin (its capsule's vertical
-// center) the bar should float - just above the top of its head.
 const BOT_HEALTH_BAR_HEIGHT_OFFSET = PLAYER_HALF_HEIGHT + PLAYER_RADIUS + 0.35;
 
-// isEnemy: when true, tick() hides the bar unless the player has LOS to
-// that bot. Allies pass false so the bar stays up through walls.
 function createFloatingHealthBar(color, { isEnemy = true } = {}) {
   const container = document.createElement("div");
   container.className = "floating-health-bar";
@@ -1012,17 +982,10 @@ function createFloatingHealthBar(color, { isEnemy = true } = {}) {
   return { container, fill, isEnemy };
 }
 
-// Sets the bar's fill width to match a health percentage (0-100). Unlike
-// the player's own health bar, the color itself stays fixed at the
-// character's team color - it doesn't shift green/orange/red as health
-// drops.
 function updateFloatingHealthBarFill(bar, healthPercent) {
   bar.fill.style.width = `${healthPercent}%`;
 }
 
-// Projects a world-space point onto 2D screen coordinates and moves the
-// bar there. Hides it if behind the camera, off-screen, or when
-// `visible` is false (used for enemy LOS occlusion).
 function updateFloatingHealthBarPosition(bar, worldPosition, visible = true) {
   const projected = new THREE.Vector3(
     worldPosition.x,
@@ -1030,10 +993,6 @@ function updateFloatingHealthBarPosition(bar, worldPosition, visible = true) {
     worldPosition.z
   ).project(camera);
 
-  // project() maps anything in front of the camera's frustum to roughly
-  // [-1, 1] on each axis; z > 1 means the point is actually behind the
-  // camera (a quirk of the projection math), and |x| or |y| > 1 means
-  // it's outside the view horizontally/vertically.
   const isBehindCamera = projected.z > 1;
   const isOffScreen = Math.abs(projected.x) > 1 || Math.abs(projected.y) > 1;
   if (!visible || isBehindCamera || isOffScreen) {
@@ -1046,10 +1005,118 @@ function updateFloatingHealthBarPosition(bar, worldPosition, visible = true) {
   bar.container.style.top = `${((1 - projected.y) / 2) * window.innerHeight}px`;
 }
 
-const botHealthBar = createFloatingHealthBar(
-  `#${BOT_COLOR.toString(16).padStart(6, "0")}`,
-  { isEnemy: true }
-);
+function createMinimapDot(team) {
+  const el = document.createElement("div");
+  el.className =
+    team === "blue"
+      ? "minimap-dot minimap-dot-blue"
+      : "minimap-dot minimap-dot-red";
+  document.getElementById("minimap").appendChild(el);
+  return el;
+}
+
+// Creates one bot instance (mesh + Rapier body + AI/difficulty state).
+// team is "blue" (ally) or "red" (enemy). tier is a DIFFICULTY_TIERS entry.
+function createBotInstance(world, team, spawnPoint, tier) {
+  const teamColor = team === "blue" ? ALLY_BOT_COLOR : ENEMY_BOT_COLOR;
+  const material = new THREE.MeshStandardMaterial({
+    color: teamColor,
+    transparent: true,
+  });
+  const mesh = new THREE.Mesh(sharedBotCapsuleGeometry, material);
+  const markerMaterial = new THREE.MeshStandardMaterial({
+    color: 0x2b2b2b,
+    transparent: true,
+  });
+  const markerMesh = new THREE.Mesh(sharedBotMarkerGeometry, markerMaterial);
+  markerMesh.position.copy(BOT_MARKER_OFFSET);
+
+  const group = new THREE.Group();
+  group.add(mesh);
+  group.add(markerMesh);
+  const spawn = botStandingSpawnTranslation(spawnPoint);
+  group.position.set(spawn.x, spawn.y, spawn.z);
+  scene.add(group);
+
+  // Each bot needs its own character controller — computedMovement() is
+  // stateful per controller, so sharing one would corrupt whoever ran second.
+  const body = world.createRigidBody(
+    RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
+      spawn.x,
+      spawn.y,
+      spawn.z
+    )
+  );
+  const collider = world.createCollider(
+    RAPIER.ColliderDesc.capsule(PLAYER_HALF_HEIGHT, PLAYER_RADIUS),
+    body
+  );
+  const characterController = world.createCharacterController(0.01);
+
+  const healthBar = createFloatingHealthBar(
+    `#${teamColor.toString(16).padStart(6, "0")}`,
+    { isEnemy: team === "red" }
+  );
+  updateFloatingHealthBarFill(healthBar, 100);
+
+  const bot = {
+    team,
+    teamColor,
+    body,
+    collider,
+    characterController,
+    group,
+    material,
+    markerMaterial,
+    healthBar,
+    minimapDot: createMinimapDot(team),
+    health: BOT_MAX_HEALTH,
+    destroyed: false,
+    spottedAtTime: null,
+    lastShotTime: -Infinity,
+    lastDamageTime: -Infinity,
+    invulnerableUntil: -Infinity,
+    lastKnownTargetPosition: null,
+    moveTarget: null,
+    moveTargetSetAt: 0,
+    lastPatrolPointIndex: -1,
+    coverTarget: null,
+    // After arriving at a cover slot, stay put until the under-fire window
+    // ends so Hard bots don't immediately path to another slot.
+    holdingCover: false,
+    // Copied from the match difficulty tier — same AI, different knobs.
+    reactionDelayMs: tier.reactionDelayMs,
+    aimSpreadRadians: tier.aimSpreadRadians,
+    turnSpeedRadiansPerSec: tier.turnSpeedRadiansPerSec,
+    usesCover: tier.usesCover,
+  };
+
+  colliderToBot.set(collider, bot);
+  return bot;
+}
+
+// Spawns ally + enemy bots from matchConfig counts. blueSpawns/redSpawns
+// should already be shuffled; allyIndex is the first unused blue slot
+// (index 0 is reserved for the player at match start).
+function spawnBotsForMatch(world, blueSpawns, redSpawns, allyStartIndex) {
+  bots.length = 0;
+  colliderToBot.clear();
+
+  const tier =
+    DIFFICULTY_TIERS[matchConfig.difficulty] ?? DIFFICULTY_TIERS.medium;
+
+  let blueIndex = allyStartIndex;
+  for (let i = 0; i < matchConfig.allyBots; i++) {
+    const point = blueSpawns[blueIndex % blueSpawns.length];
+    blueIndex += 1;
+    bots.push(createBotInstance(world, "blue", point, tier));
+  }
+
+  for (let i = 0; i < matchConfig.enemyBots; i++) {
+    const point = redSpawns[i % redSpawns.length];
+    bots.push(createBotInstance(world, "red", point, tier));
+  }
+}
 
 // -----------------------------------------------------------------------
 // Input handling: keyboard state + mouse look + pointer lock
@@ -1404,48 +1471,47 @@ function spawnImpactFlash(point) {
 }
 
 // Applies a new health value (clamped to [0, BOT_MAX_HEALTH]) and updates
-// its floating health bar to match - shared by damageBot() (health going
-// down) and regenBotHealth() (health climbing back up).
-function setBotHealth(newHealth) {
-  botHealth = Math.max(0, Math.min(BOT_MAX_HEALTH, newHealth));
-  updateFloatingHealthBarFill(botHealthBar, (botHealth / BOT_MAX_HEALTH) * 100);
+// that bot's floating health bar - shared by damageBot() and regen.
+function setBotHealth(bot, newHealth) {
+  bot.health = Math.max(0, Math.min(BOT_MAX_HEALTH, newHealth));
+  updateFloatingHealthBarFill(
+    bot.healthBar,
+    (bot.health / BOT_MAX_HEALTH) * 100
+  );
 }
 
-// `botCollider` no longer needs `world` passed in (Milestone 6: a killed
-// bot now just disables its existing collider - see handleBotDeath() below
-// - rather than world.removeCollider()-ing it, since it needs to come back
-// on respawn).
-function damageBot(botCollider) {
-  if (botDestroyed || matchEnded) return;
-  // No-op during the post-respawn invulnerability window (see
-  // SPAWN_INVULNERABILITY_MS below) - shots still visually land (the
-  // collider stays enabled so raycasts/tracers work normally), they just
-  // don't do anything yet.
-  if (performance.now() < botInvulnerableUntil) return;
+// Damages one bot instance. amount defaults to the player's gun damage so
+// player hitscan can call damageBot(bot); bot-vs-bot passes BOT_DAMAGE_PER_HIT.
+function damageBot(bot, amount = GUN_DAMAGE) {
+  if (!bot || bot.destroyed || matchEnded) return;
+  // No-op during post-respawn invulnerability — tracers still land.
+  if (performance.now() < bot.invulnerableUntil) return;
 
-  botLastDamageTime = performance.now();
-  setBotHealth(botHealth - GUN_DAMAGE);
-  botMaterial.color.set(0xffffff);
+  bot.lastDamageTime = performance.now();
+  setBotHealth(bot, bot.health - amount);
+  bot.material.color.set(0xffffff);
   setTimeout(() => {
-    if (!botDestroyed) botMaterial.color.set(BOT_COLOR);
+    if (!bot.destroyed) bot.material.color.set(bot.teamColor);
   }, 80);
 
-  if (botHealth <= 0) {
-    botDestroyed = true;
-    botGroup.visible = false;
-    botHealthBar.container.style.display = "none";
-    botCollider.setEnabled(false);
-    handleBotDeath();
+  if (bot.health <= 0) {
+    bot.destroyed = true;
+    bot.group.visible = false;
+    bot.healthBar.container.style.display = "none";
+    bot.minimapDot.style.display = "none";
+    bot.collider.setEnabled(false);
+    handleBotDeath(bot);
   }
 }
 
-// Gradually restores the bot's health once HEALTH_REGEN_DELAY_MS has
-// passed since its last hit, up to full - mirrors regenPlayerHealth().
-function regenBotHealth(now, deltaTime) {
-  if (botDestroyed) return;
-  if (botHealth >= BOT_MAX_HEALTH) return;
-  if (now - botLastDamageTime < HEALTH_REGEN_DELAY_MS) return;
-  setBotHealth(botHealth + HEALTH_REGEN_RATE_PER_SECOND * deltaTime);
+// Gradually restores every living bot's health after HEALTH_REGEN_DELAY_MS.
+function regenAllBotsHealth(now, deltaTime) {
+  for (const bot of bots) {
+    if (bot.destroyed) continue;
+    if (bot.health >= BOT_MAX_HEALTH) continue;
+    if (now - bot.lastDamageTime < HEALTH_REGEN_DELAY_MS) continue;
+    setBotHealth(bot, bot.health + HEALTH_REGEN_RATE_PER_SECOND * deltaTime);
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -1505,18 +1571,15 @@ let matchEnded = false;
 // start counting yet.
 let matchStartTime = null;
 
-// Timestamps (performance.now()-scale) until which the player/bot can't
-// take damage - see damagePlayer()/damageBot() above and
-// respawnPlayer()/respawnBot() below, which set these on every respawn.
+// Timestamp until which the player can't take damage (bots store their own
+// invulnerableUntil on each instance).
 let playerInvulnerableUntil = -Infinity;
-let botInvulnerableUntil = -Infinity;
 
-// Respawn logic needs the live Rapier bodies (playerBody/botBody/
-// botCollider), which only exist once startRenderLoop() has started - so
-// respawnPlayer()/respawnBot() are defined there and assigned to these
-// hooks, which the death-handling functions below call via setTimeout.
+// Respawn logic needs live Rapier bodies, which only exist once
+// startRenderLoop() has started — hooks below are assigned there.
 let triggerPlayerRespawn = null;
-let triggerBotRespawn = null;
+// scheduleBotRespawn(bot) — per-bot respawn after RESPAWN_DELAY_MS.
+let scheduleBotRespawn = null;
 
 const matchScoreBlueEl = document.getElementById("score-blue-value");
 const matchScoreRedEl = document.getElementById("score-red-value");
@@ -1526,11 +1589,10 @@ const matchEndTitle = document.getElementById("match-end-title");
 const matchEndSubtitle = document.getElementById("match-end-subtitle");
 
 // Minimap DOM nodes (Milestone 8). Layout shapes are built once into
-// #minimap-layout; player/bot dots are written every frame by
+// #minimap-layout; player + per-bot dots are written every frame by
 // updateMinimap() — see worldToMinimapPercent() for the world→map math.
 const minimapLayoutEl = document.getElementById("minimap-layout");
 const minimapPlayerEl = document.getElementById("minimap-player");
-const minimapBotEl = document.getElementById("minimap-bot");
 
 function updateScoreHud() {
   matchScoreBlueEl.textContent = String(blueScore);
@@ -1625,32 +1687,33 @@ function buildMinimapLayout() {
   }
 }
 
-// Syncs the minimap dots to the latest player/bot body positions.
-// Called from tick() after world.step() (same timing as the camera /
-// botGroup sync). Keeps updating while paused/dead so the frozen
-// positions still show under overlays.
+// Syncs the minimap dots to the latest player + all bot body positions.
+// Called from tick() after world.step(). Keeps updating while paused/dead
+// so frozen positions still show under overlays.
 //
 // Player facing: Three.js yaw=0 looks down -Z (toward the top of this
 // map). A CSS rotate of 0deg leaves the chevron pointing up, so we negate
 // yaw when converting to degrees — positive yaw turns the camera left
 // (toward -X), which is counterclockwise on the map, and CSS positive
 // rotation is clockwise.
-function updateMinimap(playerPos, botPos, playerYaw) {
+function updateMinimap(playerPos, playerYaw) {
   const playerMap = worldToMinimapPercent(playerPos.x, playerPos.z);
   const yawDegrees = (-playerYaw * 180) / Math.PI;
   minimapPlayerEl.style.left = `${playerMap.leftPct}%`;
   minimapPlayerEl.style.top = `${playerMap.topPct}%`;
   minimapPlayerEl.style.transform = `translate(-50%, -50%) rotate(${yawDegrees}deg)`;
 
-  if (botDestroyed) {
-    minimapBotEl.style.display = "none";
-    return;
+  for (const bot of bots) {
+    if (bot.destroyed) {
+      bot.minimapDot.style.display = "none";
+      continue;
+    }
+    const botPos = bot.body.translation();
+    const botMap = worldToMinimapPercent(botPos.x, botPos.z);
+    bot.minimapDot.style.display = "block";
+    bot.minimapDot.style.left = `${botMap.leftPct}%`;
+    bot.minimapDot.style.top = `${botMap.topPct}%`;
   }
-
-  const botMap = worldToMinimapPercent(botPos.x, botPos.z);
-  minimapBotEl.style.display = "block";
-  minimapBotEl.style.left = `${botMap.leftPct}%`;
-  minimapBotEl.style.top = `${botMap.topPct}%`;
 }
 
 // Layout is static for the match — build it once now that the obstacle /
@@ -1708,19 +1771,27 @@ function handlePlayerDeath() {
   }
 }
 
-// Called from damageBot() the instant the bot's health reaches 0. Mirrors
-// handlePlayerDeath() for BLUE (the player's team).
-function handleBotDeath() {
-  blueScore += 1;
-  updateScoreHud();
-
-  if (blueScore >= killTarget) {
-    endMatch("BLUE");
-    return;
+// Called from damageBot() when a bot's health reaches 0. Red deaths award
+// BLUE; blue (ally) deaths award RED — team kills, not per-character.
+function handleBotDeath(bot) {
+  if (bot.team === "red") {
+    blueScore += 1;
+    updateScoreHud();
+    if (blueScore >= killTarget) {
+      endMatch("BLUE");
+      return;
+    }
+  } else {
+    redScore += 1;
+    updateScoreHud();
+    if (redScore >= killTarget) {
+      endMatch("RED");
+      return;
+    }
   }
 
-  if (triggerBotRespawn) {
-    setTimeout(triggerBotRespawn, RESPAWN_DELAY_MS);
+  if (scheduleBotRespawn) {
+    setTimeout(() => scheduleBotRespawn(bot), RESPAWN_DELAY_MS);
   }
 }
 
@@ -1843,38 +1914,21 @@ async function initPhysics() {
     world.createCollider(pieceColliderDesc);
   }
 
-  // Bot rigid body (movement pass): a kinematicPositionBased body just
-  // like the player's, so Rapier's character controller can slide it
-  // along walls/obstacles as it patrols instead of us hand-rolling
-  // collision. It never jumps and the arena floor is flat, so unlike the
-  // player it doesn't need a gravity/jump velocity state machine - see
-  // moveBotTowards() further down, which only ever feeds it horizontal
-  // movement.
-  const initialBotSpawn = getRedTeamSpawnTranslation();
-  const botBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-    initialBotSpawn.x,
-    initialBotSpawn.y,
-    initialBotSpawn.z
-  );
-  const botBody = world.createRigidBody(botBodyDesc);
-  const botColliderDesc = RAPIER.ColliderDesc.capsule(
-    PLAYER_HALF_HEIGHT,
-    PLAYER_RADIUS
-  );
-  const botCollider = world.createCollider(botColliderDesc, botBody);
-
-  // The bot needs its OWN character controller, separate from the
-  // player's below - computedGrounded()/computedMovement() are stateful
-  // results from whichever computeColliderMovement() call ran most
-  // recently on a given controller, so sharing one instance between the
-  // player and the bot would corrupt whichever one ran second each frame.
-  const botCharacterController = world.createCharacterController(0.01);
+  // Shuffle spawn pools once so the player + ally bots don't stack on the
+  // same blue point at match start (respawns still pick randomly later).
+  const blueSpawns = shuffleSpawnPoints(BLUE_TEAM_SPAWN_POINTS);
+  const redSpawns = shuffleSpawnPoints(RED_TEAM_SPAWN_POINTS);
 
   // The player is a "kinematic" rigid body: we move it ourselves each frame
   // (via setNextKinematicTranslation) instead of letting Rapier's forces
   // push it around like a normal dynamic object. This gives precise,
   // responsive FPS-style control instead of physics-y/bouncy movement.
-  const initialPlayerSpawn = getBlueTeamSpawnTranslation();
+  // Reserve blueSpawns[0] for the player; allies start at index 1.
+  const initialPlayerSpawn = {
+    x: blueSpawns[0].x,
+    y: PLAYER_SPAWN_DROP_Y,
+    z: blueSpawns[0].z,
+  };
   const playerBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
     initialPlayerSpawn.x,
     initialPlayerSpawn.y,
@@ -1894,14 +1948,14 @@ async function initPhysics() {
   // needed for numerical stability.
   const characterController = world.createCharacterController(0.01);
 
+  // Milestone 10: spawn ally + enemy bots from matchConfig counts.
+  spawnBotsForMatch(world, blueSpawns, redSpawns, 1);
+
   return {
     world,
     playerBody,
     playerCollider,
     characterController,
-    botBody,
-    botCollider,
-    botCharacterController,
   };
 }
 
@@ -1914,19 +1968,7 @@ function startRenderLoop({
   playerBody,
   playerCollider,
   characterController,
-  botBody,
-  botCollider,
-  botCharacterController,
 }) {
-  // Sync the bot mesh to whichever random red spawn initPhysics() picked
-  // (the Group was created earlier with a placeholder position).
-  const initialBotPosition = botBody.translation();
-  botGroup.position.set(
-    initialBotPosition.x,
-    initialBotPosition.y,
-    initialBotPosition.z
-  );
-
   // THREE.Timer is the modern replacement for the older THREE.Clock -
   // update() must be called once per frame (with the requestAnimationFrame
   // timestamp) before getDelta() returns the correct value.
@@ -2045,8 +2087,8 @@ function startRenderLoop({
   // alongside handlePlayerDeath()/handleBotDeath() that schedule them) since
   // they need direct access to the live Rapier bodies/colliders, which only
   // exist once physics has finished initializing. Assigning them to the
-  // module-level triggerPlayerRespawn/triggerBotRespawn hooks is what lets
-  // the death-handling code above actually call them.
+  // module-level triggerPlayerRespawn / scheduleBotRespawn hooks is what
+  // lets the death-handling code above actually call them.
   // -----------------------------------------------------------------
 
   function respawnPlayer() {
@@ -2084,37 +2126,42 @@ function startRenderLoop({
   }
   triggerPlayerRespawn = respawnPlayer;
 
-  function respawnBot() {
-    botDestroyed = false;
-    botCollider.setEnabled(true);
-    botGroup.visible = true;
-    botMaterial.color.set(BOT_COLOR);
+  function respawnBot(bot) {
+    bot.destroyed = false;
+    bot.collider.setEnabled(true);
+    bot.group.visible = true;
+    bot.minimapDot.style.display = "block";
+    bot.material.color.set(bot.teamColor);
 
-    // Random red-team spawn each respawn (same pool as match start).
-    const spawnPosition = getRedTeamSpawnTranslation();
-    botBody.setTranslation(spawnPosition, true);
-    botGroup.position.set(spawnPosition.x, spawnPosition.y, spawnPosition.z);
-    botGroup.rotation.y = 0;
+    // Random team spawn each respawn (same pools as match start).
+    const spawnPosition =
+      bot.team === "blue"
+        ? botStandingSpawnTranslation(pickRandomSpawnPoint(BLUE_TEAM_SPAWN_POINTS))
+        : getRedTeamSpawnTranslation();
+    bot.body.setTranslation(spawnPosition, true);
+    bot.group.position.set(spawnPosition.x, spawnPosition.y, spawnPosition.z);
+    bot.group.rotation.y = 0;
 
-    setBotHealth(BOT_MAX_HEALTH);
-    botLastDamageTime = -Infinity;
-    botInvulnerableUntil = performance.now() + SPAWN_INVULNERABILITY_MS;
+    setBotHealth(bot, BOT_MAX_HEALTH);
+    bot.lastDamageTime = -Infinity;
+    bot.invulnerableUntil = performance.now() + SPAWN_INVULNERABILITY_MS;
 
     // Reset AI state so the bot doesn't instantly "remember" a target from
     // before it died - it should start fresh, as if just spawned.
-    botSpottedAtTime = null;
-    lastBotShotTime = -Infinity;
-    botLastKnownPlayerPosition = null;
-    botMoveTarget = null;
+    bot.spottedAtTime = null;
+    bot.lastShotTime = -Infinity;
+    bot.lastKnownTargetPosition = null;
+    bot.moveTarget = null;
+    bot.coverTarget = null;
+    bot.holdingCover = false;
   }
-  triggerBotRespawn = respawnBot;
+  scheduleBotRespawn = respawnBot;
 
   // -----------------------------------------------------------------
   // Shooting (Milestone 4, full-auto extension): holding left-click fires
   // repeated instant raycasts from the camera at a fixed fire rate. Set up
-  // here (rather than at module scope) because it needs
-  // `world`/`playerCollider`/`botCollider`, which only exist once Rapier
-  // has finished initializing.
+  // here (rather than at module scope) because it needs `world` /
+  // `playerCollider`, which only exist once Rapier has finished initializing.
   // -----------------------------------------------------------------
 
   // The timestamp (matching tick()'s requestAnimationFrame timestamp/
@@ -2183,8 +2230,10 @@ function startRenderLoop({
       spawnTracer(muzzlePosition, hitPoint);
       spawnImpactFlash(hitPoint);
 
-      if (hit.collider === botCollider) {
-        damageBot(botCollider);
+      // Player only damages RED enemy bots — never blue allies (no FF).
+      const hitBot = colliderToBot.get(hit.collider);
+      if (hitBot && hitBot.team === "red") {
+        damageBot(hitBot);
       }
     } else {
       // Missed everything - draw the tracer out to the max range so a
@@ -2221,28 +2270,20 @@ function startRenderLoop({
   });
 
   // -----------------------------------------------------------------
-  // Bot AI: sees the player, aims, shoots back, and patrols/chases when it
-  // can't. Mirrors the player's own canFire()/tryFireShot()/fireShot()
-  // structure above for firing, gated on a line-of-sight raycast +
-  // reaction delay + turn-speed-limited aim instead of mouse input.
+  // Bot AI (Milestone 10): shared logic for every ally/enemy bot.
+  // Team affiliation gates targets — blue only fights red; red fights
+  // the player + blue. Difficulty only changes per-bot parameters.
   // -----------------------------------------------------------------
-
-  // Returns the bot's current "eye" position, read live from its physics
-  // body now that it moves - same "capsule center + EYE_HEIGHT" offset
-  // used for the player's own eye position below.
-  function getBotEyePosition() {
-    const botPosition = botBody.translation();
+  function getBotEyePosition(bot) {
+    const botPosition = bot.body.translation();
     return {
       x: botPosition.x,
       y: botPosition.y + EYE_HEIGHT,
       z: botPosition.z,
     };
   }
-
-  // Returns the player's current "eye" position (the same point the
-  // camera sits at), read directly from the physics body rather than
-  // camera.position, since the camera hasn't been updated yet this frame
-  // when updateBot() runs (see the order of calls inside tick() below).
+  // Player eye from the physics body (camera may not be updated yet when
+  // updateBot runs earlier in the frame).
   function getPlayerEyePosition() {
     const playerPosition = playerBody.translation();
     return {
@@ -2251,12 +2292,9 @@ function startRenderLoop({
       z: playerPosition.z,
     };
   }
-
-  // Shared eye-to-eye Rapier raycast used by bot AI vision and by enemy
-  // floating-health-bar occlusion. Returns true only if the first hit
-  // along the ray is `targetCollider` (nothing else in the way). Excludes
-  // `excludeCollider` so a ray starting inside a capsule doesn't instantly
-  // hit its own body.
+  // Shared eye-to-eye Rapier raycast. True only if the first hit is
+  // targetCollider. Excludes excludeCollider so a ray starting inside a
+  // capsule doesn't instantly hit its own body.
   function hasLineOfSight(
     fromEyePosition,
     toEyePosition,
@@ -2270,7 +2308,6 @@ function startRenderLoop({
     };
     const distance = Math.hypot(toTarget.x, toTarget.y, toTarget.z);
     if (distance === 0) return true;
-
     const direction = {
       x: toTarget.x / distance,
       y: toTarget.y / distance,
@@ -2287,71 +2324,135 @@ function startRenderLoop({
     );
     return hit !== null && hit.collider === targetCollider;
   }
-
-  // Bot AI vision gate — the ONLY thing allowed to gate tracking/aiming.
-  // See updateBot() below, which only ever calls rotateGroupTowards() at
-  // the player while this returns true.
-  function botCanSeePlayer(playerEyePosition, botEyePosition) {
-    return hasLineOfSight(
-      botEyePosition,
-      playerEyePosition,
-      botCollider,
-      playerCollider
+  // True when geometry blocks a ray from threatEye to a standing eye at
+  // slot {x,z} — used to pick Hard-tier cover that actually breaks LOS.
+  function isSlotHiddenFromThreat(threatEye, slot, excludeCollider) {
+    const slotEye = {
+      x: slot.x,
+      y: PLAYER_HALF_HEIGHT + PLAYER_RADIUS + EYE_HEIGHT,
+      z: slot.z,
+    };
+    const toSlot = {
+      x: slotEye.x - threatEye.x,
+      y: slotEye.y - threatEye.y,
+      z: slotEye.z - threatEye.z,
+    };
+    const distance = Math.hypot(toSlot.x, toSlot.y, toSlot.z);
+    if (distance < 0.5) return false;
+    const direction = {
+      x: toSlot.x / distance,
+      y: toSlot.y / distance,
+      z: toSlot.z / distance,
+    };
+    const ray = new RAPIER.Ray(threatEye, direction);
+    const hit = world.castRayAndGetNormal(
+      ray,
+      distance,
+      true,
+      undefined,
+      undefined,
+      excludeCollider
     );
+    // Clear path to the slot = bad cover. A hit before the slot = hidden.
+    if (hit === null) return false;
+    return hit.timeOfImpact < distance - 0.15;
   }
-
-  // Player → enemy bot LOS for floating health bars (same raycast helper
-  // as bot vision, but from the player's eye and requiring the bot's
-  // collider as the first hit).
-  function playerCanSeeBot(playerEyePosition, botEyePosition) {
+  // Player → bot LOS for enemy floating health bars.
+  function playerCanSeeBot(playerEyePosition, bot) {
     return hasLineOfSight(
       playerEyePosition,
-      botEyePosition,
+      getBotEyePosition(bot),
       playerCollider,
-      botCollider
+      bot.collider
     );
   }
-
-  // Computes the yaw angle (yaw 0 faces -Z, matching
-  // computeHorizontalMovement() below) that would point something
-  // standing at `fromPosition` directly at `toPosition`. Only x/z matter -
-  // both aiming and ground movement ignore height.
+  // -----------------------------------------------------------------
+  // Team-gated targeting (hard rule)
+  // Blue allies → living red bots only (never the player / other blues).
+  // Red enemies → living player + living blue bots (never other reds).
+  // -----------------------------------------------------------------
+  // Returns { kind: "player"|"bot", bot?, eye, position } or null.
+  function getHostileCandidates(bot) {
+    const candidates = [];
+    if (bot.team === "red") {
+      // Player counts as blue for targeting purposes.
+      if (!isDead) {
+        const playerPos = playerBody.translation();
+        candidates.push({
+          kind: "player",
+          eye: getPlayerEyePosition(),
+          position: { x: playerPos.x, z: playerPos.z },
+        });
+      }
+      for (const other of bots) {
+        if (other === bot || other.destroyed || other.team !== "blue") continue;
+        const otherPos = other.body.translation();
+        candidates.push({
+          kind: "bot",
+          bot: other,
+          eye: getBotEyePosition(other),
+          position: { x: otherPos.x, z: otherPos.z },
+        });
+      }
+    } else {
+      // Blue ally: only red enemy bots.
+      for (const other of bots) {
+        if (other === bot || other.destroyed || other.team !== "red") continue;
+        const otherPos = other.body.translation();
+        candidates.push({
+          kind: "bot",
+          bot: other,
+          eye: getBotEyePosition(other),
+          position: { x: otherPos.x, z: otherPos.z },
+        });
+      }
+    }
+    return candidates;
+  }
+  // Nearest living opposite-team unit this bot can currently see.
+  function pickVisibleHostile(bot, botEyePosition) {
+    const botPos = bot.body.translation();
+    let best = null;
+    let bestDistSq = Infinity;
+    for (const candidate of getHostileCandidates(bot)) {
+      const targetCollider =
+        candidate.kind === "player" ? playerCollider : candidate.bot.collider;
+      if (
+        !hasLineOfSight(
+          botEyePosition,
+          candidate.eye,
+          bot.collider,
+          targetCollider
+        )
+      ) {
+        continue;
+      }
+      const dx = candidate.position.x - botPos.x;
+      const dz = candidate.position.z - botPos.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq;
+        best = candidate;
+      }
+    }
+    return best;
+  }
   function computeYawTowards(fromPosition, toPosition) {
     const dx = toPosition.x - fromPosition.x;
     const dz = toPosition.z - fromPosition.z;
     return Math.atan2(-dx, -dz);
   }
-
-  // Turns `group`'s yaw toward `desiredYaw` by at most
-  // BOT_TURN_SPEED_RADIANS_PER_SEC * deltaTime, instead of snapping
-  // instantly - shared by both "aim at the player" and "face the
-  // direction I'm walking" below. Returns how far off-target the rotation
-  // still is (radians) after this frame's turn, so callers can tell
-  // whether it's turned far enough yet (see BOT_AIM_ANGLE_THRESHOLD_RADIANS).
-  function rotateGroupTowards(group, desiredYaw, deltaTime) {
-    let angleDiff = desiredYaw - group.rotation.y;
-    // Wrap into (-PI, PI] so e.g. turning from +179 degrees to -179
-    // degrees takes the 2-degree short way, not the 358-degree long way.
+  // Turn-speed comes from the bot's difficulty tier (not a global constant).
+  function rotateGroupTowards(bot, desiredYaw, deltaTime) {
+    let angleDiff = desiredYaw - bot.group.rotation.y;
     angleDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
-
-    const maxDelta = BOT_TURN_SPEED_RADIANS_PER_SEC * deltaTime;
+    const maxDelta = bot.turnSpeedRadiansPerSec * deltaTime;
     const clampedDelta = Math.max(-maxDelta, Math.min(maxDelta, angleDiff));
-    group.rotation.y += clampedDelta;
-
+    bot.group.rotation.y += clampedDelta;
     return Math.abs(angleDiff - clampedDelta);
   }
-
-  // Adds a small random jitter to a (normalized) aim direction so the
-  // bot's shots aren't a perfectly accurate laser. Builds two axes
-  // perpendicular to the aim direction, then nudges the direction
-  // slightly along each before re-normalizing - a simple, standard way to
-  // jitter a 3D direction within a small cone.
-  function applyAimSpread(direction) {
+  function applyAimSpread(direction, aimSpreadRadians) {
     const forward = new THREE.Vector3(direction.x, direction.y, direction.z);
-    // Any "up" vector not parallel to forward works here - falls back to
-    // world +X in the (rare, given the bot never moves) case forward
-    // itself is nearly vertical, so the cross product below doesn't
-    // degenerate to zero.
     const arbitraryUp =
       Math.abs(forward.y) > 0.99
         ? new THREE.Vector3(1, 0, 0)
@@ -2360,40 +2461,33 @@ function startRenderLoop({
       .crossVectors(forward, arbitraryUp)
       .normalize();
     const up = new THREE.Vector3().crossVectors(right, forward).normalize();
-
-    const jitterRight = (Math.random() - 0.5) * 2 * botAimSpreadRadians;
-    const jitterUp = (Math.random() - 0.5) * 2 * botAimSpreadRadians;
-
+    const jitterRight = (Math.random() - 0.5) * 2 * aimSpreadRadians;
+    const jitterUp = (Math.random() - 0.5) * 2 * aimSpreadRadians;
     return forward
       .add(right.multiplyScalar(jitterRight))
       .add(up.multiplyScalar(jitterUp))
       .normalize();
   }
-
-  // Does the actual raycast + damage + visual feedback for a single bot
-  // shot, mirroring the player's own fireShot() above. Assumes the caller
-  // has already checked line of sight, the reaction delay, the aim-angle
-  // threshold, and the fire-rate cooldown.
-  function botFireShot(playerEyePosition, botEyePosition) {
-    const toPlayer = {
-      x: playerEyePosition.x - botEyePosition.x,
-      y: playerEyePosition.y - botEyePosition.y,
-      z: playerEyePosition.z - botEyePosition.z,
+  // Fires one bot shot at a hostile eye position. Damage is team-gated again
+  // at the hit result so a wild spread shot can't hurt a teammate.
+  function botFireShot(bot, targetEyePosition, botEyePosition) {
+    const toTarget = {
+      x: targetEyePosition.x - botEyePosition.x,
+      y: targetEyePosition.y - botEyePosition.y,
+      z: targetEyePosition.z - botEyePosition.z,
     };
-    const distance = Math.hypot(toPlayer.x, toPlayer.y, toPlayer.z);
-    const aimDirection = applyAimSpread({
-      x: toPlayer.x / distance,
-      y: toPlayer.y / distance,
-      z: toPlayer.z / distance,
-    });
-
-    // botGroup's rotation was just updated this frame by rotateGroupTowards()
-    // in updateBot(), so its matrixWorld needs a manual refresh before
-    // localToWorld() - normally Three.js only recomputes it during
-    // rendering, which hasn't happened yet this frame.
-    botGroup.updateMatrixWorld();
-    const muzzlePosition = botGroup.localToWorld(BOT_MARKER_OFFSET.clone());
-
+    const distance = Math.hypot(toTarget.x, toTarget.y, toTarget.z);
+    if (distance === 0) return;
+    const aimDirection = applyAimSpread(
+      {
+        x: toTarget.x / distance,
+        y: toTarget.y / distance,
+        z: toTarget.z / distance,
+      },
+      bot.aimSpreadRadians
+    );
+    bot.group.updateMatrixWorld();
+    const muzzlePosition = bot.group.localToWorld(BOT_MARKER_OFFSET.clone());
     const ray = new RAPIER.Ray(botEyePosition, aimDirection);
     const hit = world.castRayAndGetNormal(
       ray,
@@ -2401,9 +2495,8 @@ function startRenderLoop({
       true,
       undefined,
       undefined,
-      botCollider
+      bot.collider
     );
-
     if (hit) {
       const hitPoint = {
         x: botEyePosition.x + aimDirection.x * hit.timeOfImpact,
@@ -2412,14 +2505,15 @@ function startRenderLoop({
       };
       spawnTracer(muzzlePosition, hitPoint);
       spawnImpactFlash(hitPoint);
-
-      if (hit.collider === playerCollider) {
+      if (bot.team === "red" && hit.collider === playerCollider) {
         damagePlayer(BOT_DAMAGE_PER_HIT);
+      } else {
+        const hitBot = colliderToBot.get(hit.collider);
+        if (hitBot && hitBot.team !== bot.team) {
+          damageBot(hitBot, BOT_DAMAGE_PER_HIT);
+        }
       }
     } else {
-      // Missed everything (or the spread pushed the shot wide) - draw the
-      // tracer out to max sight range so a whiffed shot still gets visual
-      // feedback, same as the player's own missed shots above.
       const missPoint = {
         x: botEyePosition.x + aimDirection.x * BOT_SIGHT_RANGE,
         y: botEyePosition.y + aimDirection.y * BOT_SIGHT_RANGE,
@@ -2428,127 +2522,174 @@ function startRenderLoop({
       spawnTracer(muzzlePosition, missPoint);
     }
   }
-
-  // Picks a random patrol point to walk toward, avoiding immediately
-  // re-picking the one just abandoned (which would look like the bot
-  // walking back and forth between two spots). Caller is responsible for
-  // stamping botMoveTargetSetAt.
-  function pickNewPatrolTarget() {
+  function pickNewPatrolTarget(bot) {
     let index;
     do {
       index = Math.floor(Math.random() * BOT_PATROL_POINTS.length);
-    } while (index === lastPatrolPointIndex && BOT_PATROL_POINTS.length > 1);
-    lastPatrolPointIndex = index;
-    botMoveTarget = BOT_PATROL_POINTS[index];
+    } while (
+      index === bot.lastPatrolPointIndex &&
+      BOT_PATROL_POINTS.length > 1
+    );
+    bot.lastPatrolPointIndex = index;
+    bot.moveTarget = BOT_PATROL_POINTS[index];
   }
-
-  // Moves the bot toward a {x, z} world point using its OWN character
-  // controller (botCharacterController - see the comment in initPhysics()
-  // on why it can't share the player's), and turns to face the direction
-  // it's actually walking. Returns true once the target has been reached
-  // (within BOT_WAYPOINT_ARRIVAL_RADIUS) or given up on
-  // (BOT_MOVE_TIMEOUT_MS elapsed) - either way, the caller should pick a
-  // new target next frame.
-  function moveBotTowards(target, deltaTime, now) {
-    const botPosition = botBody.translation();
+  // Nearest cover slot that breaks LOS from the threat eye, if any.
+  function pickCoverSlot(bot, threatEye) {
+    const botPos = bot.body.translation();
+    let best = null;
+    let bestDistSq = Infinity;
+    for (const slot of coverSlots) {
+      if (!isSlotHiddenFromThreat(threatEye, slot, bot.collider)) continue;
+      const dx = slot.x - botPos.x;
+      const dz = slot.z - botPos.z;
+      const distSq = dx * dx + dz * dz;
+      // Skip slots we're already standing on.
+      if (distSq < BOT_WAYPOINT_ARRIVAL_RADIUS * BOT_WAYPOINT_ARRIVAL_RADIUS) {
+        continue;
+      }
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq;
+        best = slot;
+      }
+    }
+    return best;
+  }
+  function moveBotTowards(bot, target, deltaTime, now) {
+    const botPosition = bot.body.translation();
     const dx = target.x - botPosition.x;
     const dz = target.z - botPosition.z;
     const distance = Math.hypot(dx, dz);
-
     if (distance <= BOT_WAYPOINT_ARRIVAL_RADIUS) return true;
-    if (now - botMoveTargetSetAt >= BOT_MOVE_TIMEOUT_MS) return true;
-
-    rotateGroupTowards(botGroup, computeYawTowards(botPosition, target), deltaTime);
-
-    // The bot never jumps and the floor here is flat, so - unlike the
-    // player - no vertical component is needed; Rapier's character
-    // controller still handles sliding along obstacles (and the shallow
-    // ramp, if a route ever crosses it) from horizontal movement alone.
-    botCharacterController.computeColliderMovement(botCollider, {
+    if (now - bot.moveTargetSetAt >= BOT_MOVE_TIMEOUT_MS) return true;
+    rotateGroupTowards(
+      bot,
+      computeYawTowards(botPosition, target),
+      deltaTime
+    );
+    bot.characterController.computeColliderMovement(bot.collider, {
       x: (dx / distance) * BOT_MOVE_SPEED * deltaTime,
       y: 0,
       z: (dz / distance) * BOT_MOVE_SPEED * deltaTime,
     });
-    const correctedMovement = botCharacterController.computedMovement();
-
-    const currentPosition = botBody.translation();
-    botBody.setNextKinematicTranslation({
+    const correctedMovement = bot.characterController.computedMovement();
+    const currentPosition = bot.body.translation();
+    bot.body.setNextKinematicTranslation({
       x: currentPosition.x + correctedMovement.x,
       y: currentPosition.y + correctedMovement.y,
       z: currentPosition.z + correctedMovement.z,
     });
-
     return false;
   }
-
-  // Ties the sight/reaction/aim/firing/movement pieces together - called
-  // once per frame from tick() below, only while the simulation is
-  // actually running (see the isPaused/isDead check there) and the bot
-  // hasn't been destroyed yet.
-  function updateBot(now, deltaTime) {
-    if (botDestroyed) return;
-
-    const botPosition = botBody.translation();
-    const botEyePosition = getBotEyePosition();
-    const playerEyePosition = getPlayerEyePosition();
-    const canSee = botCanSeePlayer(playerEyePosition, botEyePosition);
-
-    if (canSee) {
-      // Sighted: stop patrolling, turn to aim (turn-speed capped - see
-      // rotateGroupTowards()), and fire once actually aimed and ready.
-      botMoveTarget = null;
-      botLastKnownPlayerPosition = {
-        x: playerEyePosition.x,
-        z: playerEyePosition.z,
-      };
-      if (botSpottedAtTime === null) botSpottedAtTime = now;
-
-      const desiredYaw = computeYawTowards(botPosition, playerEyePosition);
-      const remainingAngle = rotateGroupTowards(botGroup, desiredYaw, deltaTime);
-
-      const hasReacted = now - botSpottedAtTime >= botReactionDelayMs;
-      const isAimed = remainingAngle <= BOT_AIM_ANGLE_THRESHOLD_RADIANS;
-      const offCooldown = now - lastBotShotTime >= BOT_FIRE_INTERVAL_MS;
-      if (hasReacted && isAimed && offCooldown) {
-        lastBotShotTime = now;
-        botFireShot(playerEyePosition, botEyePosition);
+  // Per-bot AI tick. Same logic for every tier — only parameters differ.
+  function updateBot(bot, now, deltaTime) {
+    if (bot.destroyed) return;
+    const botPosition = bot.body.translation();
+    const botEyePosition = getBotEyePosition(bot);
+    const visibleHostile = pickVisibleHostile(bot, botEyePosition);
+    const underFire =
+      bot.usesCover && now - bot.lastDamageTime < COVER_SEEK_WINDOW_MS;
+    // Hard bots: after taking damage, peel to a cover slot that breaks LOS
+    // from the current (or last-known) threat before standing in the open.
+    if (underFire) {
+      const threatEye =
+        visibleHostile?.eye ??
+        (bot.lastKnownTargetPosition
+          ? {
+              x: bot.lastKnownTargetPosition.x,
+              y: botEyePosition.y,
+              z: bot.lastKnownTargetPosition.z,
+            }
+          : null);
+      if (threatEye && !bot.coverTarget && !bot.holdingCover) {
+        bot.coverTarget = pickCoverSlot(bot, threatEye);
+        if (bot.coverTarget) {
+          bot.moveTarget = bot.coverTarget;
+          bot.moveTargetSetAt = now;
+        }
       }
     } else {
-      // Not sighted (or never has been) - forget when it was first
-      // spotted, so re-spotting always requires the reaction delay again,
-      // and move: head toward wherever the player was last seen first,
-      // falling back to patrolling once that's reached or given up on.
-      botSpottedAtTime = null;
-
-      if (!botMoveTarget) {
-        if (botLastKnownPlayerPosition) {
-          botMoveTarget = botLastKnownPlayerPosition;
-        } else {
-          pickNewPatrolTarget();
-        }
-        botMoveTargetSetAt = now;
-      }
-
-      const reachedOrGaveUp = moveBotTowards(botMoveTarget, deltaTime, now);
+      bot.coverTarget = null;
+      bot.holdingCover = false;
+    }
+    const relocatingToCover = bot.coverTarget !== null;
+    if (relocatingToCover) {
+      const reachedOrGaveUp = moveBotTowards(
+        bot,
+        bot.coverTarget,
+        deltaTime,
+        now
+      );
       if (reachedOrGaveUp) {
-        // If this was the last-known-position chase, give it up entirely
-        // (whether reached or timed out) rather than immediately chasing
-        // the same stale point again next frame.
-        if (botMoveTarget === botLastKnownPlayerPosition) {
-          botLastKnownPlayerPosition = null;
+        bot.coverTarget = null;
+        bot.moveTarget = null;
+        bot.holdingCover = true;
+      }
+      // Can still aim/fire while moving to cover if a hostile is visible.
+      if (visibleHostile) {
+        bot.lastKnownTargetPosition = {
+          x: visibleHostile.position.x,
+          z: visibleHostile.position.z,
+        };
+        if (bot.spottedAtTime === null) bot.spottedAtTime = now;
+        const desiredYaw = computeYawTowards(botPosition, visibleHostile.eye);
+        const remainingAngle = rotateGroupTowards(bot, desiredYaw, deltaTime);
+        const hasReacted = now - bot.spottedAtTime >= bot.reactionDelayMs;
+        const isAimed = remainingAngle <= BOT_AIM_ANGLE_THRESHOLD_RADIANS;
+        const offCooldown = now - bot.lastShotTime >= BOT_FIRE_INTERVAL_MS;
+        if (hasReacted && isAimed && offCooldown) {
+          bot.lastShotTime = now;
+          botFireShot(bot, visibleHostile.eye, botEyePosition);
         }
-        botMoveTarget = null;
+      } else {
+        bot.spottedAtTime = null;
+      }
+      return;
+    }
+    if (visibleHostile) {
+      // Sighted hostile: stop patrolling, turn (tier turn-speed), fire when ready.
+      bot.moveTarget = null;
+      bot.lastKnownTargetPosition = {
+        x: visibleHostile.position.x,
+        z: visibleHostile.position.z,
+      };
+      if (bot.spottedAtTime === null) bot.spottedAtTime = now;
+      const desiredYaw = computeYawTowards(botPosition, visibleHostile.eye);
+      const remainingAngle = rotateGroupTowards(bot, desiredYaw, deltaTime);
+      const hasReacted = now - bot.spottedAtTime >= bot.reactionDelayMs;
+      const isAimed = remainingAngle <= BOT_AIM_ANGLE_THRESHOLD_RADIANS;
+      const offCooldown = now - bot.lastShotTime >= BOT_FIRE_INTERVAL_MS;
+      if (hasReacted && isAimed && offCooldown) {
+        bot.lastShotTime = now;
+        botFireShot(bot, visibleHostile.eye, botEyePosition);
+      }
+    } else {
+      bot.spottedAtTime = null;
+      if (!bot.moveTarget) {
+        if (bot.lastKnownTargetPosition) {
+          bot.moveTarget = bot.lastKnownTargetPosition;
+        } else {
+          pickNewPatrolTarget(bot);
+        }
+        bot.moveTargetSetAt = now;
+      }
+      const reachedOrGaveUp = moveBotTowards(
+        bot,
+        bot.moveTarget,
+        deltaTime,
+        now
+      );
+      if (reachedOrGaveUp) {
+        if (bot.moveTarget === bot.lastKnownTargetPosition) {
+          bot.lastKnownTargetPosition = null;
+        }
+        bot.moveTarget = null;
       }
     }
-
-    // Note: botGroup's *position* is deliberately NOT synced here.
-    // moveBotTowards() above only queues the bot's next position via
-    // setNextKinematicTranslation() - like the player, that queued
-    // translation doesn't actually take effect on botBody.translation()
-    // until world.step() runs, which happens later in tick(), after
-    // updateBot() returns. Syncing here would read last frame's stale
-    // position. See the sync next to the player's own camera update in
-    // tick() below instead.
+  }
+  function updateAllBots(now, deltaTime) {
+    for (const bot of bots) {
+      updateBot(bot, now, deltaTime);
+    }
   }
 
   function computeHorizontalMovement(deltaTime) {
@@ -2600,14 +2741,12 @@ function startRenderLoop({
       // canFire()/the fire-rate cooldown allow it (see tryFireShot above).
       if (isFiring) tryFireShot(timestamp);
 
-      // Bot AI: sight check, aim/turn, fire-back, and patrol/chase
-      // movement - see updateBot() above.
-      updateBot(timestamp, deltaTime);
+      // Bot AI: team-gated targeting, aim/turn, fire, patrol/chase/cover.
+      updateAllBots(timestamp, deltaTime);
 
-      // Gradual health regeneration for both sides - see
-      // regenPlayerHealth()/regenBotHealth() above for the delay/rate.
+      // Gradual health regeneration for player + every living bot.
       regenPlayerHealth(timestamp, deltaTime);
-      regenBotHealth(timestamp, deltaTime);
+      regenAllBotsHealth(timestamp, deltaTime);
 
       // Hold-C crouch (Milestone 7): resize capsule / adjust speed before
       // movement so this frame's collide-and-slide uses the right shape.
@@ -2713,48 +2852,35 @@ function startRenderLoop({
       playerIsInvulnerable && !isDead && !matchEnded
     );
 
-    const botIsInvulnerable = timestamp < botInvulnerableUntil;
-    if (!botDestroyed) {
+    // Sync every bot mesh + invuln opacity + floating health bar after
+    // world.step() (same timing as the player camera sync above).
+    const playerEyeForBars = getPlayerEyePosition();
+    for (const bot of bots) {
+      if (bot.destroyed) continue;
+
+      const botIsInvulnerable = timestamp < bot.invulnerableUntil;
       const botOpacity = botIsInvulnerable ? 0.5 : 1;
-      botMaterial.opacity = botOpacity;
-      botMarkerMaterial.opacity = botOpacity;
-    }
+      bot.material.opacity = botOpacity;
+      bot.markerMaterial.opacity = botOpacity;
 
-    // Sync the bot's visual group to wherever physics actually put its
-    // body this frame (it may have been blocked/slid along a collision by
-    // moveBotTowards() above) - same reasoning and timing as the player's
-    // camera sync just above (must happen after world.step(), not before).
-    const botPosition = botBody.translation();
-    botGroup.position.set(botPosition.x, botPosition.y, botPosition.z);
+      const botPosition = bot.body.translation();
+      bot.group.position.set(botPosition.x, botPosition.y, botPosition.z);
 
-    // Minimap (Milestone 8): live top-down dots from the same post-step
-    // body translations used above. Runs even while paused/dead.
-    updateMinimap(playerPosition, botPosition, yaw);
-
-    // Keep the bot's floating health bar glued above its head on screen.
-    // Runs even while paused/dead (same reasoning as the camera follow
-    // above), and is skipped once the bot is destroyed - damageBot()
-    // already hid the bar for good at that point. Enemy bars also require
-    // clear player→bot LOS (allies would pass visible=true always).
-    if (!botDestroyed) {
-      const botEyePosition = {
-        x: botPosition.x,
-        y: botPosition.y + EYE_HEIGHT,
-        z: botPosition.z,
-      };
       const barVisible =
-        !botHealthBar.isEnemy ||
-        playerCanSeeBot(getPlayerEyePosition(), botEyePosition);
+        !bot.healthBar.isEnemy || playerCanSeeBot(playerEyeForBars, bot);
       updateFloatingHealthBarPosition(
-        botHealthBar,
+        bot.healthBar,
         {
-          x: botGroup.position.x,
-          y: botGroup.position.y + BOT_HEALTH_BAR_HEIGHT_OFFSET,
-          z: botGroup.position.z,
+          x: botPosition.x,
+          y: botPosition.y + BOT_HEALTH_BAR_HEIGHT_OFFSET,
+          z: botPosition.z,
         },
         barVisible
       );
     }
+
+    // Minimap (Milestone 8): live top-down dots for player + all bots.
+    updateMinimap(playerPosition, yaw);
 
     renderer.render(scene, camera);
     requestAnimationFrame(tick);
@@ -2778,8 +2904,7 @@ const pendingMatchSettings = {
   killTarget: 5,
 };
 
-// Applied match settings after Start Match (also holds intended bot counts
-// for Milestone 10 — not used for spawning yet).
+// Applied match settings after Start Match — allyBots/enemyBots drive spawn.
 let matchConfig = {
   teamSize: "1v1",
   difficulty: "medium",
@@ -2789,9 +2914,9 @@ let matchConfig = {
 };
 
 const TEAM_SIZE_HINTS = {
-  "1v1": "1v1 = you vs 1 enemy (ally bots come in Milestone 10)",
-  "3v3": "3v3 = you + 2 allies vs 3 enemies (multi-bot spawn is Milestone 10)",
-  "5v5": "5v5 = you + 4 allies vs 5 enemies (multi-bot spawn is Milestone 10)",
+  "1v1": "1v1 = you vs 1 enemy bot",
+  "3v3": "3v3 = you + 2 ally bots vs 3 enemy bots",
+  "5v5": "5v5 = you + 4 ally bots vs 5 enemy bots",
 };
 
 function updatePrematchTeamHint() {
@@ -2837,21 +2962,17 @@ function startMatch() {
   const difficulty = pendingMatchSettings.difficulty;
   const chosenKillTarget = pendingMatchSettings.killTarget;
   const botCounts = TEAM_SIZE_BOT_COUNTS[teamSize] ?? TEAM_SIZE_BOT_COUNTS["1v1"];
-  const tier = DIFFICULTY_TIERS[difficulty] ?? DIFFICULTY_TIERS.medium;
+  // Unknown difficulty strings fall back to medium before spawn copies knobs.
+  const resolvedDifficulty = DIFFICULTY_TIERS[difficulty] ? difficulty : "medium";
 
   matchConfig = {
     teamSize,
-    difficulty,
+    difficulty: resolvedDifficulty,
     killTarget: chosenKillTarget,
     allyBots: botCounts.allyBots,
     enemyBots: botCounts.enemyBots,
   };
   killTarget = chosenKillTarget;
-
-  botReactionDelayMs = tier.reactionDelayMs;
-  botAimSpreadRadians = tier.aimSpreadRadians;
-  // Stored for Milestone 10's cover-seeking; unused by today's AI.
-  botUsesCover = tier.usesCover;
 
   buildArena(ARENA_SIZES[teamSize] ?? ARENA_SIZES["1v1"]);
   buildMinimapLayout();
