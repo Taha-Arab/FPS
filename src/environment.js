@@ -16,7 +16,7 @@ export function configureRenderer(renderer) {
   // ACES filmic tone mapping is what gives modern engines their "graded"
   // look versus raw clamped RGB output.
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.75;
+  renderer.toneMappingExposure = 1.1;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -47,11 +47,11 @@ export function setupEnvironment(scene) {
 
   // --- Lights ---
   // Sky/ground bounce fill (cool sky, warm-ish dusty ground).
-  const hemi = new THREE.HemisphereLight(0xbdd4e7, 0x6b655a, 0.85);
+  const hemi = new THREE.HemisphereLight(0xbdd4e7, 0x8a8072, 1.5);
   scene.add(hemi);
 
   // The sun: warm directional key light with shadows.
-  const sunLight = new THREE.DirectionalLight(0xfff1dd, 2.6);
+  const sunLight = new THREE.DirectionalLight(0xfff1dd, 3.2);
   sunLight.position.copy(sunPosition).multiplyScalar(120);
   sunLight.castShadow = true;
   sunLight.shadow.mapSize.set(2048, 2048);

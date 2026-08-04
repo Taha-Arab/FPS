@@ -3840,3 +3840,11 @@ function startMatch() {
 prematchStartButton.addEventListener("click", () => {
   startMatch();
 });
+
+// devplay test mode: skip the menus entirely and start a default match so
+// headless/automated runs can capture real gameplay frames.
+if (DEV_AUTOPLAY) {
+  titleSplash.classList.add("hidden");
+  prematchMenu.classList.add("hidden");
+  startMatch();
+}

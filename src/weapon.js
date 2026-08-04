@@ -8,9 +8,11 @@
 import * as THREE from "three";
 
 // Poses in camera-local space (+X right, +Y up, -Z forward).
-const HIP_POSITION = new THREE.Vector3(0.22, -0.2, -0.42);
-const HIP_ROTATION = new THREE.Euler(0, -0.06, 0.02);
-const ADS_POSITION = new THREE.Vector3(0, -0.116, -0.3);
+const HIP_POSITION = new THREE.Vector3(0.25, -0.24, -0.46);
+const HIP_ROTATION = new THREE.Euler(0, -0.1, 0.02);
+// ADS y aligns the rear-sight notch (local y 0.055 * rifle scale 0.72)
+// with the camera center so the irons are the true aim reference.
+const ADS_POSITION = new THREE.Vector3(0, -0.04, -0.32);
 const ADS_ROTATION = new THREE.Euler(0, 0, 0);
 const SPRINT_POSITION = new THREE.Vector3(0.16, -0.26, -0.4);
 const SPRINT_ROTATION = new THREE.Euler(-0.5, 0.5, 0.15);
@@ -35,9 +37,9 @@ function metal(color, roughness = 0.55, metalness = 0.65) {
 function buildRifleMesh() {
   const rifle = new THREE.Group();
 
-  const bodyMat = metal(0x2b2d30, 0.5, 0.75); // dark receiver
-  const accentMat = metal(0x3a3d42, 0.6, 0.6); // polymer furniture
-  const barrelMat = metal(0x1e2022, 0.35, 0.9);
+  const bodyMat = metal(0x35383d, 0.5, 0.5); // receiver
+  const accentMat = metal(0x42464d, 0.65, 0.35); // polymer furniture
+  const barrelMat = metal(0x27292d, 0.4, 0.7);
 
   function box(w, h, d, mat, x, y, z) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -91,6 +93,9 @@ function buildRifleMesh() {
   muzzleTip.position.set(0, 0.005, -0.645);
   rifle.add(muzzleTip);
 
+  // Under-scaled so the viewmodel doesn't dominate the frame.
+  rifle.scale.setScalar(0.72);
+
   // Viewmodels shouldn't cast big fake shadows onto the world.
   rifle.traverse((obj) => {
     if (obj.isMesh) {
@@ -133,6 +138,12 @@ export function createWeaponViewmodel(camera) {
 
   const flashLight = new THREE.PointLight(0xffc36b, 0, 6, 2);
   muzzleTip.add(flashLight);
+
+  // Faint fill light so the camera-facing side of the rifle isn't pure
+  // shadow — tiny range, so it barely touches the world.
+  const viewmodelFill = new THREE.PointLight(0xfff4e0, 0.22, 1.4, 2);
+  viewmodelFill.position.set(-0.15, 0.15, 0.25);
+  root.add(viewmodelFill);
 
   let flashHideAt = 0;
 
