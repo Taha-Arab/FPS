@@ -9,8 +9,8 @@ import { Sky } from "three/addons/objects/Sky.js";
 
 // Late-afternoon sun angle: long shadows read dramatically without going
 // full sunset-orange. Shared between the Sky shader and the light.
-const SUN_ELEVATION_DEGREES = 32;
-const SUN_AZIMUTH_DEGREES = 205;
+const SUN_ELEVATION_DEGREES = 38;
+const SUN_AZIMUTH_DEGREES = 150;
 
 export function configureRenderer(renderer) {
   // ACES filmic tone mapping is what gives modern engines their "graded"
