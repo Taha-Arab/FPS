@@ -703,6 +703,10 @@ const CROUCH_HALF_HEIGHT = 0.15;
 const CROUCH_EYE_HEIGHT = 0.35;
 const CROUCH_MOVE_SPEED = 2.5; // half of MOVE_SPEED — clearly slower
 const CROUCH_CENTER_OFFSET = PLAYER_HALF_HEIGHT - CROUCH_HALF_HEIGHT;
+// Camera eases between standing/crouch eye height over this many seconds.
+// Short on purpose — snappy like real FPS crouch, not a slow sit-down.
+// Physics capsule still snaps immediately; only the view is smoothed.
+const CROUCH_CAMERA_TRANSITION_SECONDS = 0.15;
 
 const MOVE_SPEED = 5; // meters/second
 const JUMP_SPEED = 6; // initial upward velocity, in meters/second
@@ -1932,6 +1936,10 @@ function startRenderLoop({
   // Milestone 7: true while the player's collider is the shorter crouch
   // capsule. Driven by hold-C plus a headroom check when standing up.
   let isCrouching = false;
+  // 0 = standing camera height, 1 = crouch camera height. Eased over
+  // CROUCH_CAMERA_TRANSITION_SECONDS so the view doesn't snap — only this
+  // blend is smoothed; jump/fall still track the body instantly.
+  let crouchCameraBlend = 0;
 
   // -----------------------------------------------------------------
   // Crouch helpers (Milestone 7)
@@ -1942,6 +1950,12 @@ function startRenderLoop({
 
   function getCurrentEyeHeight() {
     return isCrouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT;
+  }
+
+  // Instantly matches the camera crouch blend to the physics crouch state
+  // (used on respawn / OOB recovery so teleports don't ease from mid-blend).
+  function snapCameraHeightToPlayer() {
+    crouchCameraBlend = isCrouching ? 1 : 0;
   }
 
   // Tries to enter or leave crouch. Leaving can fail (and leave the player
@@ -2023,6 +2037,7 @@ function startRenderLoop({
       isCrouching = false;
     }
     playerBody.setTranslation(getBlueTeamSpawnTranslation(), true);
+    snapCameraHeightToPlayer();
   }
 
   // -----------------------------------------------------------------
@@ -2055,6 +2070,7 @@ function startRenderLoop({
     // effect immediately - it's called from a setTimeout, not from inside
     // tick()'s usual movement step. Random blue-team spawn each time.
     playerBody.setTranslation(getBlueTeamSpawnTranslation(), true);
+    snapCameraHeightToPlayer();
 
     setPlayerHealth(PLAYER_MAX_HEALTH);
     playerLastDamageTime = -Infinity;
@@ -2640,10 +2656,30 @@ function startRenderLoop({
     // Follow the player's current position with the camera. Runs even while
     // paused so the camera stays put at the player's last known position
     // instead of needing separate paused/unpaused render paths.
+    // Crouch/stand eases the view over ~0.15s; jump/fall still track the
+    // body instantly. Shooting/LOS keep using getCurrentEyeHeight() (the
+    // real physics eye), not this smoothed view height.
     const playerPosition = playerBody.translation();
+    const targetCrouchBlend = isCrouching ? 1 : 0;
+    const crouchBlendStep =
+      1 - Math.exp(-deltaTime / CROUCH_CAMERA_TRANSITION_SECONDS);
+    crouchCameraBlend +=
+      (targetCrouchBlend - crouchCameraBlend) * crouchBlendStep;
+
+    // Physics body Y already snaps by CROUCH_CENTER_OFFSET on crouch, so
+    // rebuild height from a standing-equivalent center + an eased offset
+    // that includes both the eye-height change and that center shift.
+    const standingBodyY = isCrouching
+      ? playerPosition.y + CROUCH_CENTER_OFFSET
+      : playerPosition.y;
+    const crouchEyeFromStanding = CROUCH_EYE_HEIGHT - CROUCH_CENTER_OFFSET;
+    const visualEyeFromStanding =
+      EYE_HEIGHT +
+      (crouchEyeFromStanding - EYE_HEIGHT) * crouchCameraBlend;
+
     camera.position.set(
       playerPosition.x,
-      playerPosition.y + getCurrentEyeHeight(),
+      standingBodyY + visualEyeFromStanding,
       playerPosition.z
     );
     camera.rotation.y = yaw;
