@@ -530,3 +530,113 @@ canvas {
 #match-end-overlay.hidden {
   display: none;
 }
+
+/* Pre-match menu (Milestone 9). Full-screen gate before Click to Play —
+   same overlay pattern as #pause-overlay / #match-end-overlay, with a
+   compact centered panel for the preset buttons. z-index above pause so
+   it stays on top until Start Match hides it. */
+#prematch-menu {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.75);
+  color: white;
+  font-family: sans-serif;
+  text-align: center;
+  user-select: none;
+  z-index: 25;
+}
+
+#prematch-menu.hidden {
+  display: none;
+}
+
+#prematch-menu-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1.25em;
+  min-width: 320px;
+  max-width: 420px;
+  padding: 2em 2.25em;
+  background: rgba(20, 24, 32, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+#prematch-menu-title {
+  font-size: 2rem;
+  font-weight: bold;
+  letter-spacing: 0.02em;
+}
+
+.prematch-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45em;
+  text-align: left;
+}
+
+.prematch-section-label {
+  font-size: 0.85rem;
+  font-weight: bold;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+.prematch-options {
+  display: flex;
+  gap: 0.4em;
+}
+
+.prematch-option {
+  flex: 1;
+  padding: 0.55em 0.4em;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: transparent;
+  color: white;
+  font-family: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.prematch-option:hover {
+  border-color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Selected preset uses the same BLUE team accent as the score HUD. */
+.prematch-option.selected {
+  border-color: #3366cc;
+  background: rgba(51, 102, 204, 0.35);
+  font-weight: bold;
+}
+
+.prematch-hint {
+  font-size: 0.8rem;
+  opacity: 0.65;
+  line-height: 1.35;
+}
+
+#prematch-start-button {
+  margin-top: 0.35em;
+  padding: 0.75em 1.25em;
+  border: none;
+  background: #3366cc;
+  color: white;
+  font-family: inherit;
+  font-size: 1.1rem;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+#prematch-start-button:hover {
+  background: #4076e0;
+}
+
+#prematch-start-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

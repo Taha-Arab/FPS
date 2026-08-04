@@ -10,11 +10,12 @@
 // reliably resumes.
 //
 // Milestone 3: Arena with obstacles. The arena is sized per the 1v1/3v3/5v5
-// scaling rule (defaulting to "1v1"/small since there's no pre-match menu
-// yet), plus a varied mix of boxes/pillars/a ramp laid out for competitive
-// flow (chokepoints, broken sightlines, mixed cover density) rather than
-// an even grid. Those remain solid cover (jump-on-top where short enough);
-// walk-under platforms are Milestone 7's separate elevated structures.
+// scaling rule (Milestone 9's pre-match menu picks the size via
+// buildArena()), plus a varied mix of boxes/pillars/a ramp laid out for
+// competitive flow (chokepoints, broken sightlines, mixed cover density)
+// rather than an even grid. Those remain solid cover (jump-on-top where
+// short enough); walk-under platforms are Milestone 7's separate elevated
+// structures.
 //
 // Milestone 4: Shooting + health. Holding left-click fires a full-auto
 // Rapier raycast gun ("hitscan" - instant, no travel time) from the
@@ -63,10 +64,11 @@
 // than per-character, since that's the shape multiple bots per team
 // (Milestone 10) will need anyway - a kill just increments the killer's
 // team score via handlePlayerDeath()/handleBotDeath(). Reaching
-// KILL_TARGET first ends the match (endMatch()), freezing the whole
-// simulation (see the `matchEnded` check in tick()) and showing
-// #match-end-overlay - refreshing the page is still the only way to start
-// a new match (a real "Play Again" button is Milestone 13 polish). Until
+// killTarget (chosen on the pre-match menu) first ends the match
+// (endMatch()), freezing the whole simulation (see the `matchEnded`
+// check in tick()) and showing #match-end-overlay - refreshing the page
+// is still the only way to start a new match (a real "Play Again" button
+// is Milestone 13 polish). Until
 // then, dying just means a short respawn: damagePlayer()/damageBot()
 // schedule respawnPlayer()/respawnBot() (defined inside startRenderLoop(),
 // where the Rapier bodies live) after RESPAWN_DELAY_MS, which reset
@@ -93,10 +95,15 @@
 // plus a static simplified layout layer (buildMinimapLayout) drawn from
 // the obstacle/platform defs for spatial awareness.
 //
+// Milestone 9: Pre-match menu. #prematch-menu gates startup — team size
+// (1v1/3v3/5v5) picks ARENA_SIZES via buildArena(), bot difficulty sets
+// reaction delay / aim spread (cover flag stored for Milestone 10), and
+// kill target replaces the old hardcoded KILL_TARGET. Multi-bot spawning
+// per team-size counting rule is still Milestone 10; the menu stores the
+// intended ally/enemy counts now even though only one enemy bot exists.
+//
 // NOT built yet (later milestones):
-// - No cover-seeking behavior or difficulty tiers yet (9-10) - the bot's
-//   patrol/chase movement above is a basic step ahead of that, not the
-//   real thing.
+// - Multiple bots per team + tactical cover-seeking (Milestone 10).
 // ---------------------------------------------------------------------------
 
 import * as THREE from "three";
@@ -157,32 +164,32 @@ sunLight.position.set(10, 20, 10);
 scene.add(sunLight);
 
 // -----------------------------------------------------------------------
-// Ground plane (visual)
+// Arena ground + boundary walls (visual) — built after pre-match menu
 // -----------------------------------------------------------------------
+// Arena size (meters) per the team-size scaling rule in AGENTS.md.
+// Milestone 9's pre-match menu picks the key; buildArena() creates the
+// ground/walls only after Start Match (physics hasn't started yet, so no
+// rebuild path is needed). Interior obstacles/platforms keep absolute
+// coords as the 1v1 center cluster; larger arenas ADD mid/outer-ring
+// cover via buildArenaCover() so density stays similar.
 
-// Arena size (meters) per the team-size scaling rule in AGENTS.md. There's
-// no pre-match menu yet (Milestone 9 adds one) - default to the smallest
-// (1v1) size for now; Milestone 9 will pick one of these based on the
-// player's menu selection instead of always using "1v1".
 const ARENA_SIZES = { "1v1": 30, "3v3": 45, "5v5": 60 };
-const GROUND_SIZE = ARENA_SIZES["1v1"];
 
-const groundGeometry = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE);
-const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x3a7d44 });
-const groundMesh = new THREE.Mesh(groundGeometry, groundMaterial);
-// PlaneGeometry is created flat in the XY plane (facing the camera by
-// default), so we rotate it -90 degrees around X to lay it flat on the
-// ground (the XZ plane) like a floor.
-groundMesh.rotation.x = -Math.PI / 2;
-scene.add(groundMesh);
+// Intended bot counts per team-size preset (player counts as one BLUE
+// member — see AGENTS.md). Stored on Start Match for Milestone 10; this
+// milestone still spawns only the single existing enemy bot.
+const TEAM_SIZE_BOT_COUNTS = {
+  "1v1": { allyBots: 0, enemyBots: 1 },
+  "3v3": { allyBots: 2, enemyBots: 3 },
+  "5v5": { allyBots: 4, enemyBots: 5 },
+};
 
-// -----------------------------------------------------------------------
-// Boundary walls (visual)
-// -----------------------------------------------------------------------
-// These were added back in Milestone 2 just to test wall collision, but
-// since they're computed from GROUND_SIZE they already scale correctly
-// with the arena sizing above, so Milestone 3 reuses them as-is and just
-// adds interior obstacles alongside them (below).
+// Mutable: set by buildArena() from the chosen team-size preset.
+let GROUND_SIZE = ARENA_SIZES["1v1"];
+let GROUND_HALF = GROUND_SIZE / 2;
+// Regenerated inside buildArena() so wall colliders in initPhysics() match
+// whichever arena size the menu selected.
+let wallDefs = [];
 
 // Visible wall height. Must stay well above jump reach from the tallest
 // walkable surface (Milestone 7 decks top out at ~2.55m; jump peak ~0.9m
@@ -194,76 +201,118 @@ const WALL_THICKNESS = 1;
 // prop is taller than WALL_HEIGHT (a horizontal "lid" would itself be
 // standable, so we extend vertically instead).
 const BOUNDARY_CONTAINMENT_HEIGHT = 20;
-const GROUND_HALF = GROUND_SIZE / 2;
 // How far past the ground pad a player must go before OOB recovery snaps
 // them back to spawn (failsafe if containment is ever bypassed).
 const OOB_MARGIN = 0.5;
 
-// North/south walls span the full width (including the corners), and
-// east/west walls fit snugly between them, so there are no corner gaps.
-// { hx, hz } are half-extents (Rapier/box-geometry convention), { x, z }
-// is the center position of the wall.
-const wallDefs = [
-  {
-    hx: GROUND_HALF + WALL_THICKNESS,
-    hz: WALL_THICKNESS / 2,
-    x: 0,
-    z: -(GROUND_HALF + WALL_THICKNESS / 2),
-  }, // north
-  {
-    hx: GROUND_HALF + WALL_THICKNESS,
-    hz: WALL_THICKNESS / 2,
-    x: 0,
-    z: GROUND_HALF + WALL_THICKNESS / 2,
-  }, // south
-  {
-    hx: WALL_THICKNESS / 2,
-    hz: GROUND_HALF,
-    x: -(GROUND_HALF + WALL_THICKNESS / 2),
-    z: 0,
-  }, // west
-  {
-    hx: WALL_THICKNESS / 2,
-    hz: GROUND_HALF,
-    x: GROUND_HALF + WALL_THICKNESS / 2,
-    z: 0,
-  }, // east
-];
-
+const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x3a7d44 });
 const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 });
-for (const wall of wallDefs) {
-  const wallGeometry = new THREE.BoxGeometry(
-    wall.hx * 2,
-    WALL_HEIGHT,
-    wall.hz * 2
-  );
-  const wallMesh = new THREE.Mesh(wallGeometry, wallMaterial);
-  wallMesh.position.set(wall.x, WALL_HEIGHT / 2, wall.z);
-  scene.add(wallMesh);
+let groundMesh = null;
+const wallMeshes = [];
+
+// Creates (or replaces) the ground plane + four boundary wall meshes for
+// the given arena size in meters. Called once from startMatch() before
+// initPhysics(), so Rapier colliders are built against the same size.
+function buildArena(groundSize) {
+  GROUND_SIZE = groundSize;
+  GROUND_HALF = GROUND_SIZE / 2;
+
+  // Safe if Start Match were ever double-fired — dispose the previous pad.
+  if (groundMesh) {
+    scene.remove(groundMesh);
+    groundMesh.geometry.dispose();
+    groundMesh = null;
+  }
+  for (const mesh of wallMeshes) {
+    scene.remove(mesh);
+    mesh.geometry.dispose();
+  }
+  wallMeshes.length = 0;
+
+  const groundGeometry = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE);
+  groundMesh = new THREE.Mesh(groundGeometry, groundMaterial);
+  // PlaneGeometry is created flat in the XY plane (facing the camera by
+  // default), so we rotate it -90 degrees around X to lay it flat on the
+  // ground (the XZ plane) like a floor.
+  groundMesh.rotation.x = -Math.PI / 2;
+  scene.add(groundMesh);
+
+  // North/south walls span the full width (including the corners), and
+  // east/west walls fit snugly between them, so there are no corner gaps.
+  // { hx, hz } are half-extents (Rapier/box-geometry convention), { x, z }
+  // is the center position of the wall.
+  wallDefs = [
+    {
+      hx: GROUND_HALF + WALL_THICKNESS,
+      hz: WALL_THICKNESS / 2,
+      x: 0,
+      z: -(GROUND_HALF + WALL_THICKNESS / 2),
+    }, // north
+    {
+      hx: GROUND_HALF + WALL_THICKNESS,
+      hz: WALL_THICKNESS / 2,
+      x: 0,
+      z: GROUND_HALF + WALL_THICKNESS / 2,
+    }, // south
+    {
+      hx: WALL_THICKNESS / 2,
+      hz: GROUND_HALF,
+      x: -(GROUND_HALF + WALL_THICKNESS / 2),
+      z: 0,
+    }, // west
+    {
+      hx: WALL_THICKNESS / 2,
+      hz: GROUND_HALF,
+      x: GROUND_HALF + WALL_THICKNESS / 2,
+      z: 0,
+    }, // east
+  ];
+
+  for (const wall of wallDefs) {
+    const wallGeometry = new THREE.BoxGeometry(
+      wall.hx * 2,
+      WALL_HEIGHT,
+      wall.hz * 2
+    );
+    const wallMesh = new THREE.Mesh(wallGeometry, wallMaterial);
+    wallMesh.position.set(wall.x, WALL_HEIGHT / 2, wall.z);
+    scene.add(wallMesh);
+    wallMeshes.push(wallMesh);
+  }
+
+  // Interior cover + platforms scale with arena size (not an empty rim).
+  buildArenaCover(groundSize);
 }
 
 // -----------------------------------------------------------------------
-// Interior obstacles (visual)
+// Interior obstacles + elevated platforms (visual + layout defs)
 // -----------------------------------------------------------------------
 // Laid out for competitive flow, not just visual variety - modeled loosely
 // on small symmetric shooter maps (think COD's "Shipment"-style close
 // combat): no sightline should reach across the whole arena unbroken, a
 // couple of chokepoints funnel movement instead of one open field, and
 // obstacle density varies by area (tighter cover in firefight pockets,
-// sparser in movement lanes) rather than being spaced evenly. These
-// Milestone 3 shapes stay solid cover (jump-on-top already works on the
-// shorter ones via the character controller). Walk-under platforms are
-// the separate elevatedStructurePieceDefs further below.
+// sparser in movement lanes) rather than being spaced evenly.
+//
+// The BASE_* arrays are the original 1v1 (30m) layout. Larger presets
+// KEEP that center cluster and ADD mid/outer-ring cover so density and
+// flow stay similar — stretching the same few props over 45/60m would
+// leave empty sniper alleys. Runtime arrays below are filled by
+// buildArenaCover() when Start Match picks an arena size.
 //
 // Team spawn zones: player's team (BLUE) on the +Z / south side, enemy
 // team (RED) on the -Z / north side — see BLUE_TEAM_SPAWN_POINTS /
 // RED_TEAM_SPAWN_POINTS. The center chokepoint blocks spawn-to-spawn
 // sightlines; candidate points stay on their own side of it.
 
+const STANDING_PLATFORM_CLEARANCE = 2.25;
+const CROUCH_PLATFORM_CLEARANCE = 1.35;
+const PLATFORM_DECK_HALF_THICKNESS = 0.15;
+
 // Box obstacles. { hx, hy, hz } are half-extents, { x, z } is the center
 // position (each rests on the ground, so its world Y position is just its
 // own half-height).
-const boxObstacleDefs = [
+const BASE_BOX_OBSTACLE_DEFS = [
   // Center chokepoint: a tall wall split into two halves with a ~2.4m gap
   // between them. This is the main sightline-breaker - it blocks the long
   // spawn-to-spawn view straight down the middle of the arena, and the gap
@@ -294,9 +343,8 @@ const boxObstacleDefs = [
 
 // Pillar obstacles: round cover, a shape boxes alone can't give. Cylinders
 // are Y-axis-aligned by default in both Three.js and Rapier, so no
-// rotation is needed. { height } is the FULL height (not a half-extent),
-// and they rest on the ground the same way as the boxes above.
-const pillarObstacleDefs = [
+// rotation is needed. { height } is the FULL height (not a half-extent).
+const BASE_PILLAR_OBSTACLE_DEFS = [
   // Paired with the west crate above: the ~2m gap between them is a
   // second, narrower chokepoint on the west flank.
   { radius: 0.6, height: 2.2, x: -5.3, z: 5 },
@@ -312,98 +360,26 @@ const pillarObstacleDefs = [
   { radius: 0.5, height: 2.0, x: -4, z: -3 },
 ];
 
-// Ramp obstacle: a box tilted around the X axis so one edge rises off the
-// ground. ~15 degrees is comfortably under Rapier's default max climbable
-// slope (45 degrees), so the character controller walks straight up it
-// with no extra configuration. Simplification: rotating a box around its
-// own center means its low edge dips slightly below y = 0 - harmless here
-// since it only overlaps the (also static, non-moving) ground collider,
-// and the dip is hidden underneath the ramp's own mesh.
-const rampObstacleDef = {
-  hx: 1.8,
-  hy: 0.3,
-  hz: 2.5,
-  x: -5,
-  z: 10,
-  tiltRadians: 0.26, // ~15 degrees
-};
+// Ramp obstacles: boxes tilted around X. ~15° is under Rapier's default
+// max climbable slope (45°). Rotating a box around its center dips the
+// low edge slightly below y = 0 — harmless against the static ground.
+const BASE_RAMP_OBSTACLE_DEFS = [
+  {
+    hx: 1.8,
+    hy: 0.3,
+    hz: 2.5,
+    x: -5,
+    z: 10,
+    tiltRadians: 0.26, // ~15 degrees
+  },
+];
 
-// A distinct crate-like color (vs. the neutral grey boundary walls) so
-// obstacles read as separate, purpose-placed cover at a glance. Shared by
-// every obstacle shape below to keep the greybox look consistent.
-const obstacleMaterial = new THREE.MeshStandardMaterial({ color: 0x8a6d3f });
-
-for (const box of boxObstacleDefs) {
-  const boxGeometry = new THREE.BoxGeometry(
-    box.hx * 2,
-    box.hy * 2,
-    box.hz * 2
-  );
-  const boxMesh = new THREE.Mesh(boxGeometry, obstacleMaterial);
-  boxMesh.position.set(box.x, box.hy, box.z);
-  scene.add(boxMesh);
-}
-
-for (const pillar of pillarObstacleDefs) {
-  // CylinderGeometry(radiusTop, radiusBottom, height, radialSegments) -
-  // equal top/bottom radius gives a plain cylinder rather than a cone.
-  const pillarGeometry = new THREE.CylinderGeometry(
-    pillar.radius,
-    pillar.radius,
-    pillar.height,
-    12
-  );
-  const pillarMesh = new THREE.Mesh(pillarGeometry, obstacleMaterial);
-  pillarMesh.position.set(pillar.x, pillar.height / 2, pillar.z);
-  scene.add(pillarMesh);
-}
-
-const rampGeometry = new THREE.BoxGeometry(
-  rampObstacleDef.hx * 2,
-  rampObstacleDef.hy * 2,
-  rampObstacleDef.hz * 2
-);
-const rampMesh = new THREE.Mesh(rampGeometry, obstacleMaterial);
-rampMesh.position.set(rampObstacleDef.x, rampObstacleDef.hy, rampObstacleDef.z);
-rampMesh.rotation.x = rampObstacleDef.tiltRadians;
-scene.add(rampMesh);
-
-// -----------------------------------------------------------------------
-// Elevated walk-under structures (Milestone 7)
-// -----------------------------------------------------------------------
-// Separate from the solid Milestone 3 cover above on purpose: those stay
-// ground-resting blockers. These pieces are raised decks on visible legs
-// so you can walk underneath through the open undercroft AND walk across
-// the top. Tops sit above jump peak (~0.9m), so each deck gets a ramp
-// (same ~tilted-box pattern as rampObstacleDef, steeper but still under
-// Rapier's default 45° climb limit) for access.
-//
-// Piece format:
+// Elevated walk-under structures (Milestone 7). Separate from solid cover:
+// raised decks on legs so you can walk under AND across. Piece format:
 //   type "box"  - axis-aligned cuboid at world center (x, y, z)
-//   type "ramp" - cuboid tilted around X by tiltRadians (positive tilt
-//                 raises the local -Z end; negative raises +Z)
-// Standing clearance under tall decks ≈ 2.25m (standing capsule is 2.0m).
-// Low underpass clearance ≈ 1.35m (requires crouch; crouch capsule is 1.1m).
-
-const STANDING_PLATFORM_CLEARANCE = 2.25;
-const CROUCH_PLATFORM_CLEARANCE = 1.35;
-const PLATFORM_DECK_HALF_THICKNESS = 0.15;
-
-// Slightly lighter than solid cover so elevated decks/legs read as
-// "platform" rather than another crate wall at a glance.
-const elevatedMaterial = new THREE.MeshStandardMaterial({ color: 0xa8885a });
-
-const elevatedStructurePieceDefs = [
-  // Placements are intentionally clear of Milestone 3 cover (east wall
-  // segment, east pillar, west crate, low wall, M3 ramp, etc.) — earlier
-  // spots at (9,1) / (-9,9) / (6,-10) clipped those obstacles. Tall decks
-  // were also nudged inward from the arena walls so a jump from the deck
-  // cannot reach the boundary rim (see WALL_HEIGHT / containment notes).
-
+//   type "ramp" - cuboid tilted around X by tiltRadians
+const BASE_ELEVATED_STRUCTURE_PIECE_DEFS = [
   // --- East bridge (east lane): stand-under + ramps both ends ---
-  // At x=10 (not 12): outer deck edge ~11.6 leaves ~3.4m to the east wall
-  // at x=15 — beyond one jump — while z=-2 keeps the south ramp short of
-  // the east pillar (11,6) and clear of the east wall segment (8,-6).
   {
     type: "box",
     hx: 1.6,
@@ -413,20 +389,14 @@ const elevatedStructurePieceDefs = [
     y: STANDING_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS,
     z: -2,
   },
-  // Corner legs (thin so the middle undercroft stays walkable).
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 8.6, y: STANDING_PLATFORM_CLEARANCE / 2, z: -3.5 },
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 11.4, y: STANDING_PLATFORM_CLEARANCE / 2, z: -3.5 },
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 8.6, y: STANDING_PLATFORM_CLEARANCE / 2, z: -0.5 },
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 11.4, y: STANDING_PLATFORM_CLEARANCE / 2, z: -0.5 },
-  // South ramp (high end meets deck at z ≈ -0.2).
   { type: "ramp", hx: 1.3, hy: 0.2, hz: 2.52, x: 10, y: 1.275, z: 1.98, tiltRadians: 0.45 },
-  // North ramp (negative tilt so the high end faces the deck's north edge).
   { type: "ramp", hx: 1.3, hy: 0.2, hz: 2.52, x: 10, y: 1.275, z: -5.98, tiltRadians: -0.45 },
 
   // --- West raised platform: stand-under + one ramp ---
-  // At x=-10.5 (not -12.5): outer edge ~-11.9 leaves ~3.1m to the west
-  // wall, clear of the west crate (-9,5) and the M3 ramp (-5,10). Steeper
-  // ramp (~34°) keeps the run short of the south wall.
   {
     type: "box",
     hx: 1.4,
@@ -440,13 +410,9 @@ const elevatedStructurePieceDefs = [
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -9.3, y: STANDING_PLATFORM_CLEARANCE / 2, z: 8.1 },
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -11.7, y: STANDING_PLATFORM_CLEARANCE / 2, z: 10.3 },
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -9.3, y: STANDING_PLATFORM_CLEARANCE / 2, z: 10.3 },
-  // Ramp on the +Z side onto the deck (high end at z ≈ 10.5).
   { type: "ramp", hx: 1.2, hy: 0.2, hz: 1.97, x: -10.5, y: 1.275, z: 12.01, tiltRadians: 0.6 },
 
-  // --- Low crouch underpass (SW bot corner): crouch-only clearance + ramp ---
-  // Bot-side west corner keeps it clear of the low wall (4,-12), the east
-  // wall segment, AND the east bridge's north ramp (which reaches ~z=-8 on
-  // the opposite flank). Also stays west of the far-west crate (-7,-9).
+  // --- Low crouch underpass (SW bot corner) ---
   {
     type: "box",
     hx: 1.3,
@@ -460,18 +426,257 @@ const elevatedStructurePieceDefs = [
   { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -10.4, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -13.1 },
   { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -12.6, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -10.9 },
   { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -10.4, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -10.9 },
-  // Shorter ramp onto the lower deck (top ≈ 1.65m), facing into the arena (+Z).
   { type: "ramp", hx: 1.1, hy: 0.18, hz: 1.52, x: -11.5, y: 0.825, z: -9.41, tiltRadians: 0.45 },
 ];
 
-for (const piece of elevatedStructurePieceDefs) {
-  const geometry = new THREE.BoxGeometry(piece.hx * 2, piece.hy * 2, piece.hz * 2);
-  const mesh = new THREE.Mesh(geometry, elevatedMaterial);
-  mesh.position.set(piece.x, piece.y, piece.z);
-  if (piece.type === "ramp") {
-    mesh.rotation.x = piece.tiltRadians;
+// Mid-ring cover for 3v3+ (45m / half ≈ 22.5). Sits in the band outside
+// the original ~30m cluster (~|coord| > 14) so it doesn't overlap BASE_*.
+// Same design language: denser west, sparser east, sightline breakers on
+// the long N/S rim lanes that would otherwise open up.
+const MID_RING_BOX_OBSTACLE_DEFS = [
+  // Extend the center chokepoint's job: wing walls so wider maps can't
+  // freely snipe past the ends of the original gap wall.
+  { hx: 2.2, hy: 1.4, hz: 0.55, x: -12, z: 0 },
+  { hx: 2.0, hy: 1.3, hz: 0.5, x: 13, z: 1.5 },
+
+  // West mid-ring: tight cover pocket (matches west-dense feel).
+  { hx: 1.1, hy: 1.0, hz: 1.1, x: -17, z: 8 },
+  { hx: 0.55, hy: 1.2, hz: 2.4, x: -18.5, z: -2 },
+  { hx: 1.0, hy: 0.85, hz: 1.0, x: -16, z: -10 },
+
+  // East mid-ring: lighter cover, keep a reposition lane.
+  { hx: 0.5, hy: 0.95, hz: 2.0, x: 17, z: -8 },
+  { hx: 1.0, hy: 0.7, hz: 0.9, x: 16, z: 5 },
+
+  // North / south rim breakers — stop unbroken spawn-lane sightlines
+  // along the expanded pad.
+  { hx: 2.4, hy: 0.55, hz: 0.5, x: -8, z: -18 },
+  { hx: 1.8, hy: 0.6, hz: 0.5, x: 9, z: -17 },
+  { hx: 2.2, hy: 0.55, hz: 0.5, x: 6, z: 18 },
+  { hx: 1.2, hy: 0.8, hz: 1.0, x: -14, z: 16 },
+];
+
+const MID_RING_PILLAR_OBSTACLE_DEFS = [
+  { radius: 0.55, height: 2.3, x: -15.5, z: 4 },
+  { radius: 0.5, height: 2.1, x: -17, z: -14 },
+  { radius: 0.5, height: 2.4, x: 18, z: 2 },
+  { radius: 0.55, height: 2.0, x: 14, z: 14 },
+  { radius: 0.5, height: 2.2, x: -6, z: 17 },
+  { radius: 0.5, height: 2.3, x: 5, z: -18.5 },
+];
+
+const MID_RING_RAMP_OBSTACLE_DEFS = [
+  // Climbable mound in the SE mid-ring (player side, east lane).
+  { hx: 1.6, hy: 0.28, hz: 2.2, x: 15, z: 12, tiltRadians: 0.26 },
+];
+
+// Helper: standing deck + 4 corner legs + one +Z access ramp. Used by the
+// mid/outer rings so we don't hand-copy the same leg pattern each time.
+function makeStandingDeckPieces(x, z, hx, hz) {
+  const deckY = STANDING_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS;
+  const legHy = STANDING_PLATFORM_CLEARANCE / 2;
+  const leg = 0.15;
+  return [
+    { type: "box", hx, hy: PLATFORM_DECK_HALF_THICKNESS, hz, x, y: deckY, z },
+    { type: "box", hx: leg, hy: legHy, hz: leg, x: x - hx + leg, y: legHy, z: z - hz + leg },
+    { type: "box", hx: leg, hy: legHy, hz: leg, x: x + hx - leg, y: legHy, z: z - hz + leg },
+    { type: "box", hx: leg, hy: legHy, hz: leg, x: x - hx + leg, y: legHy, z: z + hz - leg },
+    { type: "box", hx: leg, hy: legHy, hz: leg, x: x + hx - leg, y: legHy, z: z + hz - leg },
+    // Ramp on +Z: high end meets the deck's south edge.
+    {
+      type: "ramp",
+      hx: Math.min(hx, 1.3),
+      hy: 0.2,
+      hz: 2.52,
+      x,
+      y: 1.275,
+      z: z + hz + 2.0,
+      tiltRadians: 0.45,
+    },
+  ];
+}
+
+function makeCrouchUnderpassPieces(x, z) {
+  const hx = 1.2;
+  const hz = 1.2;
+  const deckY = CROUCH_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS;
+  const legHy = CROUCH_PLATFORM_CLEARANCE / 2;
+  const leg = 0.12;
+  return [
+    { type: "box", hx, hy: PLATFORM_DECK_HALF_THICKNESS, hz, x, y: deckY, z },
+    { type: "box", hx: leg, hy: legHy, hz: leg, x: x - hx + leg, y: legHy, z: z - hz + leg },
+    { type: "box", hx: leg, hy: legHy, hz: leg, x: x + hx - leg, y: legHy, z: z - hz + leg },
+    { type: "box", hx: leg, hy: legHy, hz: leg, x: x - hx + leg, y: legHy, z: z + hz - leg },
+    { type: "box", hx: leg, hy: legHy, hz: leg, x: x + hx - leg, y: legHy, z: z + hz - leg },
+    {
+      type: "ramp",
+      hx: 1.1,
+      hy: 0.18,
+      hz: 1.52,
+      x,
+      y: 0.825,
+      z: z + hz + 1.35,
+      tiltRadians: 0.45,
+    },
+  ];
+}
+
+const MID_RING_ELEVATED_STRUCTURE_PIECE_DEFS = [
+  // NE standing deck (east open lane, north of center).
+  ...makeStandingDeckPieces(17, -14, 1.5, 1.4),
+  // SW crouch underpass (west dense side, player corner of mid-ring).
+  ...makeCrouchUnderpassPieces(-17, 14),
+];
+
+// Outer-ring cover for 5v5 (60m / half = 30). Fills |coord| ~22–27 so the
+// biggest pad doesn't open into empty rim alleys. Still denser west,
+// lighter east; adds another N/S sightline break layer.
+const OUTER_RING_BOX_OBSTACLE_DEFS = [
+  { hx: 2.5, hy: 1.45, hz: 0.55, x: -22, z: 0 },
+  { hx: 2.2, hy: 1.3, hz: 0.5, x: 23, z: -1 },
+  { hx: 1.2, hy: 1.0, hz: 1.2, x: -24, z: 12 },
+  { hx: 0.55, hy: 1.15, hz: 2.6, x: -25, z: -6 },
+  { hx: 1.1, hy: 0.85, hz: 1.1, x: -23, z: -18 },
+  { hx: 0.5, hy: 0.95, hz: 2.2, x: 24, z: -14 },
+  { hx: 1.0, hy: 0.75, hz: 0.95, x: 23, z: 8 },
+  { hx: 2.6, hy: 0.55, hz: 0.5, x: -10, z: -25 },
+  { hx: 2.0, hy: 0.6, hz: 0.5, x: 12, z: -24 },
+  { hx: 2.4, hy: 0.55, hz: 0.5, x: 8, z: 25 },
+  { hx: 1.3, hy: 0.85, hz: 1.1, x: -20, z: 22 },
+  { hx: 1.0, hy: 0.7, hz: 1.0, x: 20, z: 20 },
+];
+
+const OUTER_RING_PILLAR_OBSTACLE_DEFS = [
+  { radius: 0.55, height: 2.4, x: -22, z: 6 },
+  { radius: 0.5, height: 2.2, x: -24, z: -12 },
+  { radius: 0.5, height: 2.3, x: 25, z: 0 },
+  { radius: 0.55, height: 2.1, x: 21, z: 16 },
+  { radius: 0.5, height: 2.2, x: -8, z: 24 },
+  { radius: 0.5, height: 2.4, x: 6, z: -25 },
+  { radius: 0.55, height: 2.0, x: -18, z: 24 },
+  { radius: 0.5, height: 2.3, x: 18, z: -22 },
+];
+
+const OUTER_RING_RAMP_OBSTACLE_DEFS = [
+  { hx: 1.7, hy: 0.28, hz: 2.3, x: -22, z: -22, tiltRadians: 0.26 },
+  { hx: 1.5, hy: 0.28, hz: 2.0, x: 22, z: 14, tiltRadians: 0.26 },
+];
+
+const OUTER_RING_ELEVATED_STRUCTURE_PIECE_DEFS = [
+  ...makeStandingDeckPieces(24, 4, 1.5, 1.5),
+  ...makeStandingDeckPieces(-24, -8, 1.4, 1.3),
+  ...makeCrouchUnderpassPieces(22, -22),
+];
+
+// Runtime layout filled by buildArenaCover() before physics/minimap run.
+let boxObstacleDefs = [];
+let pillarObstacleDefs = [];
+let rampObstacleDefs = [];
+let elevatedStructurePieceDefs = [];
+
+// A distinct crate-like color (vs. the neutral grey boundary walls) so
+// obstacles read as separate, purpose-placed cover at a glance.
+const obstacleMaterial = new THREE.MeshStandardMaterial({ color: 0x8a6d3f });
+// Slightly lighter than solid cover so elevated decks/legs read as
+// "platform" rather than another crate wall at a glance.
+const elevatedMaterial = new THREE.MeshStandardMaterial({ color: 0xa8885a });
+const arenaCoverMeshes = [];
+
+function clearArenaCoverMeshes() {
+  for (const mesh of arenaCoverMeshes) {
+    scene.remove(mesh);
+    mesh.geometry.dispose();
   }
-  scene.add(mesh);
+  arenaCoverMeshes.length = 0;
+}
+
+function cloneDefs(defs) {
+  return defs.map((def) => ({ ...def }));
+}
+
+// Picks which cover rings to include for the arena size, then builds the
+// Three.js meshes. Called from buildArena() so ground, walls, and cover
+// always match the pre-match team-size preset.
+function buildArenaCover(groundSize) {
+  boxObstacleDefs = cloneDefs(BASE_BOX_OBSTACLE_DEFS);
+  pillarObstacleDefs = cloneDefs(BASE_PILLAR_OBSTACLE_DEFS);
+  rampObstacleDefs = cloneDefs(BASE_RAMP_OBSTACLE_DEFS);
+  elevatedStructurePieceDefs = cloneDefs(BASE_ELEVATED_STRUCTURE_PIECE_DEFS);
+
+  if (groundSize >= ARENA_SIZES["3v3"]) {
+    boxObstacleDefs.push(...cloneDefs(MID_RING_BOX_OBSTACLE_DEFS));
+    pillarObstacleDefs.push(...cloneDefs(MID_RING_PILLAR_OBSTACLE_DEFS));
+    rampObstacleDefs.push(...cloneDefs(MID_RING_RAMP_OBSTACLE_DEFS));
+    elevatedStructurePieceDefs.push(
+      ...cloneDefs(MID_RING_ELEVATED_STRUCTURE_PIECE_DEFS)
+    );
+  }
+
+  if (groundSize >= ARENA_SIZES["5v5"]) {
+    boxObstacleDefs.push(...cloneDefs(OUTER_RING_BOX_OBSTACLE_DEFS));
+    pillarObstacleDefs.push(...cloneDefs(OUTER_RING_PILLAR_OBSTACLE_DEFS));
+    rampObstacleDefs.push(...cloneDefs(OUTER_RING_RAMP_OBSTACLE_DEFS));
+    elevatedStructurePieceDefs.push(
+      ...cloneDefs(OUTER_RING_ELEVATED_STRUCTURE_PIECE_DEFS)
+    );
+  }
+
+  clearArenaCoverMeshes();
+
+  for (const box of boxObstacleDefs) {
+    const boxGeometry = new THREE.BoxGeometry(
+      box.hx * 2,
+      box.hy * 2,
+      box.hz * 2
+    );
+    const boxMesh = new THREE.Mesh(boxGeometry, obstacleMaterial);
+    boxMesh.position.set(box.x, box.hy, box.z);
+    scene.add(boxMesh);
+    arenaCoverMeshes.push(boxMesh);
+  }
+
+  for (const pillar of pillarObstacleDefs) {
+    // CylinderGeometry(radiusTop, radiusBottom, height, radialSegments) —
+    // equal top/bottom radius gives a plain cylinder rather than a cone.
+    const pillarGeometry = new THREE.CylinderGeometry(
+      pillar.radius,
+      pillar.radius,
+      pillar.height,
+      12
+    );
+    const pillarMesh = new THREE.Mesh(pillarGeometry, obstacleMaterial);
+    pillarMesh.position.set(pillar.x, pillar.height / 2, pillar.z);
+    scene.add(pillarMesh);
+    arenaCoverMeshes.push(pillarMesh);
+  }
+
+  for (const ramp of rampObstacleDefs) {
+    const rampGeometry = new THREE.BoxGeometry(
+      ramp.hx * 2,
+      ramp.hy * 2,
+      ramp.hz * 2
+    );
+    const rampMesh = new THREE.Mesh(rampGeometry, obstacleMaterial);
+    rampMesh.position.set(ramp.x, ramp.hy, ramp.z);
+    rampMesh.rotation.x = ramp.tiltRadians;
+    scene.add(rampMesh);
+    arenaCoverMeshes.push(rampMesh);
+  }
+
+  for (const piece of elevatedStructurePieceDefs) {
+    const geometry = new THREE.BoxGeometry(
+      piece.hx * 2,
+      piece.hy * 2,
+      piece.hz * 2
+    );
+    const mesh = new THREE.Mesh(geometry, elevatedMaterial);
+    mesh.position.set(piece.x, piece.y, piece.z);
+    if (piece.type === "ramp") {
+      mesh.rotation.x = piece.tiltRadians;
+    }
+    scene.add(mesh);
+    arenaCoverMeshes.push(mesh);
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -525,11 +730,10 @@ const GUN_RANGE = 100; // meters
 // no visible width).
 const MUZZLE_OFFSET = new THREE.Vector3(0.25, -0.25, -0.5);
 
-// Full-auto fire rate: 750 rounds/minute is a typical real-world assault
-// rifle rate (close to the in-game rate of e.g. COD's M4), which reads as
-// snappy/arcade-y without being a laser beam. Converted to milliseconds
-// between shots since that's what we actually compare timestamps against.
-const FIRE_RATE_RPM = 750;
+// Full-auto fire rate, matched to BOT_FIRE_RATE_RPM so the player doesn't
+// melt bots with a much faster gun — fights stay about aim/positioning.
+// Converted to milliseconds between shots for timestamp comparisons.
+const FIRE_RATE_RPM = 300;
 const FIRE_INTERVAL_MS = 60000 / FIRE_RATE_RPM;
 
 // Magazine + reload tuning - simple "arcade shooter" numbers (a full
@@ -618,19 +822,46 @@ function getRedTeamSpawnTranslation() {
 // How far the bot can "see" the player - same scale as the player's own
 // GUN_RANGE above.
 const BOT_SIGHT_RANGE = 100;
-// Delay (ms) between first spotting the player and firing the first shot -
-// gives the bot a believable "reacting" pause instead of an instant snap
-// shot the moment it has line of sight. Fixed for now; Milestone 10 will
-// vary this per difficulty tier instead of adding new logic.
+// Medium-tier defaults (also the pre-match menu's default difficulty).
+// Milestone 9 applies Easy/Medium/Hard via DIFFICULTY_TIERS into the
+// mutable botReactionDelayMs / botAimSpreadRadians used by the AI below.
+// Milestone 10 will also honor botUsesCover for real cover-seeking.
 const BOT_REACTION_DELAY_MS = 500;
-// Slower, single-shot pace compared to the player's 750rpm full-auto gun -
-// reads as the bot "aiming" rather than spraying.
+// Same cadence as the player's gun — bot pacing comes from reaction delay
+// + aim spread + turn speed, not a slower RPM.
 const BOT_FIRE_RATE_RPM = 300;
 const BOT_FIRE_INTERVAL_MS = 60000 / BOT_FIRE_RATE_RPM;
 const BOT_DAMAGE_PER_HIT = 10; // 10 hits to kill the player
 // Small random aim jitter (radians) applied in applyAimSpread() below, so
 // the bot's shots aren't a perfectly accurate laser.
 const BOT_AIM_SPREAD_RADIANS = 0.035;
+
+// Difficulty tiers from the pre-match menu. Same AI logic for all three —
+// only these parameters change (per AGENTS.md). usesCover is stored now
+// but cover-seeking behavior itself is Milestone 10.
+const DIFFICULTY_TIERS = {
+  easy: {
+    reactionDelayMs: 900,
+    aimSpreadRadians: 0.08,
+    usesCover: false,
+  },
+  medium: {
+    reactionDelayMs: BOT_REACTION_DELAY_MS,
+    aimSpreadRadians: BOT_AIM_SPREAD_RADIANS,
+    usesCover: false,
+  },
+  hard: {
+    reactionDelayMs: 250,
+    aimSpreadRadians: 0.015,
+    usesCover: true,
+  },
+};
+
+// Live bot aim/reaction knobs — set from DIFFICULTY_TIERS on Start Match.
+let botReactionDelayMs = BOT_REACTION_DELAY_MS;
+let botAimSpreadRadians = BOT_AIM_SPREAD_RADIANS;
+// Milestone 10 will read this; unused by today's patrol/chase movement.
+let botUsesCover = false;
 
 // Bot movement (patrol/chase) tuning - see updateBot()/moveBotTowards()
 // further down for how these are used.
@@ -861,13 +1092,16 @@ const PITCH_LIMIT = Math.PI / 2 - 0.01;
 // -----------------------------------------------------------------------
 // Pause state + click-to-play/resume overlay (Milestone 2.5)
 // -----------------------------------------------------------------------
-// The game starts paused (isPaused = true) and stays paused until the
-// player clicks the overlay and pointer lock is granted. It pauses again
-// any time pointer lock is lost - whether from pressing Escape, the browser
-// force-releasing it, or our own focus-loss handling below - so there's a
-// single source of truth for "is the game actually playable right now".
+// The game starts paused (isPaused = true). Milestone 9's pre-match menu
+// sits in front first; only after Start Match do we reveal #pause-overlay
+// and allow pointer lock. It pauses again any time pointer lock is lost —
+// Escape, browser force-release, or focus-loss — so there's a single
+// source of truth for "is the game actually playable right now".
 
 let isPaused = true;
+// False until startMatch() finishes applying the menu config. Keeps the
+// pause overlay / focus handlers from covering the pre-match menu early.
+let matchReady = false;
 // Tracks whether the player has ever successfully entered play, just so we
 // can show a different overlay title ("Click to Play" vs "Paused") without
 // needing two separate overlay elements.
@@ -877,6 +1111,9 @@ const pauseOverlay = document.getElementById("pause-overlay");
 const pauseOverlayTitle = document.getElementById("pause-overlay-title");
 
 function showPauseOverlay() {
+  // Don't steal the screen while the player is still on Match Setup.
+  if (!matchReady) return;
+
   isPaused = true;
   pauseOverlayTitle.textContent = hasPlayedBefore
     ? "Paused \u2014 Click to Resume"
@@ -1212,11 +1449,13 @@ function regenBotHealth(now, deltaTime) {
 // -----------------------------------------------------------------------
 // Kills are tracked per TEAM (not per-character) since that's the shape
 // Milestone 10's multiple-bots-per-team setup will need anyway - a kill
-// just increments the killer's team score. First team to KILL_TARGET wins.
+// just increments the killer's team score. First team to killTarget wins.
 // BLUE = the player's team, RED = the enemy team, per the Visual Style
 // team-color rule in AGENTS.md.
+//
+// killTarget is chosen on the Milestone 9 pre-match menu (5 / 10 / 15).
 
-const KILL_TARGET = 5; // first team to 5 kills wins the match
+let killTarget = 5;
 const RESPAWN_DELAY_MS = 3000; // 3s "you're dead" pause before respawning
 
 // performance.now() deadline for the player's pending respawn, or null
@@ -1354,15 +1593,17 @@ function buildMinimapLayout() {
     );
   }
 
-  // M3 ramp: use its untilted XZ box footprint. Close enough for a
+  // Ground ramps: use untilted XZ box footprints. Close enough for a
   // simplified map (tilt only changes height, not the plan footprint much).
-  appendMinimapShape(
-    rampObstacleDef.x,
-    rampObstacleDef.z,
-    rampObstacleDef.hx,
-    rampObstacleDef.hz,
-    "minimap-shape minimap-shape-cover"
-  );
+  for (const ramp of rampObstacleDefs) {
+    appendMinimapShape(
+      ramp.x,
+      ramp.z,
+      ramp.hx,
+      ramp.hz,
+      "minimap-shape minimap-shape-cover"
+    );
+  }
 
   for (const piece of elevatedStructurePieceDefs) {
     // Skip thin support legs — they clutter the map without helping the
@@ -1410,7 +1651,9 @@ function updateMinimap(playerPos, botPos, playerYaw) {
 
 // Layout is static for the match — build it once now that the obstacle /
 // platform defs and the #minimap-layout node both exist.
-buildMinimapLayout();
+// buildMinimapLayout() runs from startMatch() after buildArena() sets
+// GROUND_SIZE — calling it at module load would map against a pad that
+// hasn't been built yet / might change with the team-size preset.
 
 // Formats an elapsed-time duration (ms) as "M:SS" for the match timer HUD.
 function formatMatchTime(elapsedMs) {
@@ -1432,7 +1675,8 @@ function endMatch(winningTeamName) {
   matchEndTitle.style.color = blueWon ? "#3366cc" : "#cc3333";
   matchEndSubtitle.innerHTML =
     `Final Score: <span class="score-blue">${blueScore}</span> &mdash; ` +
-    `<span class="score-red">${redScore}</span><br />` +
+    `<span class="score-red">${redScore}</span>` +
+    ` (first to ${killTarget})<br />` +
     "Refresh the page to play again.";
   matchEndOverlay.classList.remove("hidden");
 }
@@ -1444,7 +1688,7 @@ function handlePlayerDeath() {
   redScore += 1;
   updateScoreHud();
 
-  if (redScore >= KILL_TARGET) {
+  if (redScore >= killTarget) {
     endMatch("RED");
     return;
   }
@@ -1466,7 +1710,7 @@ function handleBotDeath() {
   blueScore += 1;
   updateScoreHud();
 
-  if (blueScore >= KILL_TARGET) {
+  if (blueScore >= killTarget) {
     endMatch("BLUE");
     return;
   }
@@ -1550,26 +1794,27 @@ async function initPhysics() {
     world.createCollider(pillarColliderDesc);
   }
 
-  // The ramp needs a rotated collider to match its tilted mesh. Rapier
-  // expects rotations as a quaternion {x, y, z, w} - rather than hand-
-  // writing that math, we let THREE.Quaternion compute it from the same
-  // Euler angle used for the mesh's rotation.x above, then copy it over.
-  const rampQuaternion = new THREE.Quaternion().setFromEuler(
-    new THREE.Euler(rampObstacleDef.tiltRadians, 0, 0)
-  );
-  const rampColliderDesc = RAPIER.ColliderDesc.cuboid(
-    rampObstacleDef.hx,
-    rampObstacleDef.hy,
-    rampObstacleDef.hz
-  )
-    .setTranslation(rampObstacleDef.x, rampObstacleDef.hy, rampObstacleDef.z)
-    .setRotation({
-      x: rampQuaternion.x,
-      y: rampQuaternion.y,
-      z: rampQuaternion.z,
-      w: rampQuaternion.w,
-    });
-  world.createCollider(rampColliderDesc);
+  // Ground ramps need rotated colliders to match their tilted meshes.
+  // Rapier expects quaternions — THREE.Quaternion computes them from the
+  // same Euler tilt used on each mesh.
+  for (const ramp of rampObstacleDefs) {
+    const rampQuaternion = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(ramp.tiltRadians, 0, 0)
+    );
+    const rampColliderDesc = RAPIER.ColliderDesc.cuboid(
+      ramp.hx,
+      ramp.hy,
+      ramp.hz
+    )
+      .setTranslation(ramp.x, ramp.hy, ramp.z)
+      .setRotation({
+        x: rampQuaternion.x,
+        y: rampQuaternion.y,
+        z: rampQuaternion.z,
+        w: rampQuaternion.w,
+      });
+    world.createCollider(rampColliderDesc);
+  }
 
   // Elevated walk-under structures (Milestone 7) — same static "no parent
   // rigid body" pattern as the solid cover above, but with world Y taken
@@ -2100,8 +2345,8 @@ function startRenderLoop({
       .normalize();
     const up = new THREE.Vector3().crossVectors(right, forward).normalize();
 
-    const jitterRight = (Math.random() - 0.5) * 2 * BOT_AIM_SPREAD_RADIANS;
-    const jitterUp = (Math.random() - 0.5) * 2 * BOT_AIM_SPREAD_RADIANS;
+    const jitterRight = (Math.random() - 0.5) * 2 * botAimSpreadRadians;
+    const jitterUp = (Math.random() - 0.5) * 2 * botAimSpreadRadians;
 
     return forward
       .add(right.multiplyScalar(jitterRight))
@@ -2245,7 +2490,7 @@ function startRenderLoop({
       const desiredYaw = computeYawTowards(botPosition, playerEyePosition);
       const remainingAngle = rotateGroupTowards(botGroup, desiredYaw, deltaTime);
 
-      const hasReacted = now - botSpottedAtTime >= BOT_REACTION_DELAY_MS;
+      const hasReacted = now - botSpottedAtTime >= botReactionDelayMs;
       const isAimed = remainingAngle <= BOT_AIM_ANGLE_THRESHOLD_RADIANS;
       const offCooldown = now - lastBotShotTime >= BOT_FIRE_INTERVAL_MS;
       if (hasReacted && isAimed && offCooldown) {
@@ -2481,8 +2726,121 @@ function startRenderLoop({
   tick();
 }
 
-initPhysics()
-  .then((physics) => startRenderLoop(physics))
-  .catch((error) => {
-    console.error("Failed to initialize Rapier physics:", error);
-  });
+// -----------------------------------------------------------------------
+// Pre-match menu (Milestone 9) — gates arena build + physics bootstrap
+// -----------------------------------------------------------------------
+
+const prematchMenu = document.getElementById("prematch-menu");
+const prematchStartButton = document.getElementById("prematch-start-button");
+const prematchTeamHint = document.getElementById("prematch-team-hint");
+
+// Live selection state while the menu is open (defaults match the HTML
+// "selected" buttons). Copied into matchConfig on Start Match.
+const pendingMatchSettings = {
+  teamSize: "1v1",
+  difficulty: "medium",
+  killTarget: 5,
+};
+
+// Applied match settings after Start Match (also holds intended bot counts
+// for Milestone 10 — not used for spawning yet).
+let matchConfig = {
+  teamSize: "1v1",
+  difficulty: "medium",
+  killTarget: 5,
+  allyBots: 0,
+  enemyBots: 1,
+};
+
+const TEAM_SIZE_HINTS = {
+  "1v1": "1v1 = you vs 1 enemy (ally bots come in Milestone 10)",
+  "3v3": "3v3 = you + 2 allies vs 3 enemies (multi-bot spawn is Milestone 10)",
+  "5v5": "5v5 = you + 4 allies vs 5 enemies (multi-bot spawn is Milestone 10)",
+};
+
+function updatePrematchTeamHint() {
+  prematchTeamHint.textContent =
+    TEAM_SIZE_HINTS[pendingMatchSettings.teamSize] ?? TEAM_SIZE_HINTS["1v1"];
+}
+
+// Wire each button group: clicking an option selects it and updates
+// pendingMatchSettings. data-group on the parent names the setting key.
+function wirePrematchOptionGroup(groupElement) {
+  const groupKey = groupElement.dataset.group;
+  const buttons = groupElement.querySelectorAll(".prematch-option");
+
+  for (const button of buttons) {
+    button.addEventListener("click", () => {
+      for (const other of buttons) {
+        other.classList.remove("selected");
+      }
+      button.classList.add("selected");
+
+      const rawValue = button.dataset.value;
+      if (groupKey === "killTarget") {
+        pendingMatchSettings.killTarget = Number(rawValue);
+      } else if (groupKey === "teamSize") {
+        pendingMatchSettings.teamSize = rawValue;
+        updatePrematchTeamHint();
+      } else if (groupKey === "difficulty") {
+        pendingMatchSettings.difficulty = rawValue;
+      }
+    });
+  }
+}
+
+wirePrematchOptionGroup(document.getElementById("prematch-team-size"));
+wirePrematchOptionGroup(document.getElementById("prematch-difficulty"));
+wirePrematchOptionGroup(document.getElementById("prematch-kill-target"));
+updatePrematchTeamHint();
+
+// Applies menu choices, builds the sized arena, then starts physics + the
+// render loop. Called once from the Start Match button.
+function startMatch() {
+  const teamSize = pendingMatchSettings.teamSize;
+  const difficulty = pendingMatchSettings.difficulty;
+  const chosenKillTarget = pendingMatchSettings.killTarget;
+  const botCounts = TEAM_SIZE_BOT_COUNTS[teamSize] ?? TEAM_SIZE_BOT_COUNTS["1v1"];
+  const tier = DIFFICULTY_TIERS[difficulty] ?? DIFFICULTY_TIERS.medium;
+
+  matchConfig = {
+    teamSize,
+    difficulty,
+    killTarget: chosenKillTarget,
+    allyBots: botCounts.allyBots,
+    enemyBots: botCounts.enemyBots,
+  };
+  killTarget = chosenKillTarget;
+
+  botReactionDelayMs = tier.reactionDelayMs;
+  botAimSpreadRadians = tier.aimSpreadRadians;
+  // Stored for Milestone 10's cover-seeking; unused by today's AI.
+  botUsesCover = tier.usesCover;
+
+  buildArena(ARENA_SIZES[teamSize] ?? ARENA_SIZES["1v1"]);
+  buildMinimapLayout();
+
+  // Disable the button so a double-click can't start physics twice.
+  prematchStartButton.disabled = true;
+  prematchStartButton.textContent = "Loading...";
+
+  initPhysics()
+    .then((physics) => {
+      startRenderLoop(physics);
+      // Reveal Click to Play only after physics + the render loop are ready,
+      // so the player can't lock the pointer into a half-initialized match.
+      matchReady = true;
+      prematchMenu.classList.add("hidden");
+      showPauseOverlay();
+    })
+    .catch((error) => {
+      console.error("Failed to initialize Rapier physics:", error);
+      // Let the player try again if WASM init somehow failed.
+      prematchStartButton.disabled = false;
+      prematchStartButton.textContent = "Start Match";
+    });
+}
+
+prematchStartButton.addEventListener("click", () => {
+  startMatch();
+});

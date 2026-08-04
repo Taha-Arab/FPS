@@ -123,12 +123,60 @@
     </div>
 
     <!--
-      Click-to-play / pause overlay (Milestone 2.5). Shown whenever the game
-      isn't pointer-locked (before the first click, after Escape, after
-      losing window focus, etc). Clicking it requests pointer lock again -
-      see the click listener on #pause-overlay in src/main.js.
+      Pre-match menu (Milestone 9). Shown on page load before the match
+      starts. Choosing team size / difficulty / kill target and clicking
+      Start Match applies the config in src/main.js (arena size, bot
+      difficulty params, win condition), then reveals #pause-overlay.
+      Multi-bot spawning per team size is Milestone 10 — the menu stores
+      the intended counts now even though only one enemy bot exists yet.
     -->
-    <div id="pause-overlay">
+    <div id="prematch-menu">
+      <div id="prematch-menu-panel">
+        <div id="prematch-menu-title">Match Setup</div>
+
+        <div class="prematch-section">
+          <div class="prematch-section-label">Team Size</div>
+          <div class="prematch-options" id="prematch-team-size" data-group="teamSize">
+            <button type="button" class="prematch-option selected" data-value="1v1">1v1</button>
+            <button type="button" class="prematch-option" data-value="3v3">3v3</button>
+            <button type="button" class="prematch-option" data-value="5v5">5v5</button>
+          </div>
+          <div class="prematch-hint" id="prematch-team-hint">
+            1v1 = you vs 1 enemy (ally bots come in Milestone 10)
+          </div>
+        </div>
+
+        <div class="prematch-section">
+          <div class="prematch-section-label">Bot Difficulty</div>
+          <div class="prematch-options" id="prematch-difficulty" data-group="difficulty">
+            <button type="button" class="prematch-option" data-value="easy">Easy</button>
+            <button type="button" class="prematch-option selected" data-value="medium">Medium</button>
+            <button type="button" class="prematch-option" data-value="hard">Hard</button>
+          </div>
+        </div>
+
+        <div class="prematch-section">
+          <div class="prematch-section-label">Kill Target</div>
+          <div class="prematch-options" id="prematch-kill-target" data-group="killTarget">
+            <button type="button" class="prematch-option selected" data-value="5">5</button>
+            <button type="button" class="prematch-option" data-value="10">10</button>
+            <button type="button" class="prematch-option" data-value="15">15</button>
+          </div>
+          <div class="prematch-hint">First team to this many kills wins</div>
+        </div>
+
+        <button type="button" id="prematch-start-button">Start Match</button>
+      </div>
+    </div>
+
+    <!--
+      Click-to-play / pause overlay (Milestone 2.5). Hidden until the
+      pre-match menu's Start Match runs. After that, shown whenever the
+      game isn't pointer-locked (first click, Escape, focus loss, etc).
+      Clicking it requests pointer lock again — see the click listener on
+      #pause-overlay in src/main.js.
+    -->
+    <div id="pause-overlay" class="hidden">
       <div id="pause-overlay-title">Click to Play</div>
       <div id="pause-overlay-subtitle">
         WASD to move &middot; Mouse to look &middot; Space to jump &middot;
