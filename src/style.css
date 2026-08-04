@@ -1,11 +1,28 @@
-/* Reset default page margins so the 3D canvas fills the whole browser window. */
+/* ---------------------------------------------------------------------
+   Modern-overhaul UI theme: tactical/military HUD look — dark translucent
+   panels, thin borders, uppercase condensed labels, amber accent. All
+   fonts are system fonts (zero external assets, per AGENTS.md).
+   --------------------------------------------------------------------- */
+
+:root {
+  --hud-font: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --panel-bg: rgba(10, 12, 14, 0.72);
+  --panel-border: rgba(255, 255, 255, 0.14);
+  --accent: #d8a531; /* weathered amber */
+  --accent-bright: #f0be4a;
+  --team-blue: #4d9be6;
+  --team-red: #e05252;
+  --text-dim: rgba(255, 255, 255, 0.65);
+}
+
 html,
 body {
   margin: 0;
   padding: 0;
-  overflow: hidden; /* no scrollbars over the game canvas */
+  overflow: hidden;
   width: 100%;
   height: 100%;
+  font-family: var(--hud-font);
 }
 
 #app {
@@ -14,14 +31,25 @@ body {
   display: block;
 }
 
-/* The <canvas> that Three.js creates and appends into #app. */
 canvas {
-  display: block; /* removes the tiny inline-element gap under the canvas */
+  display: block;
 }
 
-/* Pause menu (Milestones 2.5 + 14). Full-screen dimmer; Resume button
-   requests pointer lock. Sensitivity slider must stay interactive without
-   accidentally resuming — default cursor on the overlay, button gets pointer. */
+/* --- Shared building blocks ------------------------------------------ */
+
+.hidden {
+  display: none !important;
+}
+
+/* Full-screen overlay base look (menus reuse these property sets inline
+   below — kept explicit per-overlay for clarity). */
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* --- Pause menu ------------------------------------------------------- */
+
 #pause-overlay {
   position: fixed;
   inset: 0;
@@ -29,153 +57,159 @@ canvas {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(4, 6, 8, 0.55);
+  backdrop-filter: blur(3px);
   color: white;
-  font-family: sans-serif;
   text-align: center;
   user-select: none;
   z-index: 10;
 }
 
-#pause-overlay-panel {
+.menu-panel,
+#pause-overlay-panel,
+#title-splash-panel,
+#prematch-menu-panel {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 1em;
-  min-width: 300px;
-  max-width: 380px;
-  padding: 1.75em 2em;
-  background: rgba(20, 24, 32, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  min-width: 320px;
+  max-width: 420px;
+  padding: 2em 2.25em;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-top: 2px solid var(--accent);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
 }
 
 #pause-overlay-title {
-  font-size: 2rem;
-  font-weight: bold;
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 #pause-overlay-subtitle {
-  font-size: 0.9rem;
-  opacity: 0.8;
-  line-height: 1.4;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  line-height: 1.5;
 }
 
 #pause-sensitivity-label {
   display: flex;
   flex-direction: column;
   gap: 0.4em;
-  font-size: 0.85rem;
-  letter-spacing: 0.04em;
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  opacity: 0.85;
+  color: var(--text-dim);
   text-align: left;
 }
 
 #pause-sensitivity {
   width: 100%;
   cursor: pointer;
-  accent-color: #3366cc;
+  accent-color: var(--accent);
 }
 
-#pause-resume-button {
-  margin-top: 0.25em;
-  padding: 0.75em 1.25em;
-  border: none;
-  background: #3366cc;
-  color: white;
+/* Primary action buttons share the amber accent style. */
+#pause-resume-button,
+#match-end-play-again,
+#title-splash-continue,
+#prematch-start-button {
+  margin-top: 0.35em;
+  padding: 0.8em 1.25em;
+  border: 1px solid var(--accent);
+  background: rgba(216, 165, 49, 0.12);
+  color: var(--accent-bright);
   font-family: inherit;
-  font-size: 1.1rem;
-  font-weight: bold;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
-#pause-resume-button:hover {
-  background: #4076e0;
+#pause-resume-button:hover,
+#match-end-play-again:hover,
+#title-splash-continue:hover,
+#prematch-start-button:hover:not(:disabled) {
+  background: var(--accent);
+  color: #14100a;
 }
 
-#pause-overlay.hidden {
-  display: none;
-}
+/* --- Match HUD (score + timer, top center) ---------------------------- */
 
-/* Match HUD (Milestone 6): team score + match timer, fixed top-center.
-   Styled as a dark translucent pill, matching #ammo-hud's look. Text
-   content (#score-blue-value, #score-red-value, #match-timer) is updated
-   live from src/main.js. */
 #match-hud {
   position: fixed;
-  top: 24px;
+  top: 18px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 8px 20px;
-  background: rgba(0, 0, 0, 0.5);
-  border: 2px solid rgba(255, 255, 255, 0.4);
-  border-radius: 4px;
+  gap: 2px;
+  padding: 7px 22px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-bottom: 2px solid var(--accent);
   pointer-events: none;
   user-select: none;
   z-index: 5;
-  font-family: sans-serif;
   color: white;
 }
 
 #score-display {
-  font-size: 1.3rem;
-  font-weight: bold;
-  letter-spacing: 0.05em;
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
 }
 
 #score-display .score-label {
-  font-size: 0.9rem;
-  margin: 0 4px;
+  font-size: 0.7rem;
+  letter-spacing: 0.16em;
+  margin: 0 6px;
+  opacity: 0.9;
 }
 
 #score-display .score-separator {
   margin: 0 6px;
-  opacity: 0.7;
+  opacity: 0.45;
 }
 
-/* BLUE = player's team, RED = enemy team. #cc3333 exactly matches
-   BOT_COLOR in src/main.js; #3366cc is its blue counterpart (there's no
-   player mesh to source a "player color" from directly, so this is kept
-   in sync with src/main.js's endMatch() by hand) - applied consistently
-   here per the Visual Style team-color rule in AGENTS.md. */
 .score-blue {
-  color: #3366cc;
+  color: var(--team-blue);
 }
 
 .score-red {
-  color: #cc3333;
+  color: var(--team-red);
 }
 
 #match-timer {
-  font-size: 0.9rem;
-  opacity: 0.8;
+  font-size: 0.8rem;
+  letter-spacing: 0.14em;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
-/* Minimap (Milestone 8). Top-right square matching the dark translucent
-   HUD pill style of #match-hud. Dots are positioned in % by updateMinimap()
-   in src/main.js (world XZ → left/top). pointer-events: none so it never
-   blocks clicks/shots. */
+/* --- Minimap ----------------------------------------------------------- */
+
 #minimap {
   position: fixed;
-  top: 24px;
-  right: 24px;
-  width: 140px;
-  height: 140px;
-  background: rgba(0, 0, 0, 0.5);
-  border: 2px solid rgba(255, 255, 255, 0.4);
-  border-radius: 4px;
+  top: 18px;
+  right: 18px;
+  width: 150px;
+  height: 150px;
+  background: rgba(8, 10, 12, 0.66);
+  border: 1px solid var(--panel-border);
+  outline: 2px solid rgba(0, 0, 0, 0.35);
   pointer-events: none;
   user-select: none;
   z-index: 5;
   overflow: hidden;
 }
 
-/* Static arena footprints (boxes/pillars/ramps/decks), built once by
-   buildMinimapLayout() in src/main.js. Sits under the live player/bot dots. */
 #minimap-layout {
   position: absolute;
   inset: 0;
@@ -188,25 +222,20 @@ canvas {
   box-sizing: border-box;
 }
 
-/* Solid Milestone 3 cover — warmer fill matching obstacleMaterial (~#8a6d3f). */
 .minimap-shape-cover {
-  background: rgba(138, 109, 63, 0.8);
-  border: 1px solid rgba(200, 170, 120, 0.55);
+  background: rgba(140, 150, 135, 0.55);
+  border: 1px solid rgba(190, 200, 185, 0.4);
 }
 
-/* Elevated decks/ramps — lighter / more translucent so they read as
-   platforms rather than solid crates (matches elevatedMaterial ~#a8885a). */
 .minimap-shape-platform {
-  background: rgba(168, 136, 90, 0.45);
-  border: 1px solid rgba(220, 190, 140, 0.7);
+  background: rgba(120, 130, 140, 0.35);
+  border: 1px solid rgba(170, 185, 200, 0.5);
 }
 
 .minimap-shape-circle {
   border-radius: 50%;
 }
 
-/* Shared base for player/bot markers. left/top + translate(-50%, -50%)
-   centers each dot on its mapped arena position. Above layout shapes. */
 .minimap-dot {
   position: absolute;
   left: 50%;
@@ -217,21 +246,17 @@ canvas {
   z-index: 1;
 }
 
-/* Player: slightly larger blue circle + upward chevron (CSS triangle via
-   ::after). updateMinimap() rotates this element with yaw so the chevron
-   faces the look direction on the top-down map. */
 .minimap-dot-blue {
   width: 10px;
   height: 10px;
-  background: #3366cc;
-  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: var(--team-blue);
+  border: 1px solid rgba(255, 255, 255, 0.75);
 }
 
 .minimap-dot-blue::after {
   content: "";
   position: absolute;
   left: 50%;
-  /* Sit just above the circle so forward reads clearly on the map. */
   bottom: 100%;
   margin-left: -4px;
   margin-bottom: 1px;
@@ -239,22 +264,18 @@ canvas {
   height: 0;
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
-  border-bottom: 6px solid #3366cc;
+  border-bottom: 6px solid var(--team-blue);
 }
 
-/* Enemy bot: smaller red circle; hidden via display:none while destroyed. */
 .minimap-dot-red {
   width: 8px;
   height: 8px;
-  background: #cc3333;
-  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: var(--team-red);
+  border: 1px solid rgba(255, 255, 255, 0.75);
 }
 
-/* Spawn-invulnerability overlay (Milestone 6). A blue-tinted radial
-   vignette, structurally identical to #vignette below but blue (instead of
-   red) and with a gentle pulse animation while active, so it reads as a
-   temporary "shield" rather than a static screen tint. Toggled by the
-   invulnerability check in tick() in src/main.js. */
+/* --- Screen-edge effect overlays -------------------------------------- */
+
 #spawn-invuln-overlay {
   position: fixed;
   inset: 0;
@@ -263,7 +284,7 @@ canvas {
   background: radial-gradient(
     ellipse at center,
     transparent 55%,
-    rgba(51, 102, 204, 0.5) 100%
+    rgba(77, 155, 230, 0.45) 100%
   );
   opacity: 0;
 }
@@ -275,60 +296,108 @@ canvas {
 @keyframes spawn-invuln-pulse {
   0%,
   100% {
-    opacity: 0.4;
+    opacity: 0.35;
   }
   50% {
-    opacity: 0.85;
+    opacity: 0.75;
   }
 }
 
-/* Crosshair (Milestone 4). A simple centered "+" reticle, built from two
-   thin bars via pseudo-elements rather than an image - no extra assets
-   needed. pointer-events: none so it never blocks clicks/shots. */
+#vignette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 52%,
+    rgba(150, 8, 8, 0.6) 100%
+  );
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+#vignette.active {
+  opacity: 1;
+}
+
+/* --- Crosshair + hit marker ------------------------------------------- */
+/* Four separated ticks with a center gap — modern shooter style. Hidden
+   (faded) while aiming down sights, toggled from main.js. */
+
 #crosshair {
   position: fixed;
   top: 50%;
   left: 50%;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   transform: translate(-50%, -50%);
   pointer-events: none;
   z-index: 5;
+  opacity: 0.9;
+  transition: opacity 0.1s ease;
 }
 
-#crosshair::before,
-#crosshair::after {
-  content: "";
+#crosshair.hidden {
+  display: block !important; /* keep layout, just fade */
+  opacity: 0;
+}
+
+.crosshair-tick {
   position: absolute;
   background: white;
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
 }
 
-/* Horizontal bar */
-#crosshair::before {
+.crosshair-tick.top {
+  left: 50%;
+  top: 0;
+  width: 2px;
+  height: 6px;
+  transform: translateX(-50%);
+}
+
+.crosshair-tick.bottom {
+  left: 50%;
+  bottom: 0;
+  width: 2px;
+  height: 6px;
+  transform: translateX(-50%);
+}
+
+.crosshair-tick.left {
   top: 50%;
   left: 0;
-  width: 100%;
+  width: 6px;
   height: 2px;
   transform: translateY(-50%);
 }
 
-/* Vertical bar */
-#crosshair::after {
-  top: 0;
-  left: 50%;
-  width: 2px;
-  height: 100%;
-  transform: translateX(-50%);
+.crosshair-tick.right {
+  top: 50%;
+  right: 0;
+  width: 6px;
+  height: 2px;
+  transform: translateY(-50%);
 }
 
-/* Hit marker (Milestone 11). Small X over the crosshair; shown briefly
-   when the player damages an enemy. */
+.crosshair-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 2px;
+  transform: translate(-50%, -50%);
+  background: white;
+  border-radius: 50%;
+}
+
 #hit-marker {
   position: fixed;
   top: 50%;
   left: 50%;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   transform: translate(-50%, -50%);
   pointer-events: none;
   z-index: 6;
@@ -347,6 +416,13 @@ canvas {
   box-shadow: 0 0 4px rgba(255, 255, 255, 0.8);
 }
 
+/* Headshot hits flash the marker red. */
+#hit-marker.headshot::before,
+#hit-marker.headshot::after {
+  background: #ff4040;
+  box-shadow: 0 0 5px rgba(255, 64, 64, 0.9);
+}
+
 #hit-marker::before {
   transform: translateY(-50%) rotate(45deg);
 }
@@ -363,7 +439,7 @@ canvas {
 @keyframes hit-marker-flash {
   from {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1.15);
+    transform: translate(-50%, -50%) scale(1.2);
   }
   to {
     opacity: 0.85;
@@ -371,63 +447,64 @@ canvas {
   }
 }
 
-/* Kill feed (Milestone 13). Recent kills, top-left. */
+/* --- Kill feed --------------------------------------------------------- */
+
 #kill-feed {
   position: fixed;
-  top: 24px;
-  left: 20px;
+  top: 18px;
+  left: 18px;
   display: flex;
   flex-direction: column;
   gap: 4px;
   pointer-events: none;
   user-select: none;
   z-index: 5;
-  font-family: sans-serif;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   color: white;
-  max-width: 280px;
+  max-width: 300px;
 }
 
 .kill-feed-entry {
-  padding: 4px 8px;
-  background: rgba(0, 0, 0, 0.45);
-  border-left: 3px solid rgba(255, 255, 255, 0.35);
+  padding: 4px 10px;
+  background: var(--panel-bg);
+  border-left: 2px solid var(--accent);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  letter-spacing: 0.03em;
 }
 
 .kill-feed-entry .kill-feed-name.blue {
-  color: #3366cc;
-  font-weight: bold;
+  color: var(--team-blue);
+  font-weight: 700;
 }
 
 .kill-feed-entry .kill-feed-name.red {
-  color: #cc3333;
-  font-weight: bold;
+  color: var(--team-red);
+  font-weight: 700;
 }
 
 .kill-feed-entry .kill-feed-sep {
-  opacity: 0.7;
+  opacity: 0.55;
   margin: 0 0.35em;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
-/* Ammo HUD (Milestone 4 extension: full-auto + magazine). Fixed to the
-   bottom-right corner, styled like a typical FPS ammo counter - a dark
-   semi-transparent pill containing a small bullet icon + the count. Text
-   ("18 / 30" or "Reloading...") is set from updateAmmoDisplay() in
-   src/main.js, which also toggles the "ammo-low" class below. */
+/* --- Ammo HUD ---------------------------------------------------------- */
+
 #ammo-hud {
   position: fixed;
-  right: 24px;
-  bottom: 24px;
+  right: 18px;
+  bottom: 18px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 14px;
-  background: rgba(0, 0, 0, 0.5);
-  border: 2px solid rgba(255, 255, 255, 0.4);
-  border-radius: 4px;
+  padding: 8px 16px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-right: 2px solid var(--accent);
   pointer-events: none;
   user-select: none;
   z-index: 5;
@@ -435,18 +512,17 @@ canvas {
 
 #ammo-text {
   color: white;
-  font-family: sans-serif;
-  font-size: 1.1rem;
-  font-weight: bold;
-  min-width: 5.5ch; /* keeps the pill's width steady as digit count changes */
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  min-width: 5.5ch;
 }
 
-/* A small bullet/cartridge icon built from CSS shapes (a rounded body plus
-   a triangular tip) rather than an image - no extra assets needed. */
 #ammo-icon {
   width: 8px;
   height: 16px;
-  background: #d4af37; /* brass casing color */
+  background: #d4af37;
   border-radius: 2px 2px 1px 1px;
   position: relative;
   flex-shrink: 0;
@@ -459,12 +535,9 @@ canvas {
   left: 0;
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
-  border-bottom: 5px solid #b8860b; /* darker brass bullet tip */
+  border-bottom: 5px solid #b8860b;
 }
 
-/* Flashes the ammo count red once the magazine is low (see the
-   "ammo-low" class toggle in updateAmmoDisplay()) - a clear "running low,
-   consider reloading" cue without needing a sound/audio system yet. */
 #ammo-hud.ammo-low #ammo-text {
   color: #ff5252;
   animation: ammo-flash 0.6s ease-in-out infinite;
@@ -480,27 +553,24 @@ canvas {
   }
 }
 
-/* Health HUD (Milestone 4 extension). Fixed to the bottom-left corner,
-   icon + bar side by side. Sits below the pause/death overlays (lower
-   z-index) so those still cover it completely when shown. */
+/* --- Health HUD -------------------------------------------------------- */
+
 #health-hud {
   position: fixed;
-  left: 24px;
-  bottom: 24px;
+  left: 18px;
+  bottom: 18px;
   display: flex;
   align-items: center;
   gap: 10px;
   z-index: 5;
 }
 
-/* A small medkit-style icon (red square, white cross) built from CSS
-   pseudo-elements rather than an image - no extra assets needed. */
 #health-icon {
   width: 22px;
   height: 22px;
-  background: #d32f2f;
-  border: 2px solid rgba(255, 255, 255, 0.4);
-  border-radius: 4px;
+  background: #b03030;
+  border: 1px solid var(--panel-border);
+  border-radius: 3px;
   position: relative;
   flex-shrink: 0;
 }
@@ -512,7 +582,6 @@ canvas {
   background: white;
 }
 
-/* Horizontal bar of the cross */
 #health-icon::before {
   top: 50%;
   left: 18%;
@@ -521,7 +590,6 @@ canvas {
   transform: translateY(-50%);
 }
 
-/* Vertical bar of the cross */
 #health-icon::after {
   left: 50%;
   top: 18%;
@@ -531,57 +599,29 @@ canvas {
 }
 
 #health-bar-container {
-  width: 250px;
-  height: 24px;
-  background: rgba(0, 0, 0, 0.5);
-  border: 2px solid rgba(255, 255, 255, 0.4);
-  border-radius: 4px;
+  width: 240px;
+  height: 14px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
   overflow: hidden;
+  transform: skewX(-12deg); /* angled bar, modern shooter style */
 }
 
 #health-bar-fill {
   height: 100%;
-  width: 100%; /* full health at start */
-  background-color: #4caf50; /* green - see damagePlayer() in main.js */
-  /* Smoothly animates width/color changes instead of snapping instantly. */
+  width: 100%;
+  background-color: #4caf50;
   transition: width 0.15s ease, background-color 0.15s ease;
 }
 
-/* Low-health vignette (Milestone 4 extension). A radial gradient that's
-   transparent in the middle and red at the edges, faded in/out via the
-   "active" class (toggled by damagePlayer() in src/main.js). Sits above
-   the canvas but below the HUD/crosshair so it doesn't wash them out. */
-#vignette {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 4;
-  background: radial-gradient(
-    ellipse at center,
-    transparent 55%,
-    rgba(180, 0, 0, 0.55) 100%
-  );
-  opacity: 0;
-  transition: opacity 0.4s ease;
-}
+/* --- Floating bot health bars ------------------------------------------ */
 
-#vignette.active {
-  opacity: 1;
-}
-
-/* Floating health bar (above a bot's head - see createFloatingHealthBar()
-   in src/main.js). Positioned every frame via inline left/top styles
-   (projected from the bot's 3D world position), so only the fixed layout
-   properties live here. Small and team-colored (the fill's background
-   color is set inline per-character), unlike the player's own health bar
-   which shifts color by remaining health. */
 .floating-health-bar {
   position: fixed;
-  width: 60px;
-  height: 6px;
-  background: rgba(0, 0, 0, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  border-radius: 2px;
+  width: 54px;
+  height: 5px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.35);
   transform: translate(-50%, -50%);
   pointer-events: none;
   z-index: 3;
@@ -594,10 +634,8 @@ canvas {
   transition: width 0.15s ease;
 }
 
-/* Death overlay (Milestone 4; respawn added in Milestone 6). Same full-
-   screen-message pattern as #pause-overlay, but not clickable — it just
-   sits up during the respawn delay. Higher z-index than the pause overlay
-   so it stays on top if the player also pauses after dying. */
+/* --- Death overlay ----------------------------------------------------- */
+
 #death-overlay {
   position: fixed;
   inset: 0;
@@ -606,33 +644,33 @@ canvas {
   align-items: center;
   justify-content: center;
   gap: 0.5em;
-  background: rgba(60, 0, 0, 0.75);
+  background: radial-gradient(
+    ellipse at center,
+    rgba(40, 0, 0, 0.55) 0%,
+    rgba(20, 0, 0, 0.85) 100%
+  );
   color: white;
-  font-family: sans-serif;
   text-align: center;
   user-select: none;
   z-index: 15;
 }
 
 #death-overlay-title {
-  font-size: 2.5rem;
-  font-weight: bold;
+  font-size: 2.4rem;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: #ff6b6b;
 }
 
 #death-overlay-subtitle {
-  font-size: 1rem;
-  opacity: 0.8;
+  font-size: 0.95rem;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
 }
 
-#death-overlay.hidden {
-  display: none;
-}
+/* --- Match-end overlay ------------------------------------------------- */
 
-/* Match-end overlay (Milestone 6). Same full-screen-message pattern as
-   #death-overlay, but a higher z-index so it naturally covers the death
-   overlay if the match-ending kill happens to be the player's own death.
-   #match-end-title's color is set inline from src/main.js (endMatch()) to
-   match whichever team won. */
 #match-end-overlay {
   position: fixed;
   inset: 0;
@@ -640,92 +678,65 @@ canvas {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.5em;
-  background: rgba(0, 0, 0, 0.85);
+  gap: 0.6em;
+  background: rgba(4, 6, 8, 0.88);
+  backdrop-filter: blur(4px);
   color: white;
-  font-family: sans-serif;
   text-align: center;
   user-select: none;
   z-index: 20;
 }
 
 #match-end-title {
-  font-size: 3rem;
-  font-weight: bold;
+  font-size: 2.8rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
 }
 
 #match-end-subtitle {
-  font-size: 1.2rem;
-  opacity: 0.9;
+  font-size: 1.1rem;
+  color: var(--text-dim);
 }
 
 #match-end-kd {
-  font-size: 1.1rem;
-  opacity: 0.95;
+  font-size: 1rem;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
   margin-top: 0.25em;
 }
 
-#match-end-play-again {
-  margin-top: 0.75em;
-  padding: 0.75em 1.5em;
-  border: none;
-  background: #3366cc;
-  color: white;
-  font-family: inherit;
-  font-size: 1.1rem;
-  font-weight: bold;
-  cursor: pointer;
-}
+/* --- Title splash ------------------------------------------------------ */
 
-#match-end-play-again:hover {
-  background: #4076e0;
-}
-
-#match-end-overlay.hidden {
-  display: none;
-}
-
-/* Title splash (Milestone 15). Above prematch until Continue. */
 #title-splash {
   position: fixed;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.82);
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(216, 165, 49, 0.06), transparent 60%),
+    linear-gradient(160deg, #0a0d10 0%, #141a1f 55%, #0a0d10 100%);
   color: white;
-  font-family: sans-serif;
   text-align: center;
   user-select: none;
   z-index: 30;
 }
 
-#title-splash.hidden {
-  display: none;
-}
-
-#title-splash-panel {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 1em;
-  min-width: 320px;
-  max-width: 420px;
-  padding: 2.25em 2.5em;
-  background: rgba(20, 24, 32, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-}
-
 #title-splash-title {
-  font-size: 3rem;
-  font-weight: bold;
-  letter-spacing: 0.18em;
-  color: #3366cc;
+  font-size: 2.9rem;
+  font-weight: 800;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 0 22px rgba(216, 165, 49, 0.35);
 }
 
 #title-splash-tagline {
-  font-size: 0.95rem;
-  opacity: 0.75;
+  font-size: 0.8rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent);
   margin-top: -0.35em;
 }
 
@@ -733,17 +744,17 @@ canvas {
   display: flex;
   flex-direction: column;
   gap: 0.4em;
-  font-size: 0.8rem;
-  letter-spacing: 0.06em;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  opacity: 0.85;
+  color: var(--text-dim);
   text-align: left;
 }
 
 #title-splash-name {
-  padding: 0.55em 0.7em;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(0, 0, 0, 0.35);
+  padding: 0.6em 0.75em;
+  border: 1px solid var(--panel-border);
+  background: rgba(0, 0, 0, 0.4);
   color: white;
   font-family: inherit;
   font-size: 1rem;
@@ -753,63 +764,31 @@ canvas {
 
 #title-splash-name:focus {
   outline: none;
-  border-color: #3366cc;
+  border-color: var(--accent);
 }
 
-#title-splash-continue {
-  margin-top: 0.35em;
-  padding: 0.75em 1.25em;
-  border: none;
-  background: #3366cc;
-  color: white;
-  font-family: inherit;
-  font-size: 1.1rem;
-  font-weight: bold;
-  cursor: pointer;
-}
+/* --- Pre-match menu ---------------------------------------------------- */
 
-#title-splash-continue:hover {
-  background: #4076e0;
-}
-
-/* Pre-match menu (Milestone 9). Full-screen gate before Click to Play —
-   same overlay pattern as #pause-overlay / #match-end-overlay, with a
-   compact centered panel for the preset buttons. z-index above pause so
-   it stays on top until Start Match hides it. Hidden until splash Continue. */
 #prematch-menu {
   position: fixed;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.75);
+  background:
+    radial-gradient(ellipse at 70% 80%, rgba(216, 165, 49, 0.05), transparent 60%),
+    linear-gradient(200deg, #0a0d10 0%, #12181d 55%, #0a0d10 100%);
   color: white;
-  font-family: sans-serif;
   text-align: center;
   user-select: none;
   z-index: 25;
 }
 
-#prematch-menu.hidden {
-  display: none;
-}
-
-#prematch-menu-panel {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 1.25em;
-  min-width: 320px;
-  max-width: 420px;
-  padding: 2em 2.25em;
-  background: rgba(20, 24, 32, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-}
-
 #prematch-menu-title {
-  font-size: 2rem;
-  font-weight: bold;
-  letter-spacing: 0.02em;
+  font-size: 1.7rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
 }
 
 .prematch-section {
@@ -820,11 +799,11 @@ canvas {
 }
 
 .prematch-section-label {
-  font-size: 0.85rem;
-  font-weight: bold;
-  letter-spacing: 0.06em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  opacity: 0.75;
+  color: var(--text-dim);
 }
 
 .prematch-options {
@@ -834,50 +813,36 @@ canvas {
 
 .prematch-option {
   flex: 1;
-  padding: 0.55em 0.4em;
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  padding: 0.6em 0.4em;
+  border: 1px solid var(--panel-border);
   background: transparent;
   color: white;
   font-family: inherit;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
+  letter-spacing: 0.06em;
   cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
 
 .prematch-option:hover {
-  border-color: rgba(255, 255, 255, 0.55);
-  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.05);
 }
 
-/* Selected preset uses the same BLUE team accent as the score HUD. */
 .prematch-option.selected {
-  border-color: #3366cc;
-  background: rgba(51, 102, 204, 0.35);
-  font-weight: bold;
+  border-color: var(--accent);
+  background: rgba(216, 165, 49, 0.16);
+  color: var(--accent-bright);
+  font-weight: 700;
 }
 
 .prematch-hint {
-  font-size: 0.8rem;
-  opacity: 0.65;
-  line-height: 1.35;
-}
-
-#prematch-start-button {
-  margin-top: 0.35em;
-  padding: 0.75em 1.25em;
-  border: none;
-  background: #3366cc;
-  color: white;
-  font-family: inherit;
-  font-size: 1.1rem;
-  font-weight: bold;
-  cursor: pointer;
-}
-
-#prematch-start-button:hover {
-  background: #4076e0;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  line-height: 1.4;
 }
 
 #prematch-start-button:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: default;
 }

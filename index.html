@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FPS Portfolio Game</title>
+    <title>OUTPOST &mdash; Tactical Arena FPS</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
@@ -49,7 +49,13 @@
       affect aiming since the actual ray always fires from the camera
       center, which is what this is drawn on top of.
     -->
-    <div id="crosshair"></div>
+    <div id="crosshair">
+      <span class="crosshair-tick top"></span>
+      <span class="crosshair-tick bottom"></span>
+      <span class="crosshair-tick left"></span>
+      <span class="crosshair-tick right"></span>
+      <span class="crosshair-dot"></span>
+    </div>
 
     <!--
       Hit marker (Milestone 11). Brief flash on a successful player hit on
@@ -138,8 +144,8 @@
     -->
     <div id="title-splash">
       <div id="title-splash-panel">
-        <div id="title-splash-title">ARENA</div>
-        <div id="title-splash-tagline">Browser FPS &middot; Portfolio Demo</div>
+        <div id="title-splash-title">OUTPOST</div>
+        <div id="title-splash-tagline">Tactical Arena FPS &middot; Portfolio Demo</div>
         <label id="title-splash-name-label" for="title-splash-name">
           Player name
           <input
