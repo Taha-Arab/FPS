@@ -65,6 +65,10 @@ export function setupEnvironment(scene) {
   return { sunLight };
 }
 
+// NOTE: UnrealBloomPass was tried and removed — the atmospheric Sky
+// shader outputs enormous HDR sun values that flood the bloom blur and
+// white out the frame. ACES tone mapping alone keeps highlights hot.
+
 // Distant industrial silhouettes outside the arena walls so the horizon
 // isn't an empty void — purely visual, no colliders (unreachable). Fog
 // fades them naturally. Returns the meshes so main.js can dispose them

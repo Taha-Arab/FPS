@@ -128,11 +128,19 @@ import {
 } from "./environment.js";
 import {
   createAsphaltTexture,
-  createConcreteTexture,
-  createContainerTexture,
-  createMetalDeckTexture,
-  createBarrierTexture,
+  createGroundMarkingsTexture,
 } from "./textures.js";
+import {
+  resetPropRandom,
+  buildBoxCoverProp,
+  buildColumnProp,
+  buildRampProp,
+  buildDeckProp,
+  buildLegProp,
+  buildBoundaryWallProp,
+  buildFloodlightTower,
+  buildScatterDecor,
+} from "./props.js";
 import { createWeaponViewmodel } from "./weapon.js";
 import { buildSoldierModel, HEADSHOT_MIN_Y_OFFSET } from "./botmodel.js";
 
@@ -227,20 +235,23 @@ const BOUNDARY_CONTAINMENT_HEIGHT = 20;
 // them back to spawn (failsafe if containment is ever bypassed).
 const OOB_MARGIN = 0.5;
 
-// Modern-overhaul surfaces: procedural canvas textures (src/textures.js),
-// so the map reads as a weathered military training compound instead of
-// flat colors — still zero image assets for the static Vercel deploy.
-const groundTexture = createAsphaltTexture(8);
+// Modern-overhaul surfaces: procedural canvas textures + normal maps
+// (src/textures.js) — still zero image assets for the static deploy.
+const groundMaps = createAsphaltTexture(8);
 const groundMaterial = new THREE.MeshStandardMaterial({
-  map: groundTexture,
+  map: groundMaps.map,
+  normalMap: groundMaps.normalMap,
+  normalScale: new THREE.Vector2(0.8, 0.8),
   roughness: 0.95,
   metalness: 0.0,
 });
-const wallMaterial = new THREE.MeshStandardMaterial({
-  map: createConcreteTexture(6, 1),
-  roughness: 0.9,
-  metalness: 0.0,
-});
+// Shared helper: recursively dispose all geometries in a group/mesh
+// (materials are shared singletons in props.js and stay alive).
+function disposeObjectGeometry(object) {
+  object.traverse((child) => {
+    if (child.isMesh) child.geometry.dispose();
+  });
+}
 let groundMesh = null;
 const wallMeshes = [];
 // Distant decorative skyline blocks (rebuilt per arena size, no colliders).
@@ -264,24 +275,44 @@ function buildArena(groundSize) {
   // Safe if Start Match were ever double-fired — dispose the previous pad.
   if (groundMesh) {
     scene.remove(groundMesh);
-    groundMesh.geometry.dispose();
+    disposeObjectGeometry(groundMesh);
     groundMesh = null;
   }
   for (const mesh of wallMeshes) {
     scene.remove(mesh);
-    mesh.geometry.dispose();
+    disposeObjectGeometry(mesh);
   }
   wallMeshes.length = 0;
 
-  const groundGeometry = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE);
-  groundMesh = new THREE.Mesh(groundGeometry, groundMaterial);
-  // PlaneGeometry is created flat in the XY plane (facing the camera by
-  // default), so we rotate it -90 degrees around X to lay it flat on the
-  // ground (the XZ plane) like a floor.
-  groundMesh.rotation.x = -Math.PI / 2;
-  groundMesh.receiveShadow = true;
+  // Ground: asphalt pad + a one-shot markings decal (lane paint, stains,
+  // helipad circle) floating a hair above it. Grouped so disposal is easy.
+  groundMesh = new THREE.Group();
+  const groundPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
+    groundMaterial
+  );
+  // PlaneGeometry lies in XY; rotate -90° around X to become the floor.
+  groundPlane.rotation.x = -Math.PI / 2;
+  groundPlane.receiveShadow = true;
+  groundMesh.add(groundPlane);
   // Keep the asphalt tile scale constant across arena sizes (~1 tile / 4m).
-  groundTexture.repeat.set(GROUND_SIZE / 4, GROUND_SIZE / 4);
+  groundMaps.map.repeat.set(GROUND_SIZE / 4, GROUND_SIZE / 4);
+  groundMaps.normalMap.repeat.set(GROUND_SIZE / 4, GROUND_SIZE / 4);
+
+  const markings = new THREE.Mesh(
+    new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
+    new THREE.MeshStandardMaterial({
+      map: createGroundMarkingsTexture(),
+      transparent: true,
+      roughness: 0.95,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+    })
+  );
+  markings.rotation.x = -Math.PI / 2;
+  markings.position.y = 0.015;
+  markings.receiveShadow = true;
+  groundMesh.add(markings);
   scene.add(groundMesh);
 
   // North/south walls span the full width (including the corners), and
@@ -315,19 +346,25 @@ function buildArena(groundSize) {
     }, // east
   ];
 
+  // Boundary walls: concrete with pilasters + cap beam (props.js).
   for (const wall of wallDefs) {
-    const wallGeometry = new THREE.BoxGeometry(
-      wall.hx * 2,
-      WALL_HEIGHT,
-      wall.hz * 2
-    );
-    const wallMesh = new THREE.Mesh(wallGeometry, wallMaterial);
-    wallMesh.position.set(wall.x, WALL_HEIGHT / 2, wall.z);
-    wallMesh.castShadow = true;
-    wallMesh.receiveShadow = true;
-    scene.add(wallMesh);
-    wallMeshes.push(wallMesh);
+    const wallGroup = buildBoundaryWallProp(wall, WALL_HEIGHT);
+    scene.add(wallGroup);
+    wallMeshes.push(wallGroup);
   }
+
+  // Corner floodlight towers + edge debris (visual only, no colliders).
+  const cornerInset = GROUND_HALF - 1.2;
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const tower = buildFloodlightTower(sx * cornerInset, sz * cornerInset);
+      scene.add(tower);
+      wallMeshes.push(tower);
+    }
+  }
+  const scatter = buildScatterDecor(GROUND_HALF);
+  scene.add(scatter);
+  wallMeshes.push(scatter);
 
   // Fit the sun's shadow camera to the chosen arena footprint.
   fitSunShadowToArena(sunLight, GROUND_HALF);
@@ -630,30 +667,15 @@ let pillarObstacleDefs = [];
 let rampObstacleDefs = [];
 let elevatedStructurePieceDefs = [];
 
-// Solid cover reads as olive-drab shipping-container / crate metal, while
-// pillars use concrete-barrier surfacing and platforms use scuffed deck
-// plating — three distinct materials so cover types read at a glance.
-const obstacleMaterial = new THREE.MeshStandardMaterial({
-  map: createContainerTexture("#5b6e58", 2, 1),
-  roughness: 0.65,
-  metalness: 0.35,
-});
-const pillarMaterial = new THREE.MeshStandardMaterial({
-  map: createBarrierTexture(1),
-  roughness: 0.9,
-  metalness: 0.0,
-});
-const elevatedMaterial = new THREE.MeshStandardMaterial({
-  map: createMetalDeckTexture(2, 2),
-  roughness: 0.55,
-  metalness: 0.5,
-});
+// Cover visuals are composed prop groups (blast walls, containers,
+// sandbags, columns, railed decks — see src/props.js) built inside each
+// collider def's footprint, so gameplay geometry is untouched.
 const arenaCoverMeshes = [];
 
 function clearArenaCoverMeshes() {
-  for (const mesh of arenaCoverMeshes) {
-    scene.remove(mesh);
-    mesh.geometry.dispose();
+  for (const object of arenaCoverMeshes) {
+    scene.remove(object);
+    disposeObjectGeometry(object);
   }
   arenaCoverMeshes.length = 0;
 }
@@ -690,68 +712,38 @@ function buildArenaCover(groundSize) {
   }
 
   clearArenaCoverMeshes();
+  // Deterministic prop variation per arena build.
+  resetPropRandom();
 
   for (const box of boxObstacleDefs) {
-    const boxGeometry = new THREE.BoxGeometry(
-      box.hx * 2,
-      box.hy * 2,
-      box.hz * 2
-    );
-    const boxMesh = new THREE.Mesh(boxGeometry, obstacleMaterial);
-    boxMesh.position.set(box.x, box.hy, box.z);
-    boxMesh.castShadow = true;
-    boxMesh.receiveShadow = true;
-    scene.add(boxMesh);
-    arenaCoverMeshes.push(boxMesh);
+    const prop = buildBoxCoverProp(box);
+    scene.add(prop);
+    arenaCoverMeshes.push(prop);
   }
 
   for (const pillar of pillarObstacleDefs) {
-    // CylinderGeometry(radiusTop, radiusBottom, height, radialSegments) —
-    // equal top/bottom radius gives a plain cylinder rather than a cone.
-    const pillarGeometry = new THREE.CylinderGeometry(
-      pillar.radius,
-      pillar.radius,
-      pillar.height,
-      12
-    );
-    const pillarMesh = new THREE.Mesh(pillarGeometry, pillarMaterial);
-    pillarMesh.position.set(pillar.x, pillar.height / 2, pillar.z);
-    pillarMesh.castShadow = true;
-    pillarMesh.receiveShadow = true;
-    scene.add(pillarMesh);
-    arenaCoverMeshes.push(pillarMesh);
+    const prop = buildColumnProp(pillar);
+    scene.add(prop);
+    arenaCoverMeshes.push(prop);
   }
 
   for (const ramp of rampObstacleDefs) {
-    const rampGeometry = new THREE.BoxGeometry(
-      ramp.hx * 2,
-      ramp.hy * 2,
-      ramp.hz * 2
-    );
-    const rampMesh = new THREE.Mesh(rampGeometry, elevatedMaterial);
-    rampMesh.position.set(ramp.x, ramp.hy, ramp.z);
-    rampMesh.rotation.x = ramp.tiltRadians;
-    rampMesh.castShadow = true;
-    rampMesh.receiveShadow = true;
-    scene.add(rampMesh);
-    arenaCoverMeshes.push(rampMesh);
+    const prop = buildRampProp(ramp, ramp.hy, ramp.tiltRadians);
+    scene.add(prop);
+    arenaCoverMeshes.push(prop);
   }
 
   for (const piece of elevatedStructurePieceDefs) {
-    const geometry = new THREE.BoxGeometry(
-      piece.hx * 2,
-      piece.hy * 2,
-      piece.hz * 2
-    );
-    const mesh = new THREE.Mesh(geometry, elevatedMaterial);
-    mesh.position.set(piece.x, piece.y, piece.z);
+    let prop;
     if (piece.type === "ramp") {
-      mesh.rotation.x = piece.tiltRadians;
+      prop = buildRampProp(piece, piece.y, piece.tiltRadians);
+    } else if (piece.hx <= 0.2 && piece.hz <= 0.2) {
+      prop = buildLegProp(piece); // thin support legs
+    } else {
+      prop = buildDeckProp(piece); // walkable decks get railings
     }
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    scene.add(mesh);
-    arenaCoverMeshes.push(mesh);
+    scene.add(prop);
+    arenaCoverMeshes.push(prop);
   }
 
   // Cover stand-points for Hard-tier bots (Milestone 10) — rebuilt whenever
@@ -956,24 +948,41 @@ const BOT_AIM_SPREAD_RADIANS = 0.035;
 
 // Difficulty tiers from the pre-match menu. Same AI logic for all three —
 // only these parameters change (per AGENTS.md).
+// Movement realism (modern-overhaul v2) also scales per tier:
+//   moveSpeed        — patrol/chase speed (easy plods, hard hustles)
+//   strafes          — whether the bot side-steps while engaging
+//   strafeSpeed      — lateral speed of that combat strafe
+//   pauseAtWaypointMs— [min,max] "look around" dwell after reaching a point
 const DIFFICULTY_TIERS = {
   easy: {
     reactionDelayMs: 900,
     aimSpreadRadians: 0.08,
     turnSpeedRadiansPerSec: Math.PI * 0.55, // ~100 deg/s — sluggish
     usesCover: false,
+    moveSpeed: 2.3,
+    strafes: false,
+    strafeSpeed: 0,
+    pauseAtWaypointMs: [1200, 2600],
   },
   medium: {
     reactionDelayMs: BOT_REACTION_DELAY_MS,
     aimSpreadRadians: BOT_AIM_SPREAD_RADIANS,
     turnSpeedRadiansPerSec: Math.PI, // 180 deg/s
     usesCover: false,
+    moveSpeed: 3.0,
+    strafes: true,
+    strafeSpeed: 1.5,
+    pauseAtWaypointMs: [600, 1400],
   },
   hard: {
     reactionDelayMs: 250,
     aimSpreadRadians: 0.015,
     turnSpeedRadiansPerSec: Math.PI * 1.5, // ~270 deg/s — snappy
     usesCover: true,
+    moveSpeed: 3.8,
+    strafes: true,
+    strafeSpeed: 2.4,
+    pauseAtWaypointMs: [250, 700],
   },
 };
 
@@ -1168,11 +1177,20 @@ function createBotInstance(world, team, spawnPoint, tier) {
     // ends so Hard bots don't immediately path to another slot.
     holdingCover: false,
     lastFootstepAt: -Infinity,
+    // Movement realism state (modern-overhaul v2).
+    strafeDirection: 1, // +1 / -1, flipped on a timer while engaging
+    strafeSwitchAt: 0,
+    pauseUntil: 0, // waypoint "look around" dwell
+    scanYawTarget: null, // idle scan direction while paused
     // Copied from the match difficulty tier — same AI, different knobs.
     reactionDelayMs: tier.reactionDelayMs,
     aimSpreadRadians: tier.aimSpreadRadians,
     turnSpeedRadiansPerSec: tier.turnSpeedRadiansPerSec,
     usesCover: tier.usesCover,
+    moveSpeed: tier.moveSpeed,
+    strafes: tier.strafes,
+    strafeSpeed: tier.strafeSpeed,
+    pauseAtWaypointMs: tier.pauseAtWaypointMs,
   };
 
   colliderToBot.set(collider, bot);
@@ -1287,6 +1305,13 @@ function playSynthSound({
   frequencyEnd = null,
   noise = false,
   worldPosition = null,
+  // Optional biquad filter for more natural timbres — raw oscillators and
+  // white noise sound "beepy"; filtered noise reads as real-world thud/
+  // crack/scuff. filterFrequencyEnd sweeps the cutoff over the duration.
+  filterType = null,
+  filterFrequency = 1000,
+  filterFrequencyEnd = null,
+  filterQ = 0.8,
 }) {
   const ctx = ensureAudio();
   if (!ctx || !sfxGain) return;
@@ -1315,6 +1340,23 @@ function playSynthSound({
     }
   }
 
+  // Insert the filter between source and gain when requested.
+  let head = source;
+  if (filterType) {
+    const filter = ctx.createBiquadFilter();
+    filter.type = filterType;
+    filter.frequency.setValueAtTime(filterFrequency, now);
+    if (filterFrequencyEnd !== null) {
+      filter.frequency.exponentialRampToValueAtTime(
+        Math.max(20, filterFrequencyEnd),
+        now + duration
+      );
+    }
+    filter.Q.value = filterQ;
+    source.connect(filter);
+    head = filter;
+  }
+
   if (worldPosition && ctx.createPanner) {
     const panner = ctx.createPanner();
     panner.panningModel = "HRTF";
@@ -1329,11 +1371,11 @@ function playSynthSound({
     } else if (panner.setPosition) {
       panner.setPosition(worldPosition.x, worldPosition.y, worldPosition.z);
     }
-    source.connect(gainNode);
+    head.connect(gainNode);
     gainNode.connect(panner);
     panner.connect(sfxGain);
   } else {
-    source.connect(gainNode);
+    head.connect(gainNode);
     gainNode.connect(sfxGain);
   }
 
@@ -1341,48 +1383,94 @@ function playSynthSound({
   source.stop(now + duration + 0.02);
 }
 
+// Layered rifle shot (modern-overhaul v2): sharp filtered crack + low
+// chest thump + a short lowpass "air" tail. Own shots are louder/fuller;
+// bot shots keep the spatial panner and a thinner mix.
 function playGunshotSound(worldPosition = null) {
+  const own = !worldPosition;
+  // Crack: noise burst swept down through a bandpass.
   playSynthSound({
     noise: true,
-    duration: 0.07,
-    volume: worldPosition ? 0.12 : 0.22,
+    duration: 0.05,
+    volume: own ? 0.3 : 0.14,
+    filterType: "bandpass",
+    filterFrequency: 2600,
+    filterFrequencyEnd: 900,
+    filterQ: 0.7,
     worldPosition,
   });
+  // Thump: low sine punch.
   playSynthSound({
-    type: "triangle",
-    frequency: 180,
-    frequencyEnd: 60,
-    duration: 0.09,
-    volume: worldPosition ? 0.08 : 0.14,
+    type: "sine",
+    frequency: 130,
+    frequencyEnd: 45,
+    duration: 0.12,
+    volume: own ? 0.22 : 0.1,
+    worldPosition,
+  });
+  // Tail: soft lowpassed noise decay ("report" echo off the compound).
+  playSynthSound({
+    noise: true,
+    duration: own ? 0.28 : 0.18,
+    volume: own ? 0.07 : 0.04,
+    filterType: "lowpass",
+    filterFrequency: 900,
+    filterFrequencyEnd: 180,
     worldPosition,
   });
 }
 
+// Boot scuff on concrete: short lowpassed noise, pitch-varied so repeated
+// steps don't sound machine-like.
 function playFootstepSound(worldPosition = null, quiet = false) {
   playSynthSound({
     noise: true,
-    duration: 0.04,
-    volume: quiet ? 0.04 : worldPosition ? 0.05 : 0.08,
+    duration: 0.05,
+    volume: quiet ? 0.035 : worldPosition ? 0.05 : 0.075,
+    filterType: "lowpass",
+    filterFrequency: 380 + Math.random() * 260,
+    filterQ: 0.6,
     worldPosition,
   });
 }
 
+// Mag-out clack, mag-in seat, bolt release — three mechanical transients.
 function playReloadSound() {
   playSynthSound({
-    type: "square",
-    frequency: 220,
-    frequencyEnd: 140,
-    duration: 0.12,
-    volume: 0.1,
+    noise: true,
+    duration: 0.045,
+    volume: 0.12,
+    filterType: "bandpass",
+    filterFrequency: 1500,
+    filterQ: 1.4,
   });
   setTimeout(() => {
     playSynthSound({
-      type: "triangle",
-      frequency: 320,
-      duration: 0.06,
-      volume: 0.08,
+      noise: true,
+      duration: 0.05,
+      volume: 0.14,
+      filterType: "bandpass",
+      filterFrequency: 900,
+      filterQ: 1.2,
     });
-  }, 200);
+  }, 550);
+  setTimeout(() => {
+    playSynthSound({
+      noise: true,
+      duration: 0.06,
+      volume: 0.16,
+      filterType: "bandpass",
+      filterFrequency: 1900,
+      filterQ: 1.1,
+    });
+    playSynthSound({
+      type: "sine",
+      frequency: 260,
+      frequencyEnd: 180,
+      duration: 0.06,
+      volume: 0.06,
+    });
+  }, 1250);
 }
 
 function playHitTakenSound() {
@@ -2730,6 +2818,9 @@ function startRenderLoop({
     bot.moveTarget = null;
     bot.coverTarget = null;
     bot.holdingCover = false;
+    bot.pauseUntil = 0;
+    bot.scanYawTarget = null;
+    bot.strafeSwitchAt = 0;
   }
   scheduleBotRespawn = respawnBot;
 
@@ -3166,22 +3257,12 @@ function startRenderLoop({
     }
     return best;
   }
-  function moveBotTowards(bot, target, deltaTime, now) {
-    const botPosition = bot.body.translation();
-    const dx = target.x - botPosition.x;
-    const dz = target.z - botPosition.z;
-    const distance = Math.hypot(dx, dz);
-    if (distance <= BOT_WAYPOINT_ARRIVAL_RADIUS) return true;
-    if (now - bot.moveTargetSetAt >= BOT_MOVE_TIMEOUT_MS) return true;
-    rotateGroupTowards(
-      bot,
-      computeYawTowards(botPosition, target),
-      deltaTime
-    );
+  // Low-level collide-and-slide step shared by pathing + combat strafing.
+  function moveBotByDirection(bot, dirX, dirZ, speed, deltaTime, now) {
     bot.characterController.computeColliderMovement(bot.collider, {
-      x: (dx / distance) * BOT_MOVE_SPEED * deltaTime,
+      x: dirX * speed * deltaTime,
       y: 0,
-      z: (dz / distance) * BOT_MOVE_SPEED * deltaTime,
+      z: dirZ * speed * deltaTime,
     });
     const correctedMovement = bot.characterController.computedMovement();
     const currentPosition = bot.body.translation();
@@ -3199,7 +3280,72 @@ function startRenderLoop({
         true
       );
     }
+  }
+
+  function moveBotTowards(bot, target, deltaTime, now) {
+    const botPosition = bot.body.translation();
+    const dx = target.x - botPosition.x;
+    const dz = target.z - botPosition.z;
+    const distance = Math.hypot(dx, dz);
+    if (distance <= BOT_WAYPOINT_ARRIVAL_RADIUS) return true;
+    if (now - bot.moveTargetSetAt >= BOT_MOVE_TIMEOUT_MS) return true;
+    rotateGroupTowards(
+      bot,
+      computeYawTowards(botPosition, target),
+      deltaTime
+    );
+    moveBotByDirection(
+      bot,
+      dx / distance,
+      dz / distance,
+      bot.moveSpeed,
+      deltaTime,
+      now
+    );
     return false;
+  }
+
+  // Combat footwork while engaging a visible hostile: medium/hard bots
+  // side-step perpendicular to the target, flipping direction on a random
+  // timer; hard bots also hold an engagement range band (back up when
+  // pushed, close distance when the target is far). Easy bots stand still
+  // and shoot, like a training target.
+  function applyCombatStrafe(bot, hostilePosition, now, deltaTime) {
+    if (!bot.strafes) return;
+    const botPosition = bot.body.translation();
+    const dx = hostilePosition.x - botPosition.x;
+    const dz = hostilePosition.z - botPosition.z;
+    const distance = Math.hypot(dx, dz);
+    if (distance < 0.001) return;
+
+    if (now >= bot.strafeSwitchAt) {
+      bot.strafeDirection = Math.random() < 0.5 ? -1 : 1;
+      bot.strafeSwitchAt = now + 700 + Math.random() * 1300;
+    }
+
+    // Perpendicular to the line toward the hostile.
+    let moveX = (-dz / distance) * bot.strafeDirection;
+    let moveZ = (dx / distance) * bot.strafeDirection;
+
+    // Hard tier: blend in range-keeping (prefer ~7–14m).
+    if (bot.usesCover) {
+      if (distance < 7) {
+        moveX -= (dx / distance) * 0.7;
+        moveZ -= (dz / distance) * 0.7;
+      } else if (distance > 14) {
+        moveX += (dx / distance) * 0.7;
+        moveZ += (dz / distance) * 0.7;
+      }
+    }
+    const len = Math.hypot(moveX, moveZ);
+    moveBotByDirection(
+      bot,
+      moveX / len,
+      moveZ / len,
+      bot.strafeSpeed,
+      deltaTime,
+      now
+    );
   }
   // Per-bot AI tick. Same logic for every tier — only parameters differ.
   function updateBot(bot, now, deltaTime) {
@@ -3267,13 +3413,17 @@ function startRenderLoop({
       return;
     }
     if (visibleHostile) {
-      // Sighted hostile: stop patrolling, turn (tier turn-speed), fire when ready.
+      // Sighted hostile: stop pathing, strafe (tier-dependent), turn to
+      // face (tier turn-speed), fire when ready.
       bot.moveTarget = null;
+      bot.pauseUntil = 0;
+      bot.scanYawTarget = null;
       bot.lastKnownTargetPosition = {
         x: visibleHostile.position.x,
         z: visibleHostile.position.z,
       };
       if (bot.spottedAtTime === null) bot.spottedAtTime = now;
+      applyCombatStrafe(bot, visibleHostile.position, now, deltaTime);
       const desiredYaw = computeYawTowards(botPosition, visibleHostile.eye);
       const remainingAngle = rotateGroupTowards(bot, desiredYaw, deltaTime);
       const hasReacted = now - bot.spottedAtTime >= bot.reactionDelayMs;
@@ -3285,6 +3435,24 @@ function startRenderLoop({
       }
     } else {
       bot.spottedAtTime = null;
+
+      // Waypoint dwell: after arriving somewhere, stand for a tier-scaled
+      // beat and sweep the view around (like checking corners) before
+      // committing to the next move.
+      if (now < bot.pauseUntil) {
+        if (bot.scanYawTarget === null) {
+          bot.scanYawTarget =
+            bot.group.rotation.y + (Math.random() - 0.5) * Math.PI * 1.2;
+        }
+        const remaining = rotateGroupTowards(
+          bot,
+          bot.scanYawTarget,
+          deltaTime * 0.45 // slower, deliberate scan
+        );
+        if (remaining < 0.05) bot.scanYawTarget = null; // pick a new sweep
+        return;
+      }
+
       if (!bot.moveTarget) {
         if (bot.lastKnownTargetPosition) {
           bot.moveTarget = bot.lastKnownTargetPosition;
@@ -3304,6 +3472,9 @@ function startRenderLoop({
           bot.lastKnownTargetPosition = null;
         }
         bot.moveTarget = null;
+        const [minPause, maxPause] = bot.pauseAtWaypointMs;
+        bot.pauseUntil = now + minPause + Math.random() * (maxPause - minPause);
+        bot.scanYawTarget = null;
       }
     }
   }
@@ -3712,12 +3883,12 @@ function returnToPrematchMenu() {
   clearArenaCoverMeshes();
   if (groundMesh) {
     scene.remove(groundMesh);
-    groundMesh.geometry.dispose();
+    disposeObjectGeometry(groundMesh);
     groundMesh = null;
   }
   for (const mesh of wallMeshes) {
     scene.remove(mesh);
-    mesh.geometry.dispose();
+    disposeObjectGeometry(mesh);
   }
   wallMeshes.length = 0;
   clearSkyline();
