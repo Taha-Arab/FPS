@@ -13,6 +13,13 @@
   --team-blue: #4d9be6;
   --team-red: #e05252;
   --text-dim: rgba(255, 255, 255, 0.65);
+
+  /* AAA polish system (feat/fps-overhaul): shared glassmorphism tokens.
+     Every floating HUD element / menu panel composes these. */
+  --glass-bg: rgba(15, 23, 42, 0.65);
+  --glass-border: 1px solid rgba(255, 255, 255, 0.16);
+  --glass-blur: blur(12px);
+  --glass-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
 html,
@@ -50,6 +57,7 @@ button {
 
 /* --- Pause menu ------------------------------------------------------- */
 
+/* Modern pause / ESC menu (feat/fps-overhaul): heavy scene darken + blur. */
 #pause-overlay {
   position: fixed;
   inset: 0;
@@ -57,12 +65,41 @@ button {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: rgba(4, 6, 8, 0.55);
-  backdrop-filter: blur(3px);
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   color: white;
   text-align: center;
   user-select: none;
-  z-index: 10;
+  /* Must beat the death/respawn overlay (z 15) and match-end (z 20) so the
+     pause menu always renders on top when opened mid-death. */
+  z-index: 9999;
+}
+
+/* Secondary pause-menu actions: quieter outline style, same hover pop. */
+.pause-menu-secondary {
+  border-color: var(--panel-border);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.pause-menu-secondary:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: white;
+  border-color: rgba(255, 255, 255, 0.45);
+  transform: scale(1.03);
+  box-shadow: 0 0 18px rgba(255, 255, 255, 0.18);
+}
+
+#pause-controls-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9em;
+  margin-top: 0.4em;
+  padding: 1em 1.1em;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
 }
 
 .menu-panel,
@@ -76,9 +113,12 @@ button {
   min-width: 320px;
   max-width: 420px;
   padding: 2em 2.25em;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: var(--glass-border);
   border-top: 2px solid var(--accent);
+  border-radius: 20px;
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
 }
 
@@ -116,10 +156,12 @@ button {
 #pause-resume-button,
 #match-end-play-again,
 #title-splash-continue,
-#prematch-start-button {
+#prematch-start-button,
+.pause-menu-button {
   margin-top: 0.35em;
   padding: 0.8em 1.25em;
   border: 1px solid var(--accent);
+  border-radius: 12px;
   background: rgba(216, 165, 49, 0.12);
   color: var(--accent-bright);
   font-family: inherit;
@@ -128,19 +170,27 @@ button {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 #pause-resume-button:hover,
 #match-end-play-again:hover,
 #title-splash-continue:hover,
+.pause-menu-button:hover,
 #prematch-start-button:hover:not(:disabled) {
   background: var(--accent);
   color: #14100a;
+  transform: scale(1.03);
+  box-shadow: 0 0 18px rgba(216, 165, 49, 0.45);
 }
 
 /* --- Match HUD (score + timer, top center) ---------------------------- */
 
+/* Sleek pill-shaped frosted-glass container (feat/fps-overhaul). */
 #match-hud {
   position: fixed;
   top: 18px;
@@ -150,10 +200,13 @@ button {
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  padding: 7px 22px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-bottom: 2px solid var(--accent);
+  padding: 9px 28px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: var(--glass-border);
+  border-radius: 999px;
+  box-shadow: var(--glass-shadow);
   pointer-events: none;
   user-select: none;
   z-index: 5;
@@ -201,9 +254,12 @@ button {
   right: 18px;
   width: 150px;
   height: 150px;
-  background: rgba(8, 10, 12, 0.66);
-  border: 1px solid var(--panel-border);
-  outline: 2px solid rgba(0, 0, 0, 0.35);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: var(--glass-border);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow);
   pointer-events: none;
   user-select: none;
   z-index: 5;
@@ -436,6 +492,153 @@ button {
   animation: hit-marker-flash 0.12s ease-out;
 }
 
+/* --- Reload progress arc (feat/fps-overhaul) --------------------------- */
+/* Sits just below the crosshair; the progress circle's dashoffset is set
+   per-frame from JS as the reload advances. */
+
+#reload-indicator {
+  position: fixed;
+  top: calc(50% + 34px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+  user-select: none;
+  z-index: 6;
+}
+
+#reload-indicator svg {
+  width: 44px;
+  height: 44px;
+  transform: rotate(-90deg); /* arc starts at 12 o'clock */
+}
+
+.reload-arc-track,
+#reload-arc-progress {
+  fill: none;
+  stroke-width: 4;
+}
+
+.reload-arc-track {
+  stroke: rgba(255, 255, 255, 0.18);
+}
+
+#reload-arc-progress {
+  stroke: var(--accent-bright);
+  stroke-linecap: round;
+  stroke-dasharray: 125.66; /* 2π · r20 */
+  stroke-dashoffset: 125.66;
+  filter: drop-shadow(0 0 4px rgba(240, 190, 74, 0.6));
+}
+
+#reload-indicator-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--accent-bright);
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
+}
+
+/* --- Floating combat damage numbers (feat/fps-overhaul) ---------------- */
+
+#damage-numbers {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  z-index: 6;
+}
+
+.damage-number {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #ffd977;
+  text-shadow:
+    0 0 6px rgba(0, 0, 0, 0.9),
+    0 2px 4px rgba(0, 0, 0, 0.7);
+  animation: damage-number-pop 0.8s ease-out forwards;
+}
+
+.damage-number.headshot {
+  color: #ff5b45;
+  font-size: 1.3rem;
+}
+
+@keyframes damage-number-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.4);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(-50%, -58%) scale(1.35); /* burst on spawn */
+  }
+  30% {
+    transform: translate(-50%, -80%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -190%) scale(0.9); /* graceful upward drift */
+  }
+}
+
+/* --- Multi-killstreak banner (feat/fps-overhaul) ----------------------- */
+
+#killstreak-banner {
+  position: fixed;
+  top: 16%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 12px 34px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: var(--glass-border);
+  border-bottom: 2px solid var(--accent);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow);
+  font-size: 1.7rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent-bright);
+  text-shadow: 0 0 14px rgba(240, 190, 74, 0.55);
+  pointer-events: none;
+  user-select: none;
+  z-index: 7;
+}
+
+#killstreak-banner.active {
+  animation: killstreak-pop 1.8s ease-out forwards;
+}
+
+@keyframes killstreak-pop {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.55);
+  }
+  10% {
+    opacity: 1;
+    transform: translateX(-50%) scale(1.12); /* scale-in overshoot */
+  }
+  18% {
+    transform: translateX(-50%) scale(1);
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) scale(1.02);
+  }
+}
+
 @keyframes hit-marker-flash {
   from {
     opacity: 1;
@@ -465,9 +668,14 @@ button {
 }
 
 .kill-feed-entry {
-  padding: 4px 10px;
-  background: var(--panel-bg);
+  padding: 4px 12px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: var(--glass-border);
   border-left: 2px solid var(--accent);
+  border-radius: 10px;
+  box-shadow: var(--glass-shadow);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -494,17 +702,23 @@ button {
 
 /* --- Ammo HUD ---------------------------------------------------------- */
 
+/* Soft rounded badge, moved from bottom-right to lower-center
+   (feat/fps-overhaul) so ammo reads without leaving the crosshair. */
 #ammo-hud {
   position: fixed;
-  right: 18px;
-  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 26px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 16px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-right: 2px solid var(--accent);
+  padding: 10px 22px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: var(--glass-border);
+  border-radius: 999px;
+  box-shadow: var(--glass-shadow);
   pointer-events: none;
   user-select: none;
   z-index: 5;
@@ -555,6 +769,7 @@ button {
 
 /* --- Health HUD -------------------------------------------------------- */
 
+/* Glassmorphic widget wrapper (feat/fps-overhaul). */
 #health-hud {
   position: fixed;
   left: 18px;
@@ -562,6 +777,13 @@ button {
   display: flex;
   align-items: center;
   gap: 10px;
+  padding: 10px 14px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: var(--glass-border);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow);
   z-index: 5;
 }
 
@@ -598,20 +820,33 @@ button {
   transform: translateX(-50%);
 }
 
+#health-text {
+  color: white;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  min-width: 7.5ch;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
 #health-bar-container {
   width: 240px;
   height: 14px;
-  background: var(--panel-bg);
+  background: rgba(0, 0, 0, 0.45);
   border: 1px solid var(--panel-border);
+  border-radius: 999px;
   overflow: hidden;
-  transform: skewX(-12deg); /* angled bar, modern shooter style */
 }
 
+/* Fill color is a continuous green → yellow → red hsl set from
+   setPlayerHealth() in main.js; the transition smooths every step. */
 #health-bar-fill {
   height: 100%;
   width: 100%;
+  border-radius: 999px;
   background-color: #4caf50;
-  transition: width 0.15s ease, background-color 0.15s ease;
+  transition: width 0.2s ease, background-color 0.3s ease;
 }
 
 /* --- Floating bot health bars ------------------------------------------ */
@@ -622,6 +857,7 @@ button {
   height: 5px;
   background: rgba(0, 0, 0, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 4px;
   transform: translate(-50%, -50%);
   pointer-events: none;
   z-index: 3;
@@ -754,6 +990,7 @@ button {
 #title-splash-name {
   padding: 0.6em 0.75em;
   border: 1px solid var(--panel-border);
+  border-radius: 10px;
   background: rgba(0, 0, 0, 0.4);
   color: white;
   font-family: inherit;
@@ -815,6 +1052,7 @@ button {
   flex: 1;
   padding: 0.6em 0.4em;
   border: 1px solid var(--panel-border);
+  border-radius: 10px;
   background: transparent;
   color: white;
   font-family: inherit;
@@ -845,4 +1083,33 @@ button {
 #prematch-start-button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* --- Liquid glass shine (feat/fps-overhaul, final spec) ----------------- */
+/* Frosted "liquid glass" finish on every HUD badge, the health bar
+   container, and the menu panels. Exact property set per the design spec:
+   a semi-transparent 135° white sheen (no opaque base — the blur supplies
+   the depth), heavy backdrop blur, a 1px light border and a deep soft
+   shadow. Declared LAST in the file so it beats every earlier background/
+   border declaration at equal (id) specificity. */
+
+#match-hud,
+#ammo-hud,
+#health-hud,
+#health-bar-container,
+#minimap,
+.kill-feed-entry,
+#killstreak-banner,
+#pause-overlay-panel,
+#prematch-menu-panel,
+#title-splash-panel {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.1),
+    rgba(255, 255, 255, 0)
+  );
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
 }

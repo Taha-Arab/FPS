@@ -142,7 +142,17 @@ import {
   buildScatterDecor,
 } from "./props.js";
 import { createWeaponViewmodel } from "./weapon.js";
-import { buildSoldierModel, HEADSHOT_MIN_Y_OFFSET } from "./botmodel.js";
+import {
+  buildSoldierModel,
+  buildSwatModel,
+  HEADSHOT_MIN_Y_OFFSET,
+  SHOOT_ANIM_HOLD_MS,
+} from "./botmodel.js";
+import { loadGameAssets } from "./assets.js";
+
+// Resolved GLB assets (feat/fps-overhaul) — null until the async load in
+// startMatch() finishes; every consumer falls back to procedural models.
+let gameAssets = null;
 
 // -----------------------------------------------------------------------
 // Three.js setup: scene, camera, renderer
@@ -1120,8 +1130,18 @@ function createMinimapDot(team) {
 // team is "blue" (ally) or "red" (enemy). tier is a DIFFICULTY_TIERS entry.
 function createBotInstance(world, team, spawnPoint, tier) {
   const teamColor = team === "blue" ? ALLY_BOT_COLOR : ENEMY_BOT_COLOR;
-  // Humanoid soldier model (modern-overhaul) — origin at the capsule center.
-  const model = buildSoldierModel(team);
+  // GLB SWAT model when assets loaded; procedural soldier as fallback.
+  // Both put their origin at the capsule center.
+  if (gameAssets?.botTemplate == null) {
+    console.error(
+      "createBotInstance: SWAT GLB not loaded yet — spawning procedural " +
+        "placeholder (check asset load order / network errors above)"
+    );
+  }
+  const model =
+    gameAssets?.botTemplate != null
+      ? buildSwatModel(team, gameAssets)
+      : buildSoldierModel(team);
   const group = model.group;
   const spawn = botStandingSpawnTranslation(spawnPoint);
   group.position.set(spawn.x, spawn.y, spawn.z);
@@ -1617,6 +1637,33 @@ const pauseOverlay = document.getElementById("pause-overlay");
 const pauseOverlayTitle = document.getElementById("pause-overlay-title");
 const pauseResumeButton = document.getElementById("pause-resume-button");
 const pauseSensitivitySlider = document.getElementById("pause-sensitivity");
+const pauseControlsButton = document.getElementById("pause-controls-button");
+const pauseControlsPanel = document.getElementById("pause-controls-panel");
+const pauseQuitButton = document.getElementById("pause-quit-button");
+
+// Collapsible Controls panel inside the pause menu (feat/fps-overhaul).
+pauseControlsButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  pauseControlsPanel.classList.toggle("hidden");
+});
+
+// Quit Match: tear the live match down and return to Match Setup —
+// returnToPrematchMenu is a hoisted function declaration further below.
+pauseQuitButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  returnToPrematchMenu();
+});
+
+// Escape toggles the pause menu. While pointer-locked the browser itself
+// releases the lock on Escape (pointerlockchange → showPauseOverlay covers
+// the "open" direction, and the browser swallows that keydown); this
+// handler covers the "close" direction — Escape on the open menu resumes.
+window.addEventListener("keydown", (event) => {
+  if (event.code !== "Escape") return;
+  if (isPaused && matchReady && !matchEnded && document.hasFocus()) {
+    requestResumePointerLock();
+  }
+});
 
 pauseSensitivitySlider.value = String(
   sliderValueFromSensitivity(DEFAULT_MOUSE_SENSITIVITY)
@@ -1666,6 +1713,21 @@ function showPauseOverlay() {
   // gun would start full-auto firing the instant the player resumes.
   isFiring = false;
   isAiming = false;
+
+  // Freeze a pending respawn: cancel the timeout and stash the remaining
+  // time so the death countdown stops ticking while the pause menu is up.
+  // playerRespawnAt = null also freezes the on-screen countdown text.
+  if (isDead && playerRespawnAt !== null) {
+    playerRespawnRemainingMs = Math.max(
+      0,
+      playerRespawnAt - performance.now()
+    );
+    if (playerRespawnTimeoutId !== null) {
+      clearTimeout(playerRespawnTimeoutId);
+      playerRespawnTimeoutId = null;
+    }
+    playerRespawnAt = null;
+  }
 }
 
 function hidePauseOverlay() {
@@ -1678,6 +1740,21 @@ function hidePauseOverlay() {
   }
   hasPlayedBefore = true;
   pauseOverlay.classList.add("hidden");
+
+  // Resume a respawn that was frozen by showPauseOverlay(): restart the
+  // countdown + timeout from the stashed remainder.
+  if (isDead && playerRespawnRemainingMs !== null) {
+    playerRespawnAt = performance.now() + playerRespawnRemainingMs;
+    lastDisplayedRespawnSecond = null;
+    if (triggerPlayerRespawn) {
+      playerRespawnTimeoutId = setTimeout(
+        triggerPlayerRespawn,
+        playerRespawnRemainingMs
+      );
+      trackTimeout(playerRespawnTimeoutId);
+    }
+    playerRespawnRemainingMs = null;
+  }
 }
 
 // Chrome (and some other browsers) enforce a short "cooldown" - roughly
@@ -1792,6 +1869,7 @@ let playerRegenActive = false;
 let playerRegenWasFull = true;
 
 const healthBarFill = document.getElementById("health-bar-fill");
+const healthTextEl = document.getElementById("health-text");
 const deathOverlay = document.getElementById("death-overlay");
 const deathOverlaySubtitle = document.getElementById("death-overlay-subtitle");
 const vignette = document.getElementById("vignette");
@@ -1809,15 +1887,12 @@ function setPlayerHealth(newHealth) {
 
   const healthPercent = (playerHealth / PLAYER_MAX_HEALTH) * 100;
   healthBarFill.style.width = `${healthPercent}%`;
-  // Simple threshold-based coloring (green/orange/red) rather than a
-  // continuous gradient - easier to read at a glance and simpler to code.
-  if (healthPercent > 50) {
-    healthBarFill.style.backgroundColor = "#4caf50"; // green
-  } else if (healthPercent > 20) {
-    healthBarFill.style.backgroundColor = "#ff9800"; // orange
-  } else {
-    healthBarFill.style.backgroundColor = "#f44336"; // red
-  }
+  // Continuous green → yellow → red hue sweep (feat/fps-overhaul); the CSS
+  // background-color transition smooths each step into a gradual shift.
+  const hue = Math.round((healthPercent / 100) * 120); // 120=green, 0=red
+  healthBarFill.style.backgroundColor = `hsl(${hue}, 72%, 46%)`;
+  healthTextEl.textContent =
+    `HP: ${Math.round(playerHealth)} / ${PLAYER_MAX_HEALTH}`;
 
   // Fade in the low-health vignette once below the threshold - but not
   // once actually dead, since the #death-overlay covers the whole screen
@@ -1898,7 +1973,25 @@ let isAiming = false;
 const ammoHud = document.getElementById("ammo-hud");
 const ammoText = document.getElementById("ammo-text");
 
+// Reload progress arc near the crosshair (feat/fps-overhaul). The arc's
+// dashoffset is advanced every frame in tick() from these timestamps;
+// visibility is owned by updateAmmoDisplay() since that's already called on
+// every isReloading transition (start, finish, respawn, soft reset).
+const reloadIndicatorEl = document.getElementById("reload-indicator");
+const reloadArcProgressEl = document.getElementById("reload-arc-progress");
+const RELOAD_ARC_CIRCUMFERENCE = 125.66; // matches stroke-dasharray in CSS
+let reloadStartedAt = 0;
+
+function updateReloadArc(now) {
+  if (!isReloading) return;
+  const progress = Math.min(1, (now - reloadStartedAt) / RELOAD_TIME_MS);
+  reloadArcProgressEl.style.strokeDashoffset = String(
+    RELOAD_ARC_CIRCUMFERENCE * (1 - progress)
+  );
+}
+
 function updateAmmoDisplay() {
+  reloadIndicatorEl.classList.toggle("hidden", !isReloading);
   if (isReloading) {
     ammoText.textContent = "Reloading...";
     // Don't flash "low ammo" red while the "Reloading..." text is already
@@ -1919,6 +2012,8 @@ function startReload() {
   if (isReloading || currentAmmo === MAGAZINE_SIZE) return;
 
   isReloading = true;
+  reloadStartedAt = performance.now();
+  reloadArcProgressEl.style.strokeDashoffset = String(RELOAD_ARC_CIRCUMFERENCE);
   updateAmmoDisplay();
   playReloadSound();
 
@@ -1994,6 +2089,82 @@ function applyRecoilKick() {
   recoilYaw += (Math.random() - 0.5) * 2 * RECOIL_YAW_KICK_MAX;
 }
 
+// -----------------------------------------------------------------------
+// Floating combat damage numbers (feat/fps-overhaul)
+// -----------------------------------------------------------------------
+// One DOM popup per hit at the impact point's screen projection: burst
+// scale on spawn, upward drift, fade — all in the CSS animation — then
+// self-destroys. Position is projected once at spawn (the ~0.8s lifetime
+// is too short for parallax to read as wrong).
+
+const damageNumbersEl = document.getElementById("damage-numbers");
+const DAMAGE_NUMBER_LIFETIME_MS = 850;
+
+function spawnDamageNumber(worldPoint, amount, isHeadshot = false) {
+  const projected = new THREE.Vector3(
+    worldPoint.x,
+    worldPoint.y,
+    worldPoint.z
+  ).project(camera);
+  if (projected.z > 1) return; // behind the camera
+
+  const el = document.createElement("span");
+  el.className = isHeadshot ? "damage-number headshot" : "damage-number";
+  el.textContent = String(Math.round(amount));
+  // Slight random jitter so rapid full-auto hits don't stack into one blob.
+  const jitterX = (Math.random() - 0.5) * 28;
+  el.style.left = `${((projected.x + 1) / 2) * window.innerWidth + jitterX}px`;
+  el.style.top = `${((1 - projected.y) / 2) * window.innerHeight}px`;
+  damageNumbersEl.appendChild(el);
+  trackTimeout(setTimeout(() => el.remove(), DAMAGE_NUMBER_LIFETIME_MS));
+}
+
+// -----------------------------------------------------------------------
+// Multi-killstreak announcements (feat/fps-overhaul)
+// -----------------------------------------------------------------------
+// Player kills within a rolling 4s window trigger an upper-center banner:
+// 3 = TRIPLE KILL!, 4 = QUAD KILL!, 5+ = KILL FRENZY!
+
+const killstreakBannerEl = document.getElementById("killstreak-banner");
+const KILLSTREAK_WINDOW_MS = 4000;
+const KILLSTREAK_BANNER_MS = 1800; // matches the CSS animation length
+let killstreakTimestamps = [];
+let killstreakHideTimeoutId = null;
+
+function showKillstreakBanner(text) {
+  killstreakBannerEl.textContent = text;
+  killstreakBannerEl.classList.remove("hidden");
+  // Restart the pop animation even if the banner is already showing.
+  killstreakBannerEl.classList.remove("active");
+  void killstreakBannerEl.offsetWidth;
+  killstreakBannerEl.classList.add("active");
+
+  if (killstreakHideTimeoutId !== null) clearTimeout(killstreakHideTimeoutId);
+  killstreakHideTimeoutId = setTimeout(() => {
+    killstreakBannerEl.classList.add("hidden");
+    killstreakBannerEl.classList.remove("active");
+    killstreakHideTimeoutId = null;
+  }, KILLSTREAK_BANNER_MS);
+  trackTimeout(killstreakHideTimeoutId);
+}
+
+function registerPlayerKillForStreak(now) {
+  killstreakTimestamps.push(now);
+  killstreakTimestamps = killstreakTimestamps.filter(
+    (t) => now - t <= KILLSTREAK_WINDOW_MS
+  );
+  const streak = killstreakTimestamps.length;
+  if (streak === 3) showKillstreakBanner("TRIPLE KILL!");
+  else if (streak === 4) showKillstreakBanner("QUAD KILL!");
+  else if (streak >= 5) showKillstreakBanner("KILL FRENZY!");
+}
+
+function resetKillstreak() {
+  killstreakTimestamps = [];
+  killstreakBannerEl.classList.add("hidden");
+  killstreakBannerEl.classList.remove("active");
+}
+
 function showHitMarker(isHeadshot = false) {
   hitMarkerEl.classList.add("active");
   hitMarkerEl.classList.toggle("headshot", isHeadshot);
@@ -2026,22 +2197,27 @@ function damageBot(bot, amount = GUN_DAMAGE, killerInfo = null) {
 
   bot.lastDamageTime = performance.now();
   setBotHealth(bot, bot.health - amount);
-  // Hit flash: pulse every material's emissive white briefly.
-  for (const m of bot.materials) m.emissive.setHex(0x888888);
+  // Hit flash: pulse every material's emissive white briefly. Always reset
+  // (even on a killing blow) so a GLB corpse doesn't stay glowing.
+  for (const m of bot.materials) m.emissive?.setHex(0x888888);
   trackTimeout(
     setTimeout(() => {
-      if (!bot.destroyed) {
-        for (const m of bot.materials) m.emissive.setHex(0x000000);
-      }
+      for (const m of bot.materials) m.emissive?.setHex(0x000000);
     }, 80)
   );
 
   if (bot.health <= 0) {
-    bot.destroyed = true;
-    bot.group.visible = false;
+    bot.destroyed = true; // halts updateBot() immediately
     bot.healthBar.container.style.display = "none";
     bot.minimapDot.style.display = "none";
     bot.collider.setEnabled(false);
+    if (bot.model.isGlb) {
+      // Death clip plays exactly once (LoopOnce + clampWhenFinished in
+      // botmodel.js); the corpse stays visible until respawn resets it.
+      bot.model.playDeath();
+    } else {
+      bot.group.visible = false;
+    }
     handleBotDeath(bot, killerInfo);
   }
   return true;
@@ -2078,6 +2254,12 @@ let playerRespawnAt = null;
 // Last whole-second value written to the subtitle, so we don't rewrite
 // the DOM every frame — only when the displayed number changes.
 let lastDisplayedRespawnSecond = null;
+// Pending respawn timeout + its frozen remainder while paused (bugfix:
+// pausing during the death screen must stop the respawn clock, not let it
+// keep ticking behind the pause menu). See showPauseOverlay()/
+// hidePauseOverlay() for the freeze/resume handoff.
+let playerRespawnTimeoutId = null;
+let playerRespawnRemainingMs = null;
 
 function formatRespawnCountdown(remainingSeconds) {
   if (remainingSeconds <= 0) return "Respawning...";
@@ -2400,7 +2582,8 @@ function handlePlayerDeath(killerInfo = null) {
   updateDeathOverlayCountdown(performance.now());
 
   if (triggerPlayerRespawn) {
-    trackTimeout(setTimeout(triggerPlayerRespawn, RESPAWN_DELAY_MS));
+    playerRespawnTimeoutId = setTimeout(triggerPlayerRespawn, RESPAWN_DELAY_MS);
+    trackTimeout(playerRespawnTimeoutId);
   }
 }
 
@@ -2421,6 +2604,7 @@ function handleBotDeath(bot, killerInfo = null) {
   if (resolvedKiller.label === "You" && bot.team === "red") {
     playerKills += 1;
     playKillSound();
+    registerPlayerKillForStreak(performance.now());
   }
 
   if (bot.team === "red") {
@@ -2757,6 +2941,8 @@ function startRenderLoop({
     isDead = false;
     playerRespawnAt = null;
     lastDisplayedRespawnSecond = null;
+    playerRespawnTimeoutId = null;
+    playerRespawnRemainingMs = null;
     deathOverlay.classList.add("hidden");
     verticalVelocity = 0;
 
@@ -2795,7 +2981,9 @@ function startRenderLoop({
     bot.collider.setEnabled(true);
     bot.group.visible = true;
     bot.minimapDot.style.display = "block";
-    for (const m of bot.materials) m.emissive.setHex(0x000000);
+    for (const m of bot.materials) m.emissive?.setHex(0x000000);
+    // Clear the clamped death pose and restart the idle clip.
+    if (bot.model.isGlb) bot.model.resetAlive();
 
     // Random team spawn each respawn (same pools as match start).
     const spawnPosition =
@@ -2918,6 +3106,7 @@ function startRenderLoop({
           : GUN_DAMAGE;
         if (damageBot(hitBot, damage, { label: "You", team: "blue" })) {
           showHitMarker(isHeadshot);
+          spawnDamageNumber(hitPoint, damage, isHeadshot);
         }
       }
     } else {
@@ -3272,6 +3461,8 @@ function startRenderLoop({
       z: currentPosition.z + correctedMovement.z,
     });
     bot.isWalking = true;
+    // Ground speed this frame — drives run-clip timeScale (anti foot-slide).
+    bot.lastMoveSpeed = speed;
     // Spatial footstep while actively walking (cadence-gated, not every frame).
     if (now - bot.lastFootstepAt >= BOT_FOOTSTEP_INTERVAL_MS) {
       bot.lastFootstepAt = now;
@@ -3688,6 +3879,9 @@ function startRenderLoop({
     // Hide the crosshair while ADS (the iron sights are the aim reference).
     crosshairEl.classList.toggle("hidden", weaponViewmodel.getAdsBlend() > 0.5);
 
+    // Advance the reload progress arc while a reload is in flight.
+    updateReloadArc(timestamp);
+
     updateAudioListenerFromCamera();
     renderKillFeed();
 
@@ -3723,7 +3917,15 @@ function startRenderLoop({
     // world.step() (same timing as the player camera sync above).
     const playerEyeForBars = getPlayerEyePosition();
     for (const bot of bots) {
-      if (bot.destroyed) continue;
+      // Advance the animation mixer even for corpses (the death clip has to
+      // finish playing) — but only while the simulation is live, so paused
+      // frames genuinely freeze everything.
+      if (bot.model.isGlb && playing) bot.model.update(deltaTime);
+
+      if (bot.destroyed) {
+        bot.isWalking = false;
+        continue;
+      }
 
       const botIsInvulnerable = timestamp < bot.invulnerableUntil;
       const botOpacity = botIsInvulnerable ? 0.5 : 1;
@@ -3732,9 +3934,19 @@ function startRenderLoop({
       const botPosition = bot.body.translation();
       bot.group.position.set(botPosition.x, botPosition.y, botPosition.z);
 
-      // Advance the walk cycle if the AI moved this frame (flag set in
-      // moveBotTowards), then clear the flag for next frame.
-      bot.model.walk(deltaTime, bot.isWalking ? 1 : 0);
+      // Animation state from what the AI did this frame (flag set in
+      // moveBotByDirection): run w/ speed-matched timeScale, a short shoot
+      // hold after firing, otherwise idle. Procedural fallback keeps the
+      // old leg-swing walk cycle.
+      if (bot.model.isGlb) {
+        bot.model.setLocomotion(
+          bot.isWalking,
+          bot.lastMoveSpeed ?? BOT_MOVE_SPEED,
+          timestamp - bot.lastShotTime < SHOOT_ANIM_HOLD_MS
+        );
+      } else {
+        bot.model.walk(deltaTime, bot.isWalking ? 1 : 0);
+      }
       bot.isWalking = false;
 
       const barVisible =
@@ -3838,6 +4050,9 @@ let playerDisplayName = "Your Name";
 
 titleSplashContinue.addEventListener("click", () => {
   ensureAudio();
+  // Kick the (large) GLB downloads off early so they overlap with the
+  // player's time on the Match Setup screen. Cached — Start Match reuses it.
+  loadGameAssets();
   const trimmed = titleSplashNameInput.value.trim();
   playerDisplayName = trimmed.length > 0 ? trimmed : "Your Name";
   titleSplashNameInput.value = playerDisplayName;
@@ -3911,6 +4126,8 @@ function returnToPrematchMenu() {
   isDead = false;
   playerRespawnAt = null;
   lastDisplayedRespawnSecond = null;
+  playerRespawnTimeoutId = null; // already cleared via clearTrackedTimeouts()
+  playerRespawnRemainingMs = null;
   deathOverlay.classList.add("hidden");
   deathOverlaySubtitle.textContent = "";
   setPlayerHealth(PLAYER_MAX_HEALTH);
@@ -3928,6 +4145,8 @@ function returnToPrematchMenu() {
   vignette.classList.remove("active");
   spawnInvulnOverlay.classList.remove("active");
   hitMarkerEl.classList.remove("active");
+  resetKillstreak();
+  damageNumbersEl.innerHTML = "";
   recoilPitch = 0;
   recoilYaw = 0;
   yaw = 0;
@@ -3987,7 +4206,30 @@ function startMatch() {
   prematchStartButton.disabled = true;
   prematchStartButton.textContent = "Loading...";
 
-  initPhysics()
+  // GLB assets FIRST, then physics: bots are spawned inside initPhysics(),
+  // so gameAssets must already be populated by the time it runs or the
+  // first match silently falls back to the procedural placeholder bots
+  // (the "SWAT mesh not applying" bug). The loading manager reports
+  // per-file progress on the button so the (large) bot mesh download never
+  // looks frozen; loadGameAssets() is cached — Play Again resolves instantly.
+  loadGameAssets((loaded, total) => {
+    prematchStartButton.textContent = `Loading assets… ${loaded}/${total}`;
+  })
+    .then((assets) => {
+      gameAssets = assets;
+      if (!assets.botTemplate) {
+        console.error(
+          "swat_mesh.glb unavailable — bots will use the procedural fallback"
+        );
+      }
+      for (const name of ["idle", "run", "shoot", "death"]) {
+        if (!assets.botClips?.[name]) {
+          console.error(`Bot animation clip failed to load/extract: ${name}`);
+        }
+      }
+      weaponViewmodel.setRifleModel(assets.rifleScene);
+      return initPhysics();
+    })
     .then((physics) => {
       startRenderLoop(physics);
       // Reveal Click to Play only after physics + the render loop are ready,
