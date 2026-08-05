@@ -6,7 +6,9 @@
 // ---------------------------------------------------------------------------
 
 import * as THREE from "three";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { createCamoTexture } from "./textures.js";
+import { normalizeModelHeight } from "./assets.js";
 
 // Head starts this far above the capsule center — used by main.js for
 // headshot detection on the hitscan ray.
@@ -157,5 +159,139 @@ export function buildSoldierModel(team) {
     }
   }
 
-  return { group, materials, headMesh: head, muzzleAnchor, walk };
+  return { group, materials, headMesh: head, muzzleAnchor, walk, isGlb: false };
+}
+
+// ---------------------------------------------------------------------------
+// GLB SWAT bot (feat/fps-overhaul): a per-bot SkeletonUtils clone of the
+// async-loaded swat_mesh.glb, driven by a THREE.AnimationMixer with the
+// idle / run / shoot / death clips. Same return shape as buildSoldierModel
+// plus the animation API — main.js branches on `isGlb`.
+// ---------------------------------------------------------------------------
+
+// The run clip is authored for roughly this ground speed (m/s); playing it
+// at a different bot speed scales timeScale so the feet never slide.
+export const BOT_BASE_RUN_SPEED = 3;
+
+const BOT_MODEL_HEIGHT = 1.92; // meters after normalization
+const ANIM_FADE_SECONDS = 0.18;
+// How long after a shot the shoot pose holds before falling back.
+export const SHOOT_ANIM_HOLD_MS = 400;
+
+const TEAM_TINTS = {
+  blue: new THREE.Color(0.62, 0.78, 1.35),
+  red: new THREE.Color(1.35, 0.62, 0.58),
+};
+
+export function buildSwatModel(team, assets) {
+  const source = cloneSkeleton(assets.botTemplate);
+  // Mixamo characters face +Z; the bot AI treats -Z as forward (matching
+  // the procedural soldier), so flip before measuring the bounding box.
+  source.rotation.y = Math.PI;
+
+  // Origin at the Rapier capsule CENTER (feet at -1.0), like the old model.
+  const inner = normalizeModelHeight(source, BOT_MODEL_HEIGHT, -1.0);
+  const group = new THREE.Group();
+  group.add(inner);
+
+  // Per-bot material clones: team tint (subtle blue/red push) + transparent
+  // for the spawn-invuln fade + emissive for the hit flash.
+  const tint = TEAM_TINTS[team] ?? TEAM_TINTS.red;
+  const materials = [];
+  source.traverse((obj) => {
+    if (!obj.isMesh && !obj.isSkinnedMesh) return;
+    obj.castShadow = true;
+    obj.receiveShadow = true;
+    // Skinned meshes animate outside their rest-pose bounds; never cull.
+    obj.frustumCulled = false;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    const cloned = mats.map((m) => {
+      const c = m.clone();
+      c.transparent = true;
+      if (c.color) c.color.multiply(tint);
+      return c;
+    });
+    obj.material = Array.isArray(obj.material) ? cloned : cloned[0];
+    materials.push(...cloned);
+  });
+
+  const mixer = new THREE.AnimationMixer(inner);
+  const actions = {};
+  for (const name of ["idle", "run", "shoot", "death"]) {
+    const clip = assets.botClips?.[name];
+    if (clip) actions[name] = mixer.clipAction(clip);
+  }
+  if (actions.death) {
+    actions.death.setLoop(THREE.LoopOnce, 1);
+    actions.death.clampWhenFinished = true;
+  }
+
+  let currentState = null;
+  function fadeTo(name) {
+    if (currentState === name) return;
+    const next = actions[name];
+    if (!next) return;
+    const previous = actions[currentState];
+    next.reset();
+    next.play();
+    if (previous) {
+      next.crossFadeFrom(previous, ANIM_FADE_SECONDS, false);
+    }
+    currentState = name;
+  }
+  fadeTo("idle");
+
+  // Muzzle anchor kept for interface parity with the procedural soldier.
+  const muzzleAnchor = new THREE.Object3D();
+  muzzleAnchor.position.set(0.05, 0.27, -0.8);
+  group.add(muzzleAnchor);
+
+  return {
+    group,
+    materials,
+    headMesh: null,
+    muzzleAnchor,
+    isGlb: true,
+    mixer,
+
+    // Interface parity no-op (the mixer drives the legs instead).
+    walk() {},
+
+    update(deltaTime) {
+      mixer.update(deltaTime);
+    },
+
+    // Locomotion state machine. speedMps only matters while moving —
+    // timeScale = speed / base keeps footfalls matched to ground speed.
+    setLocomotion(isMoving, speedMps, shotRecently) {
+      if (currentState === "death") return;
+      if (shotRecently && actions.shoot) {
+        fadeTo("shoot");
+        return;
+      }
+      if (isMoving && actions.run) {
+        actions.run.timeScale = Math.max(
+          0.35,
+          speedMps / BOT_BASE_RUN_SPEED
+        );
+        fadeTo("run");
+        return;
+      }
+      fadeTo("idle");
+    },
+
+    // Plays the death clip exactly once and clamps on the final pose.
+    playDeath() {
+      if (currentState === "death") return;
+      if (!actions.death) return;
+      fadeTo("death");
+    },
+
+    // Back to life on respawn: clear the clamped death pose, restart idle.
+    resetAlive() {
+      mixer.stopAllAction();
+      currentState = null;
+      fadeTo("idle");
+    },
+  };
 }

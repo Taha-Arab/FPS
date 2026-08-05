@@ -64,6 +64,32 @@
     <div id="hit-marker"></div>
 
     <!--
+      Reload indicator (feat/fps-overhaul). Progress arc + label just below
+      the crosshair while a reload is in flight; the arc's stroke-dashoffset
+      is driven per-frame from tick() in src/main.js.
+    -->
+    <div id="reload-indicator" class="hidden">
+      <svg viewBox="0 0 48 48">
+        <circle class="reload-arc-track" cx="24" cy="24" r="20"></circle>
+        <circle id="reload-arc-progress" cx="24" cy="24" r="20"></circle>
+      </svg>
+      <span id="reload-indicator-label">RELOADING&hellip;</span>
+    </div>
+
+    <!--
+      Floating combat damage numbers (feat/fps-overhaul). Filled from
+      spawnDamageNumber() in src/main.js — each hit spawns one short-lived
+      popup at the impact point's screen projection.
+    -->
+    <div id="damage-numbers"></div>
+
+    <!--
+      Multi-killstreak banner (feat/fps-overhaul). Upper-center pop-in for
+      TRIPLE KILL / QUAD KILL / KILL FRENZY, driven from src/main.js.
+    -->
+    <div id="killstreak-banner" class="hidden"></div>
+
+    <!--
       Kill feed (Milestone 13). Recent killer → victim lines, updated from
       src/main.js. Top-left so it doesn't fight the match HUD.
     -->
@@ -213,22 +239,30 @@
     <div id="pause-overlay" class="hidden">
       <div id="pause-overlay-panel">
         <div id="pause-overlay-title">Click to Play</div>
-        <div id="pause-overlay-subtitle">
-          WASD move &middot; Shift sprint &middot; Right-click aim &middot;
-          Hold left-click shoot &middot; R reload &middot; Ctrl/C crouch &middot;
-          Space jump
-        </div>
-        <label id="pause-sensitivity-label" for="pause-sensitivity">
-          Mouse sensitivity
-          <input
-            type="range"
-            id="pause-sensitivity"
-            min="1"
-            max="100"
-            value="40"
-          />
-        </label>
         <button type="button" id="pause-resume-button">Click to Play</button>
+        <button type="button" id="pause-controls-button" class="pause-menu-button pause-menu-secondary">
+          Controls
+        </button>
+        <button type="button" id="pause-quit-button" class="pause-menu-button pause-menu-secondary">
+          Quit Match
+        </button>
+        <div id="pause-controls-panel" class="hidden">
+          <div id="pause-overlay-subtitle">
+            WASD move &middot; Shift sprint &middot; Right-click aim &middot;
+            Hold left-click shoot &middot; R reload &middot; Ctrl/C crouch &middot;
+            Space jump &middot; Esc pause
+          </div>
+          <label id="pause-sensitivity-label" for="pause-sensitivity">
+            Mouse sensitivity
+            <input
+              type="range"
+              id="pause-sensitivity"
+              min="1"
+              max="100"
+              value="40"
+            />
+          </label>
+        </div>
       </div>
     </div>
 

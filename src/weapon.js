@@ -1,8 +1,12 @@
 // ---------------------------------------------------------------------------
-// First-person weapon viewmodel (modern-overhaul): a procedural low-poly
-// assault rifle parented to the camera, with hip/ADS pose blending, walk
-// bob, mouse sway, recoil kick-back and a muzzle flash. Purely visual —
-// hit detection stays the camera-center raycast in main.js.
+// First-person weapon viewmodel (modern-overhaul): parented to the camera,
+// with hip/ADS pose blending, walk bob, mouse sway, recoil kick-back and a
+// muzzle flash. Purely visual — hit detection stays the camera-center
+// raycast in main.js.
+//
+// feat/fps-overhaul: starts as the procedural low-poly rifle, then swaps in
+// the async-loaded rifle.glb via setRifleModel() once assets resolve. All
+// pose/ADS/recoil logic is model-agnostic and unchanged.
 // ---------------------------------------------------------------------------
 
 import * as THREE from "three";
@@ -16,6 +20,13 @@ const ADS_POSITION = new THREE.Vector3(0, -0.04, -0.32);
 const ADS_ROTATION = new THREE.Euler(0, 0, 0);
 const SPRINT_POSITION = new THREE.Vector3(0.16, -0.26, -0.4);
 const SPRINT_ROTATION = new THREE.Euler(-0.5, 0.5, 0.15);
+
+// Separate pose set for the loaded rifle.glb (its origin is its bounding-box
+// center, unlike the procedural rifle's receiver-centered origin) — the ADS
+// y offset raises the model so its iron sights sit on the camera center.
+const GLB_HIP_POSITION = new THREE.Vector3(0.24, -0.22, -0.48);
+const GLB_ADS_POSITION = new THREE.Vector3(0, -0.075, -0.34);
+const GLB_TARGET_LENGTH = 0.85; // meters, barrel tip to stock
 
 const ADS_LERP_PER_SECOND = 14; // how fast the pose blends
 const BOB_FREQUENCY = 8.5; // steps per second-ish
@@ -107,6 +118,45 @@ function buildRifleMesh() {
   return { rifle, muzzleTip };
 }
 
+// Normalizes the loaded rifle.glb: rotates its longest axis onto Z (barrel
+// forward = -Z in camera space), scales it to GLB_TARGET_LENGTH and centers
+// it on its bounding-box center. Returns the wrapper + the local z of the
+// muzzle end for the flash/tracer anchor.
+function prepareGlbRifle(model) {
+  const holder = new THREE.Group();
+  holder.add(model);
+
+  let bbox = new THREE.Box3().setFromObject(model);
+  let size = bbox.getSize(new THREE.Vector3());
+  if (size.x >= size.y && size.x >= size.z) {
+    model.rotation.y = -Math.PI / 2; // long axis X → Z
+  } else if (size.y >= size.x && size.y >= size.z) {
+    model.rotation.x = Math.PI / 2; // long axis Y → Z
+  }
+  model.updateMatrixWorld(true);
+
+  bbox = new THREE.Box3().setFromObject(model);
+  size = bbox.getSize(new THREE.Vector3());
+  const scale = size.z > 0.0001 ? GLB_TARGET_LENGTH / size.z : 1;
+  model.scale.multiplyScalar(scale);
+  model.updateMatrixWorld(true);
+
+  bbox = new THREE.Box3().setFromObject(model);
+  const center = bbox.getCenter(new THREE.Vector3());
+  model.position.sub(center);
+
+  model.traverse((obj) => {
+    if (obj.isMesh) {
+      obj.castShadow = false;
+      obj.receiveShadow = false;
+      // Viewmodel must never be culled when the camera clips its bounds.
+      obj.frustumCulled = false;
+    }
+  });
+
+  return { holder, muzzleZ: bbox.min.z - center.z };
+}
+
 // Creates the viewmodel and returns a controller object used by main.js.
 export function createWeaponViewmodel(camera) {
   const root = new THREE.Group(); // pose blend target
@@ -147,6 +197,11 @@ export function createWeaponViewmodel(camera) {
 
   let flashHideAt = 0;
 
+  // Active pose targets — swapped by setRifleModel() when the GLB arrives.
+  let hipPos = HIP_POSITION;
+  let adsPos = ADS_POSITION;
+  let activeRifle = rifle;
+
   let adsBlend = 0; // 0 = hip, 1 = aiming down sights
   let sprintBlend = 0;
   let bobPhase = 0;
@@ -163,6 +218,27 @@ export function createWeaponViewmodel(camera) {
 
   return {
     muzzleTip,
+
+    // Swaps the procedural placeholder for the async-loaded rifle.glb.
+    // Safe to call once, any time — the pose/recoil state carries over.
+    setRifleModel(sourceScene) {
+      if (!sourceScene || activeRifle !== rifle) return;
+      const { holder, muzzleZ } = prepareGlbRifle(sourceScene);
+
+      // Move the muzzle anchor (flash + light ride along) to the GLB muzzle.
+      rifle.remove(muzzleTip);
+      muzzleTip.position.set(0, 0.02, muzzleZ);
+      holder.add(muzzleTip);
+
+      swayGroup.remove(rifle);
+      rifle.traverse((obj) => {
+        if (obj.isMesh) obj.geometry.dispose();
+      });
+      swayGroup.add(holder);
+      activeRifle = holder;
+      hipPos = GLB_HIP_POSITION;
+      adsPos = GLB_ADS_POSITION;
+    },
 
     // Call from the mousemove handler with raw movementX/Y.
     addLookSway(movementX, movementY) {
@@ -201,7 +277,7 @@ export function createWeaponViewmodel(camera) {
       sprintBlend += ((state.sprinting ? 1 : 0) - sprintBlend) * lerpStep;
 
       // Pose: hip → ads, then hip-side poses blend toward sprint carry.
-      tmpPos.lerpVectors(HIP_POSITION, ADS_POSITION, adsBlend);
+      tmpPos.lerpVectors(hipPos, adsPos, adsBlend);
       tmpRotA.slerpQuaternions(hipQuat, adsQuat, adsBlend);
       if (sprintBlend > 0.001) {
         tmpPos.lerp(SPRINT_POSITION, sprintBlend * (1 - adsBlend));
