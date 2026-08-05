@@ -8,15 +8,53 @@
 
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 
-const RIFLE_URL = "/assets/guns/rifle.glb";
-const BOT_MESH_URL = "/assets/bots/swat_mesh.glb";
+// Asset quality toggle: production/web builds ship the working copies in
+// public/assets/ (Draco-compressed geometry; see TODO below on textures).
+// Flip to true only for local visual-fidelity comparisons against the
+// untouched originals in public/hq-assets/ (gitignored — never deployed,
+// see .gitignore). Never ship true to production: hq-assets/ is ~240MB
+// and isn't hosted.
+const USE_HQ_ASSETS = false;
+
+// TODO: public/assets/bots/{swat_mesh,death}.glb are still ~121MB each —
+// Draco only compresses geometry (the actual mesh was ~2MB to begin with),
+// and the real payload is nine 4096x4096 PNG textures (~120MB). Texture
+// recompression (resize/webp/png, all via gltf-transform -> sharp/libvips)
+// was attempted and consistently failed in this environment with
+// "colourspace: parameter space not set" (a broken libvips install, not an
+// asset problem — same error on the small, unrelated rifle.glb textures
+// too). KTX2/ETC1S (a different, non-libvips encoder) also failed, but
+// because it needs the external `ktx` CLI (KTX-Software), which isn't
+// installed. Whoever picks this up next: fix the libvips/sharp install (or
+// install KTX-Software) on a machine that isn't this one, then rerun
+// against public/hq-assets/bots/{swat_mesh,death}.glb — a 4096->1024
+// resize + webp pass should cut ~110MB off each file.
+
+// Resolves a repo-relative asset path (e.g. "guns/rifle.glb") to the
+// active quality tier's root.
+function assetPath(relativePath) {
+  const root = USE_HQ_ASSETS ? "/hq-assets" : "/assets";
+  return `${root}/${relativePath}`;
+}
+
+const RIFLE_URL = assetPath("guns/rifle.glb");
+const BOT_MESH_URL = assetPath("bots/swat_mesh.glb");
 const BOT_CLIP_URLS = {
-  idle: "/assets/bots/idle.glb",
-  run: "/assets/bots/run.glb",
-  shoot: "/assets/bots/shoot.glb",
-  death: "/assets/bots/death.glb",
+  idle: assetPath("bots/idle.glb"),
+  run: assetPath("bots/run.glb"),
+  shoot: assetPath("bots/shoot.glb"),
+  death: assetPath("bots/death.glb"),
 };
+
+// Draco-compressed GLBs need the matching decoder at runtime. Self-hosted
+// (copied from three's own examples/jsm/libs/draco/gltf/ into public/vendor)
+// rather than pointed at a CDN, so the game has no external runtime
+// dependency and still works offline/behind a firewall. ~1MB WASM, cached
+// by the browser after first load, shared by every loader instance below.
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath("/vendor/draco/");
 
 // The idle/run/shoot files were converted through Assimp, which splits one
 // Mixamo take into dozens of per-node sub-clips and re-parents each bone's
@@ -195,6 +233,10 @@ export function loadGameAssets(onProgress = null) {
     manager.onProgress = (_url, loaded, total) => onProgress(loaded, total);
   }
   const loader = new GLTFLoader(manager);
+  // Harmless no-op for GLBs that weren't Draco-compressed (rifle.glb, the
+  // small animation-only clip files) — the loader only invokes the Draco
+  // extension decoder for meshes that actually use KHR_draco_mesh_compression.
+  loader.setDRACOLoader(dracoLoader);
 
   const loadOne = (url) =>
     new Promise((resolve) => {
