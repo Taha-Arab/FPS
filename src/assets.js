@@ -180,24 +180,6 @@ function extractClip(gltf, name) {
   return new THREE.AnimationClip(name, duration, tracks);
 }
 
-// Normalizes an arbitrary loaded model: wraps it in a group scaled so its
-// bounding-box height equals targetHeight, with the feet (bbox bottom)
-// sitting at local y = feetY. Returns the wrapper group.
-export function normalizeModelHeight(object, targetHeight, feetY) {
-  const bbox = new THREE.Box3().setFromObject(object);
-  const size = bbox.getSize(new THREE.Vector3());
-  const scale = size.y > 0.0001 ? targetHeight / size.y : 1;
-  const wrapper = new THREE.Group();
-  wrapper.add(object);
-  object.scale.multiplyScalar(scale);
-  object.position.set(
-    -((bbox.min.x + bbox.max.x) / 2) * scale,
-    feetY - bbox.min.y * scale,
-    -((bbox.min.z + bbox.max.z) / 2) * scale
-  );
-  return wrapper;
-}
-
 // Module-level cache: one load per page life, shared by every match.
 let loadPromise = null;
 

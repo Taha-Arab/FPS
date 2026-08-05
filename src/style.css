@@ -71,7 +71,9 @@ button {
   color: white;
   text-align: center;
   user-select: none;
-  z-index: 10;
+  /* Must beat the death/respawn overlay (z 15) and match-end (z 20) so the
+     pause menu always renders on top when opened mid-death. */
+  z-index: 9999;
 }
 
 /* Secondary pause-menu actions: quieter outline style, same hover pop. */
@@ -818,6 +820,16 @@ button {
   transform: translateX(-50%);
 }
 
+#health-text {
+  color: white;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  min-width: 7.5ch;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
 #health-bar-container {
   width: 240px;
   height: 14px;
@@ -1071,4 +1083,38 @@ button {
 #prematch-start-button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* --- Liquid glass shine (feat/fps-overhaul bugfix pass) ----------------- */
+/* Premium frosted-glass finish for every floating HUD badge + menu panel:
+   a 135° white sheen over the dark tint, top/left edge highlights (light
+   "catching" the bevel), heavier blur and a deep soft shadow. Declared last
+   so it wins the cascade over each element's earlier background. */
+
+#match-hud,
+#ammo-hud,
+#health-hud,
+#minimap,
+.kill-feed-entry,
+#killstreak-banner,
+#pause-overlay-panel,
+#prematch-menu-panel,
+#title-splash-panel {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0)),
+    rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  border-left: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+/* The health bar's inner track gets the same sheen at a smaller scale. */
+#health-bar-container {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0)),
+    rgba(0, 0, 0, 0.45);
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  border-left: 1px solid rgba(255, 255, 255, 0.2);
 }

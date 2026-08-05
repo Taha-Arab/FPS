@@ -25,7 +25,10 @@ const SPRINT_ROTATION = new THREE.Euler(-0.5, 0.5, 0.15);
 // center, unlike the procedural rifle's receiver-centered origin) — the ADS
 // y offset raises the model so its iron sights sit on the camera center.
 const GLB_HIP_POSITION = new THREE.Vector3(0.24, -0.22, -0.48);
-const GLB_ADS_POSITION = new THREE.Vector3(0, -0.075, -0.34);
+// ADS y: the M16's iron-sight line sits ~0.10m above the model's bbox-center
+// origin (carry-handle sights near the top of its ~0.217m height), so the
+// whole gun drops by that amount to land the sights on the camera center.
+const GLB_ADS_POSITION = new THREE.Vector3(0, -0.1, -0.34);
 const GLB_TARGET_LENGTH = 0.85; // meters, barrel tip to stock
 
 const ADS_LERP_PER_SECOND = 14; // how fast the pose blends
@@ -132,6 +135,10 @@ function prepareGlbRifle(model) {
     model.rotation.y = -Math.PI / 2; // long axis X → Z
   } else if (size.y >= size.x && size.y >= size.z) {
     model.rotation.x = Math.PI / 2; // long axis Y → Z
+  } else {
+    // Already Z-long: this asset's muzzle faces +Z (verified on screen),
+    // flip it so the barrel points forward (-Z in camera space).
+    model.rotation.y = Math.PI;
   }
   model.updateMatrixWorld(true);
 

@@ -1707,6 +1707,21 @@ function showPauseOverlay() {
   // gun would start full-auto firing the instant the player resumes.
   isFiring = false;
   isAiming = false;
+
+  // Freeze a pending respawn: cancel the timeout and stash the remaining
+  // time so the death countdown stops ticking while the pause menu is up.
+  // playerRespawnAt = null also freezes the on-screen countdown text.
+  if (isDead && playerRespawnAt !== null) {
+    playerRespawnRemainingMs = Math.max(
+      0,
+      playerRespawnAt - performance.now()
+    );
+    if (playerRespawnTimeoutId !== null) {
+      clearTimeout(playerRespawnTimeoutId);
+      playerRespawnTimeoutId = null;
+    }
+    playerRespawnAt = null;
+  }
 }
 
 function hidePauseOverlay() {
@@ -1719,6 +1734,21 @@ function hidePauseOverlay() {
   }
   hasPlayedBefore = true;
   pauseOverlay.classList.add("hidden");
+
+  // Resume a respawn that was frozen by showPauseOverlay(): restart the
+  // countdown + timeout from the stashed remainder.
+  if (isDead && playerRespawnRemainingMs !== null) {
+    playerRespawnAt = performance.now() + playerRespawnRemainingMs;
+    lastDisplayedRespawnSecond = null;
+    if (triggerPlayerRespawn) {
+      playerRespawnTimeoutId = setTimeout(
+        triggerPlayerRespawn,
+        playerRespawnRemainingMs
+      );
+      trackTimeout(playerRespawnTimeoutId);
+    }
+    playerRespawnRemainingMs = null;
+  }
 }
 
 // Chrome (and some other browsers) enforce a short "cooldown" - roughly
@@ -1833,6 +1863,7 @@ let playerRegenActive = false;
 let playerRegenWasFull = true;
 
 const healthBarFill = document.getElementById("health-bar-fill");
+const healthTextEl = document.getElementById("health-text");
 const deathOverlay = document.getElementById("death-overlay");
 const deathOverlaySubtitle = document.getElementById("death-overlay-subtitle");
 const vignette = document.getElementById("vignette");
@@ -1854,6 +1885,8 @@ function setPlayerHealth(newHealth) {
   // background-color transition smooths each step into a gradual shift.
   const hue = Math.round((healthPercent / 100) * 120); // 120=green, 0=red
   healthBarFill.style.backgroundColor = `hsl(${hue}, 72%, 46%)`;
+  healthTextEl.textContent =
+    `HP: ${Math.round(playerHealth)} / ${PLAYER_MAX_HEALTH}`;
 
   // Fade in the low-health vignette once below the threshold - but not
   // once actually dead, since the #death-overlay covers the whole screen
@@ -2215,6 +2248,12 @@ let playerRespawnAt = null;
 // Last whole-second value written to the subtitle, so we don't rewrite
 // the DOM every frame — only when the displayed number changes.
 let lastDisplayedRespawnSecond = null;
+// Pending respawn timeout + its frozen remainder while paused (bugfix:
+// pausing during the death screen must stop the respawn clock, not let it
+// keep ticking behind the pause menu). See showPauseOverlay()/
+// hidePauseOverlay() for the freeze/resume handoff.
+let playerRespawnTimeoutId = null;
+let playerRespawnRemainingMs = null;
 
 function formatRespawnCountdown(remainingSeconds) {
   if (remainingSeconds <= 0) return "Respawning...";
@@ -2537,7 +2576,8 @@ function handlePlayerDeath(killerInfo = null) {
   updateDeathOverlayCountdown(performance.now());
 
   if (triggerPlayerRespawn) {
-    trackTimeout(setTimeout(triggerPlayerRespawn, RESPAWN_DELAY_MS));
+    playerRespawnTimeoutId = setTimeout(triggerPlayerRespawn, RESPAWN_DELAY_MS);
+    trackTimeout(playerRespawnTimeoutId);
   }
 }
 
@@ -2895,6 +2935,8 @@ function startRenderLoop({
     isDead = false;
     playerRespawnAt = null;
     lastDisplayedRespawnSecond = null;
+    playerRespawnTimeoutId = null;
+    playerRespawnRemainingMs = null;
     deathOverlay.classList.add("hidden");
     verticalVelocity = 0;
 
@@ -4078,6 +4120,8 @@ function returnToPrematchMenu() {
   isDead = false;
   playerRespawnAt = null;
   lastDisplayedRespawnSecond = null;
+  playerRespawnTimeoutId = null; // already cleared via clearTrackedTimeouts()
+  playerRespawnRemainingMs = null;
   deathOverlay.classList.add("hidden");
   deathOverlaySubtitle.textContent = "";
   setPlayerHealth(PLAYER_MAX_HEALTH);

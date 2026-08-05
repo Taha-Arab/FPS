@@ -8,7 +8,6 @@
 import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { createCamoTexture } from "./textures.js";
-import { normalizeModelHeight } from "./assets.js";
 
 // Head starts this far above the capsule center — used by main.js for
 // headshot detection on the hitscan ray.
@@ -183,14 +182,50 @@ const TEAM_TINTS = {
   red: new THREE.Color(1.35, 0.62, 0.58),
 };
 
+// Scales/positions the SWAT clone so its rendered height matches
+// targetHeight with the feet at local y = feetY. Measured from the
+// SKELETON's bone world positions, not the geometry bounding box: skinned
+// vertices follow the bones (authored in cm-scale armature space), so the
+// unskinned bbox wildly misreports the rendered size — this was the
+// "100x giant bots" bug.
+function fitSkeletonToCapsule(source, targetHeight, feetY) {
+  const wrapper = new THREE.Group();
+  wrapper.add(source);
+  source.updateMatrixWorld(true);
+
+  const v = new THREE.Vector3();
+  const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+  const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+  let boneCount = 0;
+  source.traverse((obj) => {
+    if (!obj.isBone) return;
+    boneCount += 1;
+    obj.getWorldPosition(v);
+    min.min(v);
+    max.max(v);
+  });
+  if (boneCount === 0) return wrapper; // no skeleton — leave untouched
+
+  // Bones stop at toe/skull joints, a hair inside the actual mesh surface.
+  const skeletonHeight = (max.y - min.y) * 1.04;
+  const scale = skeletonHeight > 0.0001 ? targetHeight / skeletonHeight : 1;
+  source.scale.multiplyScalar(scale);
+  source.position.set(
+    -((min.x + max.x) / 2) * scale,
+    feetY - min.y * scale,
+    -((min.z + max.z) / 2) * scale
+  );
+  return wrapper;
+}
+
 export function buildSwatModel(team, assets) {
   const source = cloneSkeleton(assets.botTemplate);
   // Mixamo characters face +Z; the bot AI treats -Z as forward (matching
-  // the procedural soldier), so flip before measuring the bounding box.
+  // the procedural soldier), so flip before measuring the skeleton.
   source.rotation.y = Math.PI;
 
   // Origin at the Rapier capsule CENTER (feet at -1.0), like the old model.
-  const inner = normalizeModelHeight(source, BOT_MODEL_HEIGHT, -1.0);
+  const inner = fitSkeletonToCapsule(source, BOT_MODEL_HEIGHT, -1.0);
   const group = new THREE.Group();
   group.add(inner);
 
