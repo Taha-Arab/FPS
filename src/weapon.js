@@ -135,11 +135,9 @@ function prepareGlbRifle(model) {
     model.rotation.y = -Math.PI / 2; // long axis X → Z
   } else if (size.y >= size.x && size.y >= size.z) {
     model.rotation.x = Math.PI / 2; // long axis Y → Z
-  } else {
-    // Already Z-long: this asset's muzzle faces +Z (verified on screen),
-    // flip it so the barrel points forward (-Z in camera space).
-    model.rotation.y = Math.PI;
   }
+  // Z-long assets keep their native facing: this rifle's muzzle points -Z
+  // already (player feedback: the earlier +PI flip put the stock forward).
   model.updateMatrixWorld(true);
 
   bbox = new THREE.Box3().setFromObject(model);

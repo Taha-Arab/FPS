@@ -1132,6 +1132,12 @@ function createBotInstance(world, team, spawnPoint, tier) {
   const teamColor = team === "blue" ? ALLY_BOT_COLOR : ENEMY_BOT_COLOR;
   // GLB SWAT model when assets loaded; procedural soldier as fallback.
   // Both put their origin at the capsule center.
+  if (gameAssets?.botTemplate == null) {
+    console.error(
+      "createBotInstance: SWAT GLB not loaded yet — spawning procedural " +
+        "placeholder (check asset load order / network errors above)"
+    );
+  }
   const model =
     gameAssets?.botTemplate != null
       ? buildSwatModel(team, gameAssets)
@@ -4200,18 +4206,31 @@ function startMatch() {
   prematchStartButton.disabled = true;
   prematchStartButton.textContent = "Loading...";
 
-  // Physics WASM + GLB assets in parallel; the loading manager reports
+  // GLB assets FIRST, then physics: bots are spawned inside initPhysics(),
+  // so gameAssets must already be populated by the time it runs or the
+  // first match silently falls back to the procedural placeholder bots
+  // (the "SWAT mesh not applying" bug). The loading manager reports
   // per-file progress on the button so the (large) bot mesh download never
-  // looks frozen. loadGameAssets() is cached — Play Again resolves instantly.
-  Promise.all([
-    initPhysics(),
-    loadGameAssets((loaded, total) => {
-      prematchStartButton.textContent = `Loading assets… ${loaded}/${total}`;
-    }),
-  ])
-    .then(([physics, assets]) => {
+  // looks frozen; loadGameAssets() is cached — Play Again resolves instantly.
+  loadGameAssets((loaded, total) => {
+    prematchStartButton.textContent = `Loading assets… ${loaded}/${total}`;
+  })
+    .then((assets) => {
       gameAssets = assets;
+      if (!assets.botTemplate) {
+        console.error(
+          "swat_mesh.glb unavailable — bots will use the procedural fallback"
+        );
+      }
+      for (const name of ["idle", "run", "shoot", "death"]) {
+        if (!assets.botClips?.[name]) {
+          console.error(`Bot animation clip failed to load/extract: ${name}`);
+        }
+      }
       weaponViewmodel.setRifleModel(assets.rifleScene);
+      return initPhysics();
+    })
+    .then((physics) => {
       startRenderLoop(physics);
       // Reveal Click to Play only after physics + the render loop are ready,
       // so the player can't lock the pointer into a half-initialized match.
