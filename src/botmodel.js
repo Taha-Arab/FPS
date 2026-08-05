@@ -225,16 +225,22 @@ function fitSkeletonToCapsule(source, targetHeight, feetY) {
 // run/shoot/death.
 // ---------------------------------------------------------------------------
 
-// TODO: tune these if the gun spawns sideways, floating off the palm, or the
-// wrong size. Position/rotation are in the RightHand bone's local space
-// (arbitrary per the rig's bind pose — there's no reliable way to compute
-// "in the palm, barrel forward" without eyeballing it against this specific
-// rig). RIFLE_HAND_EXTRA_SCALE is a plain multiplier on top of the
-// auto-computed counter-scale below (1 = same real-world size as the
-// first-person viewmodel's rifle; >1 bigger, <1 smaller).
-const RIFLE_HAND_POSITION = new THREE.Vector3(0, 0.05, 0);
-const RIFLE_HAND_ROTATION = new THREE.Euler(0, Math.PI / 2, 0);
+// TODO: tune these if the gun still looks off after further playtesting —
+// e.g. grip depth in the palm, or a slight muzzle pitch/roll to taste. These
+// are added ON TOP of the auto-computed base orientation/position below
+// (which points the muzzle forward and seats the pistol-grip mesh in the
+// hand), not a replacement for it — small nudges only.
+// RIFLE_HAND_EXTRA_SCALE is a plain multiplier on the auto-computed
+// counter-scale (1 = same real-world size as the first-person viewmodel's
+// rifle; >1 bigger, <1 smaller).
+const RIFLE_HAND_POSITION_TWEAK = new THREE.Vector3(0, 0, 0);
+const RIFLE_HAND_ROTATION_TWEAK = new THREE.Euler(0, 0, 0);
 const RIFLE_HAND_EXTRA_SCALE = 1;
+
+// The mesh name (case/spacing-insensitive) whose center marks where the
+// hand should grip the rifle — used to offset the model so the character
+// holds it by the handle instead of by its geometric middle.
+const GRIP_MESH_NAME_PATTERN = /pistol.?grip/i;
 
 // Matches bone names across both the raw GLB convention ("mixamorig:RightHand",
 // dropped to "mixamorigRightHand" by GLTFLoader's node-name sanitizer) and
@@ -263,20 +269,74 @@ function findRightHandBone(root) {
   return exact ?? fallback;
 }
 
+// Finds the mesh marking the grip (GRIP_MESH_NAME_PATTERN) and returns its
+// center, expressed as an offset from rifleScene's own origin in real-world
+// meters along rifleScene's OWN (unrotated) local axes — i.e. "how far, and
+// in which of the rifle's own directions, the grip sits from the model's
+// pivot". Measured via a neutral clone at identity position/rotation (but
+// carrying rifleScene's own scale) so the result already accounts for
+// prepareGlbRifle()'s real-world-length normalization from weapon.js,
+// independent of wherever the source object actually lives in the scene
+// graph right now. Falls back to (0,0,0) — hold at the model's own pivot —
+// if no grip mesh is found, so a naming change degrades gracefully instead
+// of crashing.
+function findGripOffset(rifleScene) {
+  const probe = rifleScene.clone(true);
+  probe.position.set(0, 0, 0);
+  probe.rotation.set(0, 0, 0);
+  const rig = new THREE.Group();
+  rig.add(probe);
+  rig.updateMatrixWorld(true);
+
+  let gripMesh = null;
+  probe.traverse((obj) => {
+    if (!gripMesh && obj.isMesh && GRIP_MESH_NAME_PATTERN.test(obj.name)) {
+      gripMesh = obj;
+    }
+  });
+  if (!gripMesh) {
+    console.error(
+      "findGripOffset: no mesh matching /pistol.?grip/i on rifle.glb — " +
+        "holding at the model's own pivot instead"
+    );
+    return new THREE.Vector3();
+  }
+  return new THREE.Box3()
+    .setFromObject(gripMesh)
+    .getCenter(new THREE.Vector3());
+}
+
 // Clones rifleScene (the same GLB the first-person viewmodel uses — already
 // normalized to a real-world length by prepareGlbRifle() in weapon.js by the
 // time any bot spawns, see the load-order note in main.js) and attaches it
-// to this skeleton's right hand.
+// to this skeleton's right hand, oriented from the hand's CURRENT pose
+// (caller must have already posed the skeleton into a natural stance —
+// e.g. idle — before calling this; see buildSwatModel()). Attaching against
+// the raw T/A-pose bind pose instead (arms spread out to the sides) is what
+// produced the original "held sideways, stock up, muzzle down" bug: that
+// bind pose has nothing to do with how the hand is actually oriented once
+// idle/run/shoot are playing.
 //
-// Counter-scale note: the clone is parented INSIDE this bot's skeleton, so
-// it inherits every ancestor's cumulative scale — not just
-// fitSkeletonToCapsule()'s shrink factor on the skeleton root, but also
-// whatever scale the rig's own bind pose bakes into intermediate bones
-// (Mixamo/FBX imports commonly do this; empirically ~10x here, not the
-// clean 1:1 the root-only factor would suggest). Rather than guess at that
-// chain, measure the hand bone's ACTUAL world scale directly and counteract
-// exactly that, which is correct regardless of where the extra scale
-// factors live in the hierarchy.
+// Orientation: cancels the hand bone's current world rotation, so the
+// rifle's own axes (-Z muzzle, +Y sights-up, per prepareGlbRifle()'s
+// normalization in weapon.js) land on world -Z (character forward) / +Y
+// (up) in that reference pose — i.e. "point the barrel forward and keep it
+// right-side up", regardless of how the hand bone itself happens to be
+// oriented in the rig.
+//
+// Position: findGripOffset() locates the grip mesh's offset from the
+// rifle's own pivot in the rifle's own (unrotated) local axes; rotating
+// that by the same cancelling rotation and negating it seats the grip
+// exactly at the hand bone's origin instead of the rifle's geometric
+// center (the "held from the middle" half of the original bug).
+//
+// Scale: the clone is parented INSIDE this bot's skeleton, so it inherits
+// every ancestor's cumulative scale — not just fitSkeletonToCapsule()'s
+// shrink factor on the skeleton root, but also whatever scale the rig's own
+// bind pose bakes into intermediate bones (Mixamo/FBX imports commonly do
+// this; empirically ~10x here, not the clean 1:1 the root-only factor would
+// suggest). Rather than guess at that chain, measure the hand bone's ACTUAL
+// world scale directly and counteract exactly that.
 function attachRifleToHand(source, assets) {
   if (!assets.rifleScene) return; // rifle.glb failed to load — skip, don't throw
   const handBone = findRightHandBone(source);
@@ -289,6 +349,7 @@ function attachRifleToHand(source, assets) {
   }
   source.updateMatrixWorld(true);
   const handWorldScale = handBone.getWorldScale(new THREE.Vector3());
+  const handWorldQuat = handBone.getWorldQuaternion(new THREE.Quaternion());
 
   const rifleClone = assets.rifleScene.clone(true);
   const clonedMaterials = [];
@@ -307,6 +368,18 @@ function attachRifleToHand(source, assets) {
     clonedMaterials.push(...cloned);
   });
 
+  const orientationOffset = handWorldQuat.clone().invert();
+  orientationOffset.multiply(
+    new THREE.Quaternion().setFromEuler(RIFLE_HAND_ROTATION_TWEAK)
+  );
+
+  const gripOffset = findGripOffset(assets.rifleScene);
+  const positionOffset = gripOffset
+    .clone()
+    .applyQuaternion(orientationOffset)
+    .negate()
+    .add(RIFLE_HAND_POSITION_TWEAK);
+
   // rifleClone.scale was just copied (via clone(true)) from assets.rifleScene,
   // which already carries the ~real-world-length normalization baked in by
   // prepareGlbRifle() in weapon.js. MULTIPLY that by the counter-scale
@@ -316,8 +389,8 @@ function attachRifleToHand(source, assets) {
   const counterScale =
     handWorldScale.x > 0.0001 ? 1 / handWorldScale.x : 1;
   rifleClone.scale.multiplyScalar(counterScale * RIFLE_HAND_EXTRA_SCALE);
-  rifleClone.position.copy(RIFLE_HAND_POSITION);
-  rifleClone.rotation.copy(RIFLE_HAND_ROTATION);
+  rifleClone.position.copy(positionOffset);
+  rifleClone.quaternion.copy(orientationOffset);
   handBone.add(rifleClone);
 
   return clonedMaterials;
@@ -355,13 +428,6 @@ export function buildSwatModel(team, assets) {
     materials.push(...cloned);
   });
 
-  // Give the bot a rifle in its hand. MUST run after the body-tint traverse
-  // above: the rifle becomes a descendant of `source` via the hand bone,
-  // and that traverse's `isMesh` check would otherwise also catch (and
-  // team-tint) the rifle's own meshes.
-  const rifleMaterials = attachRifleToHand(source, assets);
-  if (rifleMaterials) materials.push(...rifleMaterials);
-
   const mixer = new THREE.AnimationMixer(inner);
   const actions = {};
   for (const name of ["idle", "run", "shoot", "death"]) {
@@ -387,6 +453,21 @@ export function buildSwatModel(team, assets) {
     currentState = name;
   }
   fadeTo("idle");
+  // Bake the idle clip's first-frame pose onto the skeleton's bones right
+  // now (update(0) evaluates the action's current — zero — time without
+  // advancing it) BEFORE attaching the rifle. Skipping this would leave the
+  // skeleton in its raw T/A-pose bind pose (arms spread to the sides) at
+  // attachment time, which has nothing to do with how the hand is actually
+  // oriented once idle/run/shoot are playing — that mismatch was the
+  // original "held sideways, stock up, muzzle down" bug.
+  mixer.update(0);
+
+  // Give the bot a rifle in its hand. MUST run after the body-tint traverse
+  // above: the rifle becomes a descendant of `source` via the hand bone,
+  // and that traverse's `isMesh` check would otherwise also catch (and
+  // team-tint) the rifle's own meshes.
+  const rifleMaterials = attachRifleToHand(source, assets);
+  if (rifleMaterials) materials.push(...rifleMaterials);
 
   // Muzzle anchor kept for interface parity with the procedural soldier.
   const muzzleAnchor = new THREE.Object3D();
