@@ -218,6 +218,111 @@ function fitSkeletonToCapsule(source, targetHeight, feetY) {
   return wrapper;
 }
 
+// ---------------------------------------------------------------------------
+// Bot-held rifle (feat/fps-overhaul): clones the same rifle.glb used for the
+// first-person viewmodel and parents it to the SWAT skeleton's right-hand
+// bone, so it inherits the hand's animated position/rotation for free during
+// run/shoot/death.
+// ---------------------------------------------------------------------------
+
+// TODO: tune these if the gun spawns sideways, floating off the palm, or the
+// wrong size. Position/rotation are in the RightHand bone's local space
+// (arbitrary per the rig's bind pose — there's no reliable way to compute
+// "in the palm, barrel forward" without eyeballing it against this specific
+// rig). RIFLE_HAND_EXTRA_SCALE is a plain multiplier on top of the
+// auto-computed counter-scale below (1 = same real-world size as the
+// first-person viewmodel's rifle; >1 bigger, <1 smaller).
+const RIFLE_HAND_POSITION = new THREE.Vector3(0, 0.05, 0);
+const RIFLE_HAND_ROTATION = new THREE.Euler(0, Math.PI / 2, 0);
+const RIFLE_HAND_EXTRA_SCALE = 1;
+
+// Matches bone names across both the raw GLB convention ("mixamorig:RightHand",
+// dropped to "mixamorigRightHand" by GLTFLoader's node-name sanitizer) and
+// the common alternate rig convention ("Hand_R"). Deliberately anchors the
+// pattern so finger joints (e.g. "RightHandThumb1", which also *contains*
+// "RightHand") don't match instead of the palm joint itself.
+function findRightHandBone(root) {
+  let exact = null;
+  let fallback = null;
+  root.traverse((obj) => {
+    if (!obj.isBone || exact) return;
+    const name = obj.name;
+    if (!name) return;
+    if (/^mixamorig:?RightHand$/i.test(name) || /^Hand_R$/i.test(name)) {
+      exact = obj;
+      return;
+    }
+    if (
+      !fallback &&
+      /righthand|hand_r/i.test(name) &&
+      !/thumb|index|middle|ring|pinky/i.test(name)
+    ) {
+      fallback = obj;
+    }
+  });
+  return exact ?? fallback;
+}
+
+// Clones rifleScene (the same GLB the first-person viewmodel uses — already
+// normalized to a real-world length by prepareGlbRifle() in weapon.js by the
+// time any bot spawns, see the load-order note in main.js) and attaches it
+// to this skeleton's right hand.
+//
+// Counter-scale note: the clone is parented INSIDE this bot's skeleton, so
+// it inherits every ancestor's cumulative scale — not just
+// fitSkeletonToCapsule()'s shrink factor on the skeleton root, but also
+// whatever scale the rig's own bind pose bakes into intermediate bones
+// (Mixamo/FBX imports commonly do this; empirically ~10x here, not the
+// clean 1:1 the root-only factor would suggest). Rather than guess at that
+// chain, measure the hand bone's ACTUAL world scale directly and counteract
+// exactly that, which is correct regardless of where the extra scale
+// factors live in the hierarchy.
+function attachRifleToHand(source, assets) {
+  if (!assets.rifleScene) return; // rifle.glb failed to load — skip, don't throw
+  const handBone = findRightHandBone(source);
+  if (!handBone) {
+    console.error(
+      "attachRifleToHand: no RightHand/Hand_R bone found on the SWAT " +
+        "skeleton — bot will be unarmed"
+    );
+    return;
+  }
+  source.updateMatrixWorld(true);
+  const handWorldScale = handBone.getWorldScale(new THREE.Vector3());
+
+  const rifleClone = assets.rifleScene.clone(true);
+  const clonedMaterials = [];
+  rifleClone.traverse((obj) => {
+    if (!obj.isMesh) return;
+    obj.castShadow = true;
+    obj.receiveShadow = true;
+    obj.frustumCulled = false; // bind-pose bbox is stale once bone-attached
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    const cloned = mats.map((m) => {
+      const c = m.clone();
+      c.transparent = true; // needed for the spawn-invuln opacity fade
+      return c;
+    });
+    obj.material = Array.isArray(obj.material) ? cloned : cloned[0];
+    clonedMaterials.push(...cloned);
+  });
+
+  // rifleClone.scale was just copied (via clone(true)) from assets.rifleScene,
+  // which already carries the ~real-world-length normalization baked in by
+  // prepareGlbRifle() in weapon.js. MULTIPLY that by the counter-scale
+  // (never overwrite it with setScalar) — replacing it would throw away that
+  // normalization and apply the counter-scale to the raw, un-normalized
+  // mesh instead, which is what produced a multi-hundred-meter rifle here.
+  const counterScale =
+    handWorldScale.x > 0.0001 ? 1 / handWorldScale.x : 1;
+  rifleClone.scale.multiplyScalar(counterScale * RIFLE_HAND_EXTRA_SCALE);
+  rifleClone.position.copy(RIFLE_HAND_POSITION);
+  rifleClone.rotation.copy(RIFLE_HAND_ROTATION);
+  handBone.add(rifleClone);
+
+  return clonedMaterials;
+}
+
 export function buildSwatModel(team, assets) {
   const source = cloneSkeleton(assets.botTemplate);
   // Mixamo characters face +Z; the bot AI treats -Z as forward (matching
@@ -249,6 +354,13 @@ export function buildSwatModel(team, assets) {
     obj.material = Array.isArray(obj.material) ? cloned : cloned[0];
     materials.push(...cloned);
   });
+
+  // Give the bot a rifle in its hand. MUST run after the body-tint traverse
+  // above: the rifle becomes a descendant of `source` via the hand bone,
+  // and that traverse's `isMesh` check would otherwise also catch (and
+  // team-tint) the rifle's own meshes.
+  const rifleMaterials = attachRifleToHand(source, assets);
+  if (rifleMaterials) materials.push(...rifleMaterials);
 
   const mixer = new THREE.AnimationMixer(inner);
   const actions = {};
