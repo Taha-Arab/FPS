@@ -233,8 +233,8 @@ function fitSkeletonToCapsule(source, targetHeight, feetY) {
 // RIFLE_HAND_EXTRA_SCALE is a plain multiplier on the auto-computed
 // counter-scale (1 = same real-world size as the first-person viewmodel's
 // rifle; >1 bigger, <1 smaller).
-const RIFLE_HAND_POSITION_TWEAK = new THREE.Vector3(0, 0, 0);
-const RIFLE_HAND_ROTATION_TWEAK = new THREE.Euler(0, 0, 0);
+const RIFLE_HAND_POSITION_TWEAK = new THREE.Vector3(8, 15, 3);
+const RIFLE_HAND_ROTATION_TWEAK = new THREE.Euler(0, 0.18, 0);
 const RIFLE_HAND_EXTRA_SCALE = 1;
 
 // The mesh name (case/spacing-insensitive) whose center marks where the
