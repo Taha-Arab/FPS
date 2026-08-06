@@ -32,6 +32,12 @@ const ADS_ROTATION = new THREE.Euler(0, 0, 0);
 // muzzle origin.
 const MUZZLE_TIP_OFFSET = new THREE.Vector3(0.05, -0.05, -0.6);
 
+// TODO: the flash currently sits too far back on the barrel — nudge this
+// forward along -Z (camera-local forward) to walk the light/sprite out to
+// the actual barrel tip. Layered on top of muzzleTip/MUZZLE_TIP_OFFSET
+// above, so it only moves the flash, not the tracer origin.
+const MUZZLE_FLASH_OFFSET = new THREE.Vector3(0, 0, 0);
+
 const ADS_LERP_PER_SECOND = 14; // how fast the hip/ADS pose blends
 const SWAY_AMOUNT = 0.0016;
 const SWAY_MAX = 0.035;
@@ -70,10 +76,14 @@ export function createPlayerArms(camera) {
   muzzleTip.position.copy(MUZZLE_TIP_OFFSET);
   root.add(muzzleTip);
 
-  // Muzzle flash: a small glowing plane cross + point light at the tip,
-  // ported from the old weapon.js viewmodel. Parented to muzzleTip, so
-  // MUZZLE_TIP_OFFSET above is the one place to nudge if it doesn't land on
-  // the barrel.
+  // Muzzle flash: a small glowing plane cross + point light, parented under
+  // a flashAnchor offset from muzzleTip by MUZZLE_FLASH_OFFSET (see above)
+  // so the flash can be walked out to the barrel tip independently of the
+  // tracer origin (muzzleTip itself).
+  const flashAnchor = new THREE.Object3D();
+  flashAnchor.position.copy(MUZZLE_FLASH_OFFSET);
+  muzzleTip.add(flashAnchor);
+
   const flashMat = new THREE.MeshBasicMaterial({
     color: 0xffd977,
     transparent: true,
@@ -88,10 +98,10 @@ export function createPlayerArms(camera) {
   const flashGroup = new THREE.Group();
   flashGroup.add(flashA, flashB);
   flashGroup.visible = false;
-  muzzleTip.add(flashGroup);
+  flashAnchor.add(flashGroup);
 
   const flashLight = new THREE.PointLight(0xffc36b, 0, 6, 2);
-  muzzleTip.add(flashLight);
+  flashAnchor.add(flashLight);
 
   let flashHideAt = 0;
 
@@ -228,6 +238,7 @@ export function createPlayerArms(camera) {
       swayGroup.add(wrapper);
       armsWrapper = wrapper;
 
+      const CROSSHAIR_NAME_PATTERN = /crosshair|reticle/i;
       scene.traverse((obj) => {
         if (obj.isMesh || obj.isSkinnedMesh) {
           obj.castShadow = false;
@@ -235,6 +246,12 @@ export function createPlayerArms(camera) {
           // Skinned bounds go stale relative to the bind-pose bbox once
           // animated; never let that cull the viewmodel.
           obj.frustumCulled = false;
+          // The GLB bakes in its own crosshair plane (node
+          // "crosshair_crosshair_0") for the web-editor preview — the game
+          // has its own HUD crosshair, so hide this one.
+          if (CROSSHAIR_NAME_PATTERN.test(obj.name)) {
+            obj.visible = false;
+          }
         }
       });
     },
