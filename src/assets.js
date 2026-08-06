@@ -40,6 +40,7 @@ function assetPath(relativePath) {
 }
 
 const RIFLE_URL = assetPath("guns/rifle.glb");
+const PLAYER_ARMS_URL = assetPath("player/player_arms.glb");
 const BOT_MESH_URL = assetPath("bots/swat_mesh.glb");
 const BOT_CLIP_URLS = {
   idle: assetPath("bots/idle.glb"),
@@ -47,6 +48,52 @@ const BOT_CLIP_URLS = {
   shoot: assetPath("bots/shoot.glb"),
   death: assetPath("bots/death.glb"),
 };
+
+// rifle.glb is an arbitrary-scale/arbitrary-orientation Sketchfab prop, not
+// authored at real-world size — every consumer needs it normalized first.
+// feat/player-arms: the player's own viewmodel no longer uses rifle.glb (see
+// src/playerArms.js), but bots still clone assets.rifleScene for their held
+// weapon (attachRifleToHand() in botmodel.js), so normalization happens
+// HERE, unconditionally, at load time — bot weapons must not depend on
+// whatever the player-facing viewmodel code does or doesn't do.
+const RIFLE_TARGET_LENGTH = 0.85; // meters, barrel tip to stock
+
+// Rotates the model's longest axis onto Z (barrel forward = -Z, the
+// convention every consumer expects), scales it to targetLength, and
+// centers it on its own bounding-box center. Mutates in place.
+function normalizeRifleGeometry(model, targetLength) {
+  let bbox = new THREE.Box3().setFromObject(model);
+  let size = bbox.getSize(new THREE.Vector3());
+  if (size.x >= size.y && size.x >= size.z) {
+    model.rotation.y = -Math.PI / 2; // long axis X → Z
+  } else if (size.y >= size.x && size.y >= size.z) {
+    model.rotation.x = Math.PI / 2; // long axis Y → Z
+  }
+  // Z-long assets keep their native facing: rifle.glb's muzzle already
+  // points -Z (confirmed empirically — see git history for the flip that
+  // proved this wrong the other way).
+  model.updateMatrixWorld(true);
+
+  bbox = new THREE.Box3().setFromObject(model);
+  size = bbox.getSize(new THREE.Vector3());
+  const scale = size.z > 0.0001 ? targetLength / size.z : 1;
+  model.scale.multiplyScalar(scale);
+  model.updateMatrixWorld(true);
+
+  bbox = new THREE.Box3().setFromObject(model);
+  const center = bbox.getCenter(new THREE.Vector3());
+  model.position.sub(center);
+
+  model.traverse((obj) => {
+    if (obj.isMesh) {
+      obj.castShadow = false;
+      obj.receiveShadow = false;
+      // Downstream consumers (bots) reparent this under an animated bone;
+      // never let a stale bind-pose bbox cull it.
+      obj.frustumCulled = false;
+    }
+  });
+}
 
 // Draco-compressed GLBs need the matching decoder at runtime. Self-hosted
 // (copied from three's own examples/jsm/libs/draco/gltf/ into public/vendor)
@@ -222,7 +269,8 @@ function extractClip(gltf, name) {
 let loadPromise = null;
 
 // Loads everything. Resolves to:
-//   { rifleScene, botTemplate, botClips: { idle, run, shoot, death } }
+//   { rifleScene, botTemplate, botClips: { idle, run, shoot, death },
+//     playerArms: { scene, animations } | null }
 // Any piece that failed to load resolves as null in that slot instead of
 // rejecting the whole bundle, so the game can fall back per-feature.
 export function loadGameAssets(onProgress = null) {
@@ -253,12 +301,15 @@ export function loadGameAssets(onProgress = null) {
 
   loadPromise = Promise.all([
     loadOne(RIFLE_URL),
+    loadOne(PLAYER_ARMS_URL),
     loadOne(BOT_MESH_URL),
     loadOne(BOT_CLIP_URLS.idle),
     loadOne(BOT_CLIP_URLS.run),
     loadOne(BOT_CLIP_URLS.shoot),
     loadOne(BOT_CLIP_URLS.death),
-  ]).then(([rifle, botMesh, idle, run, shoot, death]) => {
+  ]).then(([rifle, playerArms, botMesh, idle, run, shoot, death]) => {
+    if (rifle?.scene) normalizeRifleGeometry(rifle.scene, RIFLE_TARGET_LENGTH);
+
     const template = botMesh ? botMesh.scene : null;
     const upAxis = hipsUpAxisIndex(template);
     // Extract → re-express the root in the target skeleton's frame → pin
@@ -281,6 +332,9 @@ export function loadGameAssets(onProgress = null) {
       rifleScene: rifle ? rifle.scene : null,
       botTemplate: template,
       botClips,
+      playerArms: playerArms
+        ? { scene: playerArms.scene, animations: playerArms.animations }
+        : null,
     };
   });
 

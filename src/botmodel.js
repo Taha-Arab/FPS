@@ -275,11 +275,11 @@ function findRightHandBone(root) {
 // in which of the rifle's own directions, the grip sits from the model's
 // pivot". Measured via a neutral clone at identity position/rotation (but
 // carrying rifleScene's own scale) so the result already accounts for
-// prepareGlbRifle()'s real-world-length normalization from weapon.js,
-// independent of wherever the source object actually lives in the scene
-// graph right now. Falls back to (0,0,0) — hold at the model's own pivot —
-// if no grip mesh is found, so a naming change degrades gracefully instead
-// of crashing.
+// normalizeRifleGeometry()'s real-world-length normalization from
+// assets.js (applied unconditionally at load time — see there), independent
+// of wherever the source object actually lives in the scene graph right
+// now. Falls back to (0,0,0) — hold at the model's own pivot — if no grip
+// mesh is found, so a naming change degrades gracefully instead of crashing.
 function findGripOffset(rifleScene) {
   const probe = rifleScene.clone(true);
   probe.position.set(0, 0, 0);
@@ -306,20 +306,20 @@ function findGripOffset(rifleScene) {
     .getCenter(new THREE.Vector3());
 }
 
-// Clones rifleScene (the same GLB the first-person viewmodel uses — already
-// normalized to a real-world length by prepareGlbRifle() in weapon.js by the
-// time any bot spawns, see the load-order note in main.js) and attaches it
-// to this skeleton's right hand, oriented from the hand's CURRENT pose
-// (caller must have already posed the skeleton into a natural stance —
-// e.g. idle — before calling this; see buildSwatModel()). Attaching against
-// the raw T/A-pose bind pose instead (arms spread out to the sides) is what
-// produced the original "held sideways, stock up, muzzle down" bug: that
-// bind pose has nothing to do with how the hand is actually oriented once
-// idle/run/shoot are playing.
+// Clones rifleScene (loaded and normalized once, unconditionally, in
+// assets.js — normalizeRifleGeometry() — so bot weapons never depend on
+// whatever the player-facing viewmodel does or doesn't do with rifle.glb)
+// and attaches it to this skeleton's right hand, oriented from the hand's
+// CURRENT pose (caller must have already posed the skeleton into a natural
+// stance — e.g. idle — before calling this; see buildSwatModel()).
+// Attaching against the raw T/A-pose bind pose instead (arms spread out to
+// the sides) is what produced the original "held sideways, stock up,
+// muzzle down" bug: that bind pose has nothing to do with how the hand is
+// actually oriented once idle/run/shoot are playing.
 //
 // Orientation: cancels the hand bone's current world rotation, so the
-// rifle's own axes (-Z muzzle, +Y sights-up, per prepareGlbRifle()'s
-// normalization in weapon.js) land on world -Z (character forward) / +Y
+// rifle's own axes (-Z muzzle, +Y sights-up, per normalizeRifleGeometry()'s
+// normalization in assets.js) land on world -Z (character forward) / +Y
 // (up) in that reference pose — i.e. "point the barrel forward and keep it
 // right-side up", regardless of how the hand bone itself happens to be
 // oriented in the rig.
@@ -382,7 +382,7 @@ function attachRifleToHand(source, assets) {
 
   // rifleClone.scale was just copied (via clone(true)) from assets.rifleScene,
   // which already carries the ~real-world-length normalization baked in by
-  // prepareGlbRifle() in weapon.js. MULTIPLY that by the counter-scale
+  // normalizeRifleGeometry() in assets.js. MULTIPLY that by the counter-scale
   // (never overwrite it with setScalar) — replacing it would throw away that
   // normalization and apply the counter-scale to the raw, un-normalized
   // mesh instead, which is what produced a multi-hundred-meter rifle here.

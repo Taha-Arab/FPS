@@ -141,7 +141,7 @@ import {
   buildFloodlightTower,
   buildScatterDecor,
 } from "./props.js";
-import { createWeaponViewmodel } from "./weapon.js";
+import { createPlayerArms } from "./playerArms.js";
 import {
   buildSoldierModel,
   buildSwatModel,
@@ -201,8 +201,11 @@ window.addEventListener("resize", () => {
 // bounce fill, and a warm shadow-casting sun — see src/environment.js.
 const { sunLight } = setupEnvironment(scene);
 
-// First-person rifle viewmodel, parented to the camera (src/weapon.js).
-const weaponViewmodel = createWeaponViewmodel(camera);
+// First-person player viewmodel: fully animated arms+gun, parented to the
+// camera (src/playerArms.js). The local variable name stays "weaponViewmodel"
+// so every existing call site below (update/fire/ADS/etc.) needed no churn
+// beyond the two lines above and setArmsModel() further down.
+const weaponViewmodel = createPlayerArms(camera);
 
 // -----------------------------------------------------------------------
 // Arena ground + boundary walls (visual) — built after pre-match menu
@@ -2016,6 +2019,7 @@ function startReload() {
   reloadArcProgressEl.style.strokeDashoffset = String(RELOAD_ARC_CIRCUMFERENCE);
   updateAmmoDisplay();
   playReloadSound();
+  weaponViewmodel.reload(); // covers both the manual R key and auto-reload-on-empty
 
   const reloadTimeoutId = setTimeout(() => {
     currentAmmo = MAGAZINE_SIZE;
@@ -3046,7 +3050,7 @@ function startRenderLoop({
     currentAmmo -= 1;
     updateAmmoDisplay();
     applyRecoilKick();
-    weaponViewmodel.triggerRecoil();
+    weaponViewmodel.fire();
     playGunshotSound();
 
     // Auto-reload (Milestone 4 extension): as soon as the last round is
@@ -3067,8 +3071,9 @@ function startRenderLoop({
     );
     const ray = new RAPIER.Ray(origin, direction);
 
-    // Tracer start: the actual rifle muzzle on the viewmodel (the muzzle
-    // flash itself is part of the viewmodel — see weapon.js).
+    // Tracer start: an approximate muzzle-tip anchor on the viewmodel (see
+    // MUZZLE_TIP_OFFSET in src/playerArms.js — tune it there if it drifts
+    // from the gun's on-screen barrel once HIP_POSITION is dialed in).
     camera.updateMatrixWorld();
     const muzzlePosition = new THREE.Vector3();
     weaponViewmodel.muzzleTip.getWorldPosition(muzzlePosition);
@@ -3873,7 +3878,6 @@ function startRenderLoop({
       wantAds: isAiming && playing,
       sprinting: isSprinting,
       moveSpeed01: moveInput01,
-      grounded: characterController.computedGrounded(),
     });
 
     // Hide the crosshair while ADS (the iron sights are the aim reference).
@@ -4227,7 +4231,16 @@ function startMatch() {
           console.error(`Bot animation clip failed to load/extract: ${name}`);
         }
       }
-      weaponViewmodel.setRifleModel(assets.rifleScene);
+      if (!assets.playerArms) {
+        console.error(
+          "player_arms.glb unavailable — the player's viewmodel will be " +
+            "invisible (no procedural fallback for it)"
+        );
+      }
+      weaponViewmodel.setArmsModel(
+        assets.playerArms?.scene,
+        assets.playerArms?.animations
+      );
       return initPhysics();
     })
     .then((physics) => {
