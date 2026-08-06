@@ -25,10 +25,11 @@ const ADS_POSITION = new THREE.Vector3(0, -0.05, 0.18);
 const ADS_ROTATION = new THREE.Euler(0, 0, 0);
 
 // TODO: nudge to match the gun barrel's actual on-screen tip once HIP_* is
-// dialed in above — this drives the tracer/muzzle-flash origin in main.js.
-// player_arms.glb has no named muzzle bone to anchor to (unlike the bots'
-// rifle-grip attachment), so it's a flat offset in camera-local space, same
-// approach main.js already uses for the bots' own muzzle origin.
+// dialed in above — this drives the tracer origin (in main.js) AND the
+// muzzle flash below. player_arms.glb has no named muzzle bone to anchor
+// to (unlike the bots' rifle-grip attachment), so it's a flat offset in
+// camera-local space, same approach main.js already uses for the bots' own
+// muzzle origin.
 const MUZZLE_TIP_OFFSET = new THREE.Vector3(0.05, -0.05, -0.6);
 
 const ADS_LERP_PER_SECOND = 14; // how fast the hip/ADS pose blends
@@ -36,6 +37,7 @@ const SWAY_AMOUNT = 0.0016;
 const SWAY_MAX = 0.035;
 const LOCOMOTION_FADE_SECONDS = 0.2;
 const ONE_SHOT_FADE_SECONDS = 0.08;
+const MUZZLE_FLASH_MS = 45; // how long the flash sprite/light stays lit
 
 // Maps each locomotion/action slot to a pattern matched against this GLB's
 // own animation names ("Armature|Idle", "Armature|Shoot", etc.) rather than
@@ -68,10 +70,41 @@ export function createPlayerArms(camera) {
   muzzleTip.position.copy(MUZZLE_TIP_OFFSET);
   root.add(muzzleTip);
 
+  // Muzzle flash: a small glowing plane cross + point light at the tip,
+  // ported from the old weapon.js viewmodel. Parented to muzzleTip, so
+  // MUZZLE_TIP_OFFSET above is the one place to nudge if it doesn't land on
+  // the barrel.
+  const flashMat = new THREE.MeshBasicMaterial({
+    color: 0xffd977,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const flashGeo = new THREE.PlaneGeometry(0.14, 0.14);
+  const flashA = new THREE.Mesh(flashGeo, flashMat);
+  const flashB = new THREE.Mesh(flashGeo, flashMat);
+  flashB.rotation.z = Math.PI / 4;
+  const flashGroup = new THREE.Group();
+  flashGroup.add(flashA, flashB);
+  flashGroup.visible = false;
+  muzzleTip.add(flashGroup);
+
+  const flashLight = new THREE.PointLight(0xffc36b, 0, 6, 2);
+  muzzleTip.add(flashLight);
+
+  let flashHideAt = 0;
+
   let mixer = null;
   const actions = {};
   let currentAction = null;
   let activeOneShot = null; // the specific one-shot action we're waiting on
+
+  // Set on the FIRST successful setArmsModel() call; lets repeat calls
+  // (see there) detect "same scene, called again" instead of re-deriving
+  // alignment from a now-corrupted parent frame.
+  let armsScene = null;
+  let armsWrapper = null;
 
   let adsBlend = 0; // 0 = hip, 1 = aiming down sights
   const swayTarget = new THREE.Vector2();
@@ -108,13 +141,45 @@ export function createPlayerArms(camera) {
     activeOneShot = action;
   }
 
+  // Snaps straight to idle (no crossfade — used right after (re)attaching
+  // the model, so there's no stale previous-match pose to blend from) and
+  // clears any one-shot the mixer thought was still in flight.
+  function resetToIdlePose() {
+    activeOneShot = null;
+    if (!actions.idle) return;
+    actions.idle.reset().play();
+    currentAction = actions.idle;
+    if (mixer) mixer.update(0);
+  }
+
   return {
     muzzleTip,
 
-    // Swaps in the async-loaded player_arms.glb. Safe to call once, any
-    // time — renders as an empty (invisible) group until then.
+    // Swaps in the async-loaded player_arms.glb. Safe to call multiple
+    // times — renders as an empty (invisible) group until the first
+    // successful call, and a match reset ("Play Again") calling this again
+    // with the SAME scene (loadGameAssets() caches its result) reuses the
+    // already-computed alignment instead of re-deriving it.
     setArmsModel(scene, animations) {
       if (!scene) return;
+
+      if (scene === armsScene && armsWrapper) {
+        // Re-measuring the camera-bone alignment below assumes `scene` is
+        // still in the clean, unparented state it was in on the FIRST
+        // call — but by now it's parented under armsWrapper, itself under
+        // this camera, wherever the camera physically ended up in the
+        // match that just ended. Re-running that math against a stale,
+        // arbitrary parent frame produced a garbage offset — several
+        // meters off in world space — which is exactly why the arms
+        // vanished on the second match. armsWrapper's alignment is still
+        // correct from the first time, so just re-attach it (add()
+        // detaches from wherever it currently is first) and reset the
+        // animation state.
+        swayGroup.add(armsWrapper);
+        resetToIdlePose();
+        return;
+      }
+      armsScene = scene;
 
       if (animations && animations.length > 0) {
         mixer = new THREE.AnimationMixer(scene);
@@ -135,11 +200,7 @@ export function createPlayerArms(camera) {
         // Settle into the idle pose now (update(0) evaluates time-zero
         // without advancing it) so the camera-bone alignment below measures
         // the actual resting stance, not the raw T/A-pose bind pose.
-        if (actions.idle) {
-          actions.idle.play();
-          currentAction = actions.idle;
-          mixer.update(0);
-        }
+        resetToIdlePose();
       }
 
       // The rig's own "camera_01" bone marks where its author intended the
@@ -165,6 +226,7 @@ export function createPlayerArms(camera) {
       wrapper.add(scene);
       wrapper.rotation.y = Math.PI;
       swayGroup.add(wrapper);
+      armsWrapper = wrapper;
 
       scene.traverse((obj) => {
         if (obj.isMesh || obj.isSkinnedMesh) {
@@ -192,9 +254,15 @@ export function createPlayerArms(camera) {
     },
 
     // Plays the Shoot clip once, restarting it on every call (full-auto
-    // fire keeps re-triggering this every shot).
+    // fire keeps re-triggering this every shot), and pops the muzzle flash.
     fire() {
       playOneShot(actions.shoot);
+
+      flashGroup.visible = true;
+      flashGroup.rotation.z = Math.random() * Math.PI;
+      flashGroup.scale.setScalar(0.8 + Math.random() * 0.5);
+      flashLight.intensity = 14;
+      flashHideAt = performance.now() + MUZZLE_FLASH_MS;
     },
 
     // Plays the Reload clip once. Call from startReload() in main.js, which
@@ -233,6 +301,13 @@ export function createPlayerArms(camera) {
         (swayTarget.y * (1 - adsBlend * 0.8) - swayGroup.position.y) *
         swayEase;
       swayTarget.multiplyScalar(Math.exp(-6 * deltaTime));
+
+      // Muzzle flash timeout — independent of the mixer, so it still
+      // decays even on the rare frame the model hasn't loaded yet.
+      if (flashGroup.visible && performance.now() >= flashHideAt) {
+        flashGroup.visible = false;
+        flashLight.intensity = 0;
+      }
 
       if (!mixer) return;
       mixer.update(deltaTime);
