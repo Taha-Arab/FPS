@@ -24,6 +24,13 @@ const HIP_ROTATION = new THREE.Euler(0, 0, 0);
 const ADS_POSITION = new THREE.Vector3(0, -0.05, 0.18);
 const ADS_ROTATION = new THREE.Euler(0, 0, 0);
 
+// TODO: the new FBX-to-GLB conversion came in at a different scale than the
+// old rig — tune this uniform factor to correct it (applied to the whole
+// loaded scene before the camera-bone alignment below measures it, so
+// HIP_*/ADS_* stay in the same "camera-local meters" space regardless of
+// what this is set to).
+const VIEWMODEL_SCALE = 1;
+
 // TODO: nudge to match the gun barrel's actual on-screen tip once HIP_* is
 // dialed in above — this drives the tracer origin (in main.js) AND the
 // muzzle flash below. player_arms.glb has no named muzzle bone to anchor
@@ -53,7 +60,11 @@ const MUZZLE_FLASH_MS = 45; // how long the flash sprite/light stays lit
 // 5:Run, 6:Hide] — every one of those indices is off by one from what was
 // asked for (and 6 isn't Run, it's an unrelated "Hide" clip). Matching by
 // name lands on the exact same 5 clips that were intended and is immune to
-// the export ever reordering them again.
+// the export ever reordering them again. Deliberately NOT in this map:
+// "Take" (index 0, a raw/unprocessed export artifact) and "Hide" — neither
+// is ever wrapped in a mixer.clipAction() below, so neither can ever be
+// played; every locomotion/pose fallback in this file resolves to
+// actions.idle (see resetToIdlePose() and the update() fallback chain).
 const CLIP_NAME_PATTERNS = {
   idle: /idle/i,
   shoot: /shoot/i,
@@ -190,6 +201,7 @@ export function createPlayerArms(camera) {
         return;
       }
       armsScene = scene;
+      scene.scale.setScalar(VIEWMODEL_SCALE);
 
       if (animations && animations.length > 0) {
         mixer = new THREE.AnimationMixer(scene);
