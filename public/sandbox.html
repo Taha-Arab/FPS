@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Viewmodel Calibration Sandbox</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1a1e; font-family: -apple-system, "Segoe UI", sans-serif; }
+  canvas { display: block; }
+
+  #crosshair {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    display: none;
+    z-index: 5;
+  }
+  #crosshair .ch-line { position: absolute; background: #39ff6a; }
+  #crosshair .ch-h { width: 18px; height: 2px; top: -1px; left: -9px; }
+  #crosshair .ch-v { width: 2px; height: 18px; top: -9px; left: -1px; }
+  #crosshair .ch-dot {
+    position: absolute; width: 3px; height: 3px; top: -1.5px; left: -1.5px;
+    background: #39ff6a; border-radius: 50%;
+  }
+
+  #panel {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    width: 300px;
+    background: rgba(20, 20, 24, 0.88);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    padding: 14px;
+    color: #e6e6e6;
+    font-size: 12px;
+    z-index: 10;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  }
+  #panel h1 {
+    font-size: 13px;
+    margin: 0 0 10px;
+    color: #fff;
+    letter-spacing: 0.02em;
+  }
+  #panel .row { display: flex; gap: 8px; margin-bottom: 8px; }
+  #panel button {
+    flex: 1;
+    background: #2b2b33;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #e6e6e6;
+    padding: 7px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  #panel button:hover { background: #37373f; }
+  #panel button.active { background: #39ff6a; color: #0a0a0a; border-color: #39ff6a; font-weight: 600; }
+
+  .slider-block { margin-bottom: 10px; }
+  .slider-label {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 3px;
+    color: #b8b8c0;
+  }
+  .slider-label span.val { color: #39ff6a; font-family: "SF Mono", Consolas, monospace; }
+  input[type="range"] { width: 100%; }
+
+  hr { border: none; border-top: 1px solid rgba(255, 255, 255, 0.12); margin: 12px 0; }
+
+  #output {
+    background: #0c0c0f;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 5px;
+    padding: 8px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 10.5px;
+    line-height: 1.5;
+    white-space: pre;
+    color: #9be89b;
+    overflow-x: auto;
+    user-select: all;
+  }
+</style>
+</head>
+<body>
+
+<div id="crosshair">
+  <div class="ch-line ch-h"></div>
+  <div class="ch-line ch-v"></div>
+  <div class="ch-dot"></div>
+</div>
+
+<div id="panel">
+  <h1>Viewmodel Calibration</h1>
+
+  <div class="row">
+    <button id="btn-camera">Camera: Orbit</button>
+  </div>
+
+  <div class="row">
+    <button id="btn-mode">Editing: HIP</button>
+  </div>
+
+  <div class="slider-block">
+    <div class="slider-label"><span>Scale</span><span class="val" id="val-scale"></span></div>
+    <input type="range" id="slider-scale" min="0.001" max="2.0" step="0.001" />
+  </div>
+
+  <div class="slider-block">
+    <div class="slider-label"><span>X</span><span class="val" id="val-x"></span></div>
+    <input type="range" id="slider-x" min="-2" max="2" step="0.001" />
+  </div>
+  <div class="slider-block">
+    <div class="slider-label"><span>Y</span><span class="val" id="val-y"></span></div>
+    <input type="range" id="slider-y" min="-2" max="2" step="0.001" />
+  </div>
+  <div class="slider-block">
+    <div class="slider-label"><span>Z</span><span class="val" id="val-z"></span></div>
+    <input type="range" id="slider-z" min="-2" max="2" step="0.001" />
+  </div>
+
+  <hr />
+  <div id="output"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+
+// ---------------------------------------------------------------------------
+// Standalone calibration sandbox (feat/player-arms) — NOT part of the Vite
+// build (loads three.js from a CDN via importmap), used to find
+// VIEWMODEL_SCALE / HIP_POSITION / ADS_POSITION for src/playerArms.js by
+// eyeballing the arms against a reference bot mesh, both in orbit view and
+// through a locked FPS-style camera.
+// ---------------------------------------------------------------------------
+
+const SWAT_MESH_URL = "/assets/bots/swat_mesh.glb";
+const PLAYER_ARMS_URL = "/assets/player/player_arms.glb";
+const DRACO_DECODER_PATH = "/vendor/draco/";
+
+// Seeded from the current constants in src/playerArms.js so this starts
+// from the game's existing calibration instead of zero.
+const state = {
+  scale: 1,
+  mode: "HIP",
+  hip: { x: 0.12, y: -0.15, z: 0.05 },
+  ads: { x: 0, y: -0.05, z: 0.18 },
+};
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a1e);
+
+const grid = new THREE.GridHelper(20, 20, 0x555566, 0x333340);
+scene.add(grid);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(4, 8, 5);
+scene.add(sun);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// --- Dual cameras -----------------------------------------------------
+const orbitCamera = new THREE.PerspectiveCamera(
+  60,
+  window.innerWidth / window.innerHeight,
+  0.01,
+  1000
+);
+orbitCamera.position.set(3, 2, 4);
+
+const fpsCamera = new THREE.PerspectiveCamera(
+  70,
+  window.innerWidth / window.innerHeight,
+  0.01,
+  1000
+);
+fpsCamera.position.set(0, 1.5, 0);
+fpsCamera.lookAt(0, 1.5, -1); // straight ahead down -Z, per spec
+
+const orbitControls = new OrbitControls(orbitCamera, renderer.domElement);
+orbitControls.target.set(0, 1, 0);
+orbitControls.enableDamping = true;
+
+let activeCamera = orbitCamera;
+const crosshairEl = document.getElementById("crosshair");
+
+function setActiveCamera(cam) {
+  activeCamera = cam;
+  const isFps = cam === fpsCamera;
+  orbitControls.enabled = !isFps;
+  crosshairEl.style.display = isFps ? "block" : "none";
+  btnCamera.textContent = isFps ? "Camera: FPS" : "Camera: Orbit";
+  btnCamera.classList.toggle("active", isFps);
+}
+
+const btnCamera = document.getElementById("btn-camera");
+btnCamera.addEventListener("click", () => {
+  setActiveCamera(activeCamera === orbitCamera ? fpsCamera : orbitCamera);
+});
+setActiveCamera(orbitCamera);
+
+// --- Loaders ------------------------------------------------------------
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
+const gltfLoader = new GLTFLoader();
+gltfLoader.setDRACOLoader(dracoLoader);
+
+// Reference bot mesh, dropped at the origin for scale comparison.
+gltfLoader.load(SWAT_MESH_URL, (gltf) => {
+  gltf.scene.position.set(0, 0, 0);
+  scene.add(gltf.scene);
+});
+
+// Player arms, attached directly to fpsCamera so its local position IS the
+// camera-relative HIP/ADS offset — exactly how src/playerArms.js parents it.
+let armsScene = null;
+let armsMixer = null;
+const clock = new THREE.Clock();
+
+gltfLoader.load(PLAYER_ARMS_URL, (gltf) => {
+  armsScene = gltf.scene;
+  fpsCamera.add(armsScene);
+
+  armsScene.traverse((obj) => {
+    if (obj.isMesh || obj.isSkinnedMesh) {
+      obj.frustumCulled = false;
+    }
+  });
+
+  if (gltf.animations && gltf.animations.length > 0) {
+    armsMixer = new THREE.AnimationMixer(armsScene);
+    const idleClip = gltf.animations.find((c) => /idle/i.test(c.name));
+    if (idleClip) armsMixer.clipAction(idleClip).play();
+  }
+
+  applyState();
+});
+
+// --- UI wiring ------------------------------------------------------------
+const btnMode = document.getElementById("btn-mode");
+const sliderScale = document.getElementById("slider-scale");
+const sliderX = document.getElementById("slider-x");
+const sliderY = document.getElementById("slider-y");
+const sliderZ = document.getElementById("slider-z");
+const valScale = document.getElementById("val-scale");
+const valX = document.getElementById("val-x");
+const valY = document.getElementById("val-y");
+const valZ = document.getElementById("val-z");
+const outputEl = document.getElementById("output");
+
+function currentVec() {
+  return state.mode === "HIP" ? state.hip : state.ads;
+}
+
+// Applies current state to the live model + refreshes all slider/label/
+// output UI. Called on load, on every slider input, and on mode toggle.
+function applyState() {
+  if (armsScene) {
+    armsScene.scale.setScalar(state.scale);
+    const v = currentVec();
+    armsScene.position.set(v.x, v.y, v.z);
+  }
+
+  const v = currentVec();
+  sliderScale.value = state.scale;
+  sliderX.value = v.x;
+  sliderY.value = v.y;
+  sliderZ.value = v.z;
+  valScale.textContent = state.scale.toFixed(4);
+  valX.textContent = v.x.toFixed(3);
+  valY.textContent = v.y.toFixed(3);
+  valZ.textContent = v.z.toFixed(3);
+
+  outputEl.textContent =
+    `const VIEWMODEL_SCALE = ${state.scale.toFixed(4)};\n\n` +
+    `const HIP_POSITION = new THREE.Vector3(${state.hip.x.toFixed(3)}, ${state.hip.y.toFixed(3)}, ${state.hip.z.toFixed(3)});\n` +
+    `const ADS_POSITION = new THREE.Vector3(${state.ads.x.toFixed(3)}, ${state.ads.y.toFixed(3)}, ${state.ads.z.toFixed(3)});`;
+}
+
+btnMode.addEventListener("click", () => {
+  state.mode = state.mode === "HIP" ? "ADS" : "HIP";
+  btnMode.textContent = `Editing: ${state.mode}`;
+  btnMode.classList.toggle("active", state.mode === "ADS");
+  applyState();
+});
+
+sliderScale.addEventListener("input", () => {
+  state.scale = parseFloat(sliderScale.value);
+  applyState();
+});
+sliderX.addEventListener("input", () => {
+  currentVec().x = parseFloat(sliderX.value);
+  applyState();
+});
+sliderY.addEventListener("input", () => {
+  currentVec().y = parseFloat(sliderY.value);
+  applyState();
+});
+sliderZ.addEventListener("input", () => {
+  currentVec().z = parseFloat(sliderZ.value);
+  applyState();
+});
+
+applyState();
+
+// --- Resize + render loop --------------------------------------------------
+window.addEventListener("resize", () => {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  orbitCamera.aspect = window.innerWidth / window.innerHeight;
+  orbitCamera.updateProjectionMatrix();
+  fpsCamera.aspect = window.innerWidth / window.innerHeight;
+  fpsCamera.updateProjectionMatrix();
+});
+
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (armsMixer) armsMixer.update(dt);
+  orbitControls.update();
+  renderer.render(scene, activeCamera);
+});
+</script>
+</body>
+</html>
