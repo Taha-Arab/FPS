@@ -30,10 +30,10 @@ import * as THREE from "three";
 // this compensation the old values put the gun's local Z behind the
 // camera (verified empirically: armsScene ended up at local Z > +0.12,
 // i.e. behind the near plane, hence invisible).
-const HIP_POSITION = new THREE.Vector3(0.05, -0.201, -0.132);
-const HIP_ROTATION = new THREE.Euler(0, 0, 0);
-const ADS_POSITION = new THREE.Vector3(-0.025, -0.1735, -0.137);
-const ADS_ROTATION = new THREE.Euler(0, 0, 0);
+const HIP_POSITION = new THREE.Vector3(0.0500, -0.2010, -0.1320);
+const HIP_ROTATION = new THREE.Euler(0.0000, 0.0000, 0.0000);
+const ADS_POSITION = new THREE.Vector3(-0.0170, -0.1680, -0.0830);
+const ADS_ROTATION = new THREE.Euler(0.0070, 0.0017, 0.0000);
 
 // TODO: the new FBX-to-GLB conversion came in at a different scale than the
 // old rig — tune this uniform factor to correct it (applied to the whole
@@ -71,6 +71,15 @@ const MUZZLE_TIP_OFFSET = new THREE.Vector3(0.05, -0.05, -0.6);
 const MUZZLE_FLASH_OFFSET = new THREE.Vector3(0, 0, 0);
 
 const ADS_LERP_PER_SECOND = 14; // how fast the hip/ADS pose blends
+// How much of the Walk/Run animation's bone motion still reaches the gun
+// while fully aimed in — the exaggerated hip-fire walk cycle throws the
+// sights off-center, so this dials it down to a barely-there residual
+// instead of cutting it to a dead 0 (which reads as the gun freezing
+// mid-air relative to the legs' implied motion). Driven by adsBlend below,
+// which is already a smoothed 0-1 lerp of wantAds — reusing it here means
+// this fades in/out on the same curve as the hip->ADS pose blend, with no
+// separate lerp timer needed.
+const ADS_LOCOMOTION_WEIGHT_MIN = 0.05;
 const SWAY_AMOUNT = 0.0016;
 const SWAY_MAX = 0.035;
 const LOCOMOTION_FADE_SECONDS = 0.2;
@@ -350,14 +359,32 @@ export function createPlayerArms(camera) {
       root.position.copy(tmpPos);
       root.quaternion.copy(tmpRot);
 
-      // Mouse sway eases back to center; damped harder during ADS.
+      // Dial the Walk/Run clips' influence down toward ADS_LOCOMOTION_WEIGHT_MIN
+      // as adsBlend rises — the hip-fire walk cycle's exaggerated bone motion
+      // throws the iron sights off-center otherwise. `weight` here is a
+      // separate multiplier from whatever crossFadeTo()'s own fade-in/out is
+      // doing (three.js composes them: effective weight = weight * fade
+      // interpolant), so this doesn't fight or get overwritten by the
+      // idle/walk/run crossfades below. Idle is deliberately left alone —
+      // only requested for Walk/Run, and idle has no locomotion motion to
+      // throw the sights off in the first place.
+      const locomotionWeight = THREE.MathUtils.lerp(
+        1,
+        ADS_LOCOMOTION_WEIGHT_MIN,
+        adsBlend
+      );
+      if (actions.walk) actions.walk.weight = locomotionWeight;
+      if (actions.run) actions.run.weight = locomotionWeight;
+
+      // Mouse sway eases back to center; fully locked out at full ADS so
+      // the sights don't drift off the target as the gun pivots with
+      // mouse movement — (1 - adsBlend) reaches exactly 0 there, rigidly
+      // pinning swayGroup to root instead of just damping it.
       const swayEase = 1 - Math.exp(-10 * deltaTime);
       swayGroup.position.x +=
-        (swayTarget.x * (1 - adsBlend * 0.8) - swayGroup.position.x) *
-        swayEase;
+        (swayTarget.x * (1 - adsBlend) - swayGroup.position.x) * swayEase;
       swayGroup.position.y +=
-        (swayTarget.y * (1 - adsBlend * 0.8) - swayGroup.position.y) *
-        swayEase;
+        (swayTarget.y * (1 - adsBlend) - swayGroup.position.y) * swayEase;
       swayTarget.multiplyScalar(Math.exp(-6 * deltaTime));
 
       // Muzzle flash timeout — independent of the mixer, so it still
