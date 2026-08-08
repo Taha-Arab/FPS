@@ -162,10 +162,13 @@ const scene = new THREE.Scene();
 
 // PerspectiveCamera(fieldOfView, aspectRatio, nearClip, farClip).
 // 75 degrees FOV is a common, comfortable default for FPS-style games.
+// nearClip is 0.001 (not the more typical 0.1) because the viewmodel sits
+// very close to the camera at its current VIEWMODEL_SCALE (see
+// playerArms.js) — 0.1 was slicing through the back of the arms.
 const camera = new THREE.PerspectiveCamera(
   75,
   window.innerWidth / window.innerHeight,
-  0.1,
+  0.001,
   1000
 );
 
