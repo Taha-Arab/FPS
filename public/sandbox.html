@@ -2,10 +2,23 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Viewmodel Calibration Sandbox</title>
+<title>Aim Calibration Room</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1a1e; font-family: -apple-system, "Segoe UI", sans-serif; }
-  canvas { display: block; }
+  canvas { display: block; cursor: crosshair; }
+
+  #hint {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    color: #b8b8c0;
+    font-size: 12px;
+    background: rgba(20, 20, 24, 0.7);
+    padding: 8px 10px;
+    border-radius: 6px;
+    z-index: 10;
+    pointer-events: none;
+  }
 
   #crosshair {
     position: fixed;
@@ -13,7 +26,6 @@
     left: 50%;
     transform: translate(-50%, -50%);
     pointer-events: none;
-    display: none;
     z-index: 5;
   }
   #crosshair .ch-line { position: absolute; background: #39ff6a; }
@@ -28,8 +40,9 @@
     position: fixed;
     top: 12px;
     right: 12px;
-    width: 300px;
-    background: rgba(20, 20, 24, 0.88);
+    bottom: 12px;
+    width: 320px;
+    background: rgba(20, 20, 24, 0.9);
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 8px;
     padding: 14px;
@@ -37,12 +50,17 @@
     font-size: 12px;
     z-index: 10;
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+    overflow-y: auto;
   }
-  #panel h1 {
-    font-size: 13px;
-    margin: 0 0 10px;
-    color: #fff;
-    letter-spacing: 0.02em;
+  #panel h1 { font-size: 13px; margin: 0 0 10px; color: #fff; letter-spacing: 0.02em; }
+  #panel h2 {
+    font-size: 11px;
+    margin: 16px 0 8px;
+    color: #39ff6a;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding-bottom: 4px;
   }
   #panel .row { display: flex; gap: 8px; margin-bottom: 8px; }
   #panel button {
@@ -58,7 +76,7 @@
   #panel button:hover { background: #37373f; }
   #panel button.active { background: #39ff6a; color: #0a0a0a; border-color: #39ff6a; font-weight: 600; }
 
-  .slider-block { margin-bottom: 10px; }
+  .slider-block { margin-bottom: 9px; }
   .slider-label {
     display: flex;
     justify-content: space-between;
@@ -76,16 +94,22 @@
     border-radius: 5px;
     padding: 8px;
     font-family: "SF Mono", Consolas, monospace;
-    font-size: 10.5px;
+    font-size: 10px;
     line-height: 1.5;
     white-space: pre;
     color: #9be89b;
     overflow-x: auto;
     user-select: all;
+    margin-bottom: 8px;
   }
 </style>
 </head>
 <body>
+
+<div id="hint">
+  Click the scene to look around (Esc to release)<br />
+  Hold Right-Click or use the ADS button to aim
+</div>
 
 <div id="crosshair">
   <div class="ch-line ch-h"></div>
@@ -94,35 +118,25 @@
 </div>
 
 <div id="panel">
-  <h1>Viewmodel Calibration</h1>
+  <h1>Aim Calibration</h1>
 
   <div class="row">
-    <button id="btn-camera">Camera: Orbit</button>
+    <button id="btn-ads">ADS: Off</button>
   </div>
 
-  <div class="row">
-    <button id="btn-mode">Editing: HIP</button>
-  </div>
-
-  <div class="slider-block">
-    <div class="slider-label"><span>Scale</span><span class="val" id="val-scale"></span></div>
-    <input type="range" id="slider-scale" min="0.0001" max="1000" step="0.0001" />
-  </div>
-
-  <div class="slider-block">
-    <div class="slider-label"><span>X</span><span class="val" id="val-x"></span></div>
-    <input type="range" id="slider-x" min="-2" max="2" step="0.001" />
-  </div>
-  <div class="slider-block">
-    <div class="slider-label"><span>Y</span><span class="val" id="val-y"></span></div>
-    <input type="range" id="slider-y" min="-2" max="2" step="0.001" />
-  </div>
-  <div class="slider-block">
-    <div class="slider-label"><span>Z</span><span class="val" id="val-z"></span></div>
-    <input type="range" id="slider-z" min="-2" max="2" step="0.001" />
-  </div>
+  <h2>Hip Position</h2>
+  <div id="group-hip-pos"></div>
+  <h2>Hip Rotation</h2>
+  <div id="group-hip-rot"></div>
+  <h2>ADS Position</h2>
+  <div id="group-ads-pos"></div>
+  <h2>ADS Rotation</h2>
+  <div id="group-ads-rot"></div>
 
   <hr />
+  <div class="row">
+    <button id="btn-copy">Copy Code</button>
+  </div>
   <div id="output"></div>
 </div>
 
@@ -139,35 +153,44 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 
 // ---------------------------------------------------------------------------
-// Standalone calibration sandbox (feat/player-arms) — NOT part of the Vite
-// build (loads three.js from a CDN via importmap), used to find
-// VIEWMODEL_SCALE / HIP_POSITION / ADS_POSITION for src/playerArms.js by
-// eyeballing the arms against a reference bot mesh, both in orbit view and
-// through a locked FPS-style camera.
+// Aim calibration room (feat/player-arms) — NOT part of the Vite build
+// (three.js loaded from a CDN via importmap). Live-tunes HIP_POSITION/
+// HIP_ROTATION/ADS_POSITION/ADS_ROTATION for src/playerArms.js against two
+// stationary SWAT dummies, without a full match restart per change.
+// Read src/playerArms.js by hand to seed the starting values below whenever
+// those constants change — this file has no build-time link to that one.
 // ---------------------------------------------------------------------------
 
 const SWAT_MESH_URL = "/assets/bots/swat_mesh.glb";
 const PLAYER_ARMS_URL = "/assets/player/player_arms.glb";
 const DRACO_DECODER_PATH = "/vendor/draco/";
 
-// Seeded from the current constants in src/playerArms.js so this starts
-// from the game's existing calibration instead of zero.
+// Matches src/playerArms.js's own VIEWMODEL_SCALE — not exposed as a
+// slider here since that was already calibrated in the previous sandbox
+// pass; this room is only for HIP_*/ADS_* position + rotation.
+const VIEWMODEL_SCALE = 0.01;
+
+const EYE_HEIGHT = 1.8; // matches main.js: PLAYER_HALF_HEIGHT + PLAYER_RADIUS + EYE_HEIGHT
+
+// Seeded from the exact current constants in src/playerArms.js.
 const state = {
-  scale: 1,
-  mode: "HIP",
-  hip: { x: 0.12, y: -0.15, z: 0.05 },
-  ads: { x: 0, y: -0.05, z: 0.18 },
+  hipPos: { x: 0.05, y: -0.37, z: -0.005 },
+  hipRot: { x: 0, y: 0, z: 0 }, // radians
+  adsPos: { x: -0.025, y: -0.3425, z: -0.01 },
+  adsRot: { x: 0, y: 0, z: 0 }, // radians
 };
+let adsToggle = false;
+let adsRightMouseHeld = false;
+function isAds() {
+  return adsToggle || adsRightMouseHeld;
+}
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1a1e);
-
-const grid = new THREE.GridHelper(20, 20, 0x555566, 0x333340);
-scene.add(grid);
-
+scene.add(new THREE.GridHelper(80, 80, 0x555566, 0x333340));
 scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 const sun = new THREE.DirectionalLight(0xffffff, 1.2);
 sun.position.set(4, 8, 5);
@@ -178,79 +201,79 @@ renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
-// --- Dual cameras -----------------------------------------------------
-const orbitCamera = new THREE.PerspectiveCamera(
-  60,
+// Matches src/main.js's PerspectiveCamera exactly (fov/near/far) so
+// perspective distortion in this room matches the real game.
+const camera = new THREE.PerspectiveCamera(
+  75,
   window.innerWidth / window.innerHeight,
-  0.01,
+  0.001,
   1000
 );
-orbitCamera.position.set(3, 2, 4);
+camera.rotation.order = "YXZ";
+camera.position.set(0, EYE_HEIGHT, 0);
 
-const fpsCamera = new THREE.PerspectiveCamera(
-  70,
-  window.innerWidth / window.innerHeight,
-  0.01,
-  1000
-);
-fpsCamera.position.set(0, 1.5, 0);
-fpsCamera.lookAt(0, 1.5, -1); // straight ahead down -Z, per spec
+// --- Pointer-lock mouselook (mirrors main.js's YXZ FPS look) --------------
+let yaw = 0;
+let pitch = 0;
+const MOUSE_SENSITIVITY = 0.0022;
 
-const orbitControls = new OrbitControls(orbitCamera, renderer.domElement);
-orbitControls.target.set(0, 1, 0);
-orbitControls.enableDamping = true;
-
-let activeCamera = orbitCamera;
-const crosshairEl = document.getElementById("crosshair");
-
-function setActiveCamera(cam) {
-  activeCamera = cam;
-  const isFps = cam === fpsCamera;
-  orbitControls.enabled = !isFps;
-  crosshairEl.style.display = isFps ? "block" : "none";
-  btnCamera.textContent = isFps ? "Camera: FPS" : "Camera: Orbit";
-  btnCamera.classList.toggle("active", isFps);
-}
-
-const btnCamera = document.getElementById("btn-camera");
-btnCamera.addEventListener("click", () => {
-  setActiveCamera(activeCamera === orbitCamera ? fpsCamera : orbitCamera);
+renderer.domElement.addEventListener("click", () => {
+  renderer.domElement.requestPointerLock();
 });
-setActiveCamera(orbitCamera);
+renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
+renderer.domElement.addEventListener("mousedown", (e) => {
+  if (e.button === 2) {
+    adsRightMouseHeld = true;
+    applyPose();
+  }
+});
+window.addEventListener("mouseup", (e) => {
+  if (e.button === 2) {
+    adsRightMouseHeld = false;
+    applyPose();
+  }
+});
+document.addEventListener("mousemove", (e) => {
+  if (document.pointerLockElement !== renderer.domElement) return;
+  yaw -= e.movementX * MOUSE_SENSITIVITY;
+  pitch -= e.movementY * MOUSE_SENSITIVITY;
+  pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+  camera.rotation.set(pitch, yaw, 0);
+});
 
-// --- Loaders ------------------------------------------------------------
+// --- Loaders ---------------------------------------------------------------
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(dracoLoader);
 
-// Reference bot mesh. Pulled off to (0,0,-3) — the FPS camera sits at
-// (0,1.5,0) looking down -Z, and at the origin the bot's torso clips
-// straight through the near plane; -3 puts the whole body in view.
-let swatScene = null;
-
+// Two stationary target dummies at 10m and 30m — no AnimationMixer is ever
+// created for either, so they stay frozen in the file's bind pose (no AI,
+// no movement, nothing to strip beyond just never animating them). Loaded
+// once and SkeletonUtils-cloned for the second copy so the ~116MB GLB
+// isn't fetched twice.
 gltfLoader.load(SWAT_MESH_URL, (gltf) => {
-  swatScene = gltf.scene;
-  swatScene.position.set(0, 0, -3);
-  scene.add(swatScene);
-  tryAutoScale();
+  const dummyNear = gltf.scene;
+  dummyNear.position.set(0, 0, -10);
+  scene.add(dummyNear);
+
+  const dummyFar = cloneSkeleton(gltf.scene);
+  dummyFar.position.set(0, 0, -30);
+  scene.add(dummyFar);
 });
 
-// Player arms, attached directly to fpsCamera so its local position IS the
-// camera-relative HIP/ADS offset — exactly how src/playerArms.js parents it.
-let armsScene = null;
+// Player arms, attached directly to the camera exactly like
+// createPlayerArms() in src/playerArms.js.
+const root = new THREE.Group();
+camera.add(root);
+scene.add(camera);
+
 let armsMixer = null;
 const clock = new THREE.Clock();
 
 gltfLoader.load(PLAYER_ARMS_URL, (gltf) => {
-  armsScene = gltf.scene;
-  fpsCamera.add(armsScene);
-
-  armsScene.traverse((obj) => {
-    if (obj.isMesh || obj.isSkinnedMesh) {
-      obj.frustumCulled = false;
-    }
-  });
+  const armsScene = gltf.scene;
+  armsScene.scale.setScalar(VIEWMODEL_SCALE);
 
   if (gltf.animations && gltf.animations.length > 0) {
     armsMixer = new THREE.AnimationMixer(armsScene);
@@ -258,119 +281,154 @@ gltfLoader.load(PLAYER_ARMS_URL, (gltf) => {
     if (idleClip) armsMixer.clipAction(idleClip).play();
   }
 
-  applyState();
-  tryAutoScale();
-});
-
-// Runs once BOTH models are in the scene graph. Measures each with
-// Box3().setFromObject() and sets state.scale to whatever uniform factor
-// makes the arms' overall bounding-box size (diagonal length, so it isn't
-// tied to any one axis) match the SWAT reference's. This is a STARTING
-// POINT, not a precise fit: Box3().setFromObject() on a SkinnedMesh reads
-// the un-posed bind-pose geometry (it doesn't account for the skinning
-// deformation), and the arms rig covers a totally different silhouette
-// (forearms/hands/gun) than the SWAT body it's being measured against — so
-// treat the result as "in the right order of magnitude, no longer
-// invisible," then fine-tune by eye with the slider.
-function tryAutoScale() {
-  if (!swatScene || !armsScene) return;
-
-  armsScene.scale.setScalar(1);
-  fpsCamera.updateMatrixWorld(true);
-  swatScene.updateMatrixWorld(true);
-
-  const swatSize = new THREE.Box3().setFromObject(swatScene).getSize(new THREE.Vector3());
-  const armsSize = new THREE.Box3().setFromObject(armsScene).getSize(new THREE.Vector3());
-
-  const swatMagnitude = swatSize.length();
-  const armsMagnitude = armsSize.length();
-  if (armsMagnitude <= 0 || !isFinite(armsMagnitude)) return;
-
-  state.scale = swatMagnitude / armsMagnitude;
-  applyState();
-}
-
-// --- UI wiring ------------------------------------------------------------
-const btnMode = document.getElementById("btn-mode");
-const sliderScale = document.getElementById("slider-scale");
-const sliderX = document.getElementById("slider-x");
-const sliderY = document.getElementById("slider-y");
-const sliderZ = document.getElementById("slider-z");
-const valScale = document.getElementById("val-scale");
-const valX = document.getElementById("val-x");
-const valY = document.getElementById("val-y");
-const valZ = document.getElementById("val-z");
-const outputEl = document.getElementById("output");
-
-function currentVec() {
-  return state.mode === "HIP" ? state.hip : state.ads;
-}
-
-// Applies current state to the live model + refreshes all slider/label/
-// output UI. Called on load, on every slider input, and on mode toggle.
-function applyState() {
-  if (armsScene) {
-    armsScene.scale.setScalar(state.scale);
-    const v = currentVec();
-    armsScene.position.set(v.x, v.y, v.z);
+  // Same camera-bone alignment as src/playerArms.js: if the rig has a
+  // camera_01 bone, center it at this group's local origin and correct
+  // for the rig's reversed forward convention.
+  armsScene.updateMatrixWorld(true);
+  const cameraBone = armsScene.getObjectByName("camera_01");
+  if (cameraBone) {
+    const camBoneWorld = cameraBone.getWorldPosition(new THREE.Vector3());
+    armsScene.position.sub(camBoneWorld);
+  } else {
+    console.error(
+      "sandbox: no camera_01 bone found on player_arms.glb — skipping the " +
+        "auto camera-alignment offset, matching src/playerArms.js's fallback"
+    );
   }
+  const wrapper = new THREE.Group();
+  wrapper.add(armsScene);
+  wrapper.rotation.y = Math.PI;
+  root.add(wrapper);
 
-  const v = currentVec();
-  sliderScale.value = state.scale;
-  sliderX.value = v.x;
-  sliderY.value = v.y;
-  sliderZ.value = v.z;
-  valScale.textContent = state.scale.toFixed(4);
-  valX.textContent = v.x.toFixed(3);
-  valY.textContent = v.y.toFixed(3);
-  valZ.textContent = v.z.toFixed(3);
+  const CROSSHAIR_NAME_PATTERN = /crosshair|reticle/i;
+  armsScene.traverse((obj) => {
+    if (obj.isMesh || obj.isSkinnedMesh) {
+      obj.frustumCulled = false;
+      if (CROSSHAIR_NAME_PATTERN.test(obj.name)) obj.visible = false;
+    }
+  });
 
-  outputEl.textContent =
-    `const VIEWMODEL_SCALE = ${state.scale.toFixed(4)};\n\n` +
-    `const HIP_POSITION = new THREE.Vector3(${state.hip.x.toFixed(3)}, ${state.hip.y.toFixed(3)}, ${state.hip.z.toFixed(3)});\n` +
-    `const ADS_POSITION = new THREE.Vector3(${state.ads.x.toFixed(3)}, ${state.ads.y.toFixed(3)}, ${state.ads.z.toFixed(3)});`;
+  applyPose();
+});
+
+// --- Pose application -------------------------------------------------------
+const crosshairEl = document.getElementById("crosshair");
+const eulerScratch = new THREE.Euler();
+
+function applyPose() {
+  const pos = isAds() ? state.adsPos : state.hipPos;
+  const rot = isAds() ? state.adsRot : state.hipRot;
+  root.position.set(pos.x, pos.y, pos.z);
+  eulerScratch.set(rot.x, rot.y, rot.z);
+  root.quaternion.setFromEuler(eulerScratch);
+  crosshairEl.style.display = isAds() ? "none" : "block";
+  refreshOutput();
 }
 
-btnMode.addEventListener("click", () => {
-  state.mode = state.mode === "HIP" ? "ADS" : "HIP";
-  btnMode.textContent = `Editing: ${state.mode}`;
-  btnMode.classList.toggle("active", state.mode === "ADS");
-  applyState();
+// --- Slider panel (generated to avoid 12x near-identical markup blocks) ---
+const SLIDER_GROUPS = [
+  { containerId: "group-hip-pos", store: state.hipPos, isRotation: false },
+  { containerId: "group-hip-rot", store: state.hipRot, isRotation: true },
+  { containerId: "group-ads-pos", store: state.adsPos, isRotation: false },
+  { containerId: "group-ads-rot", store: state.adsRot, isRotation: true },
+];
+
+for (const group of SLIDER_GROUPS) {
+  const container = document.getElementById(group.containerId);
+  for (const axis of ["x", "y", "z"]) {
+    const block = document.createElement("div");
+    block.className = "slider-block";
+
+    const label = document.createElement("div");
+    label.className = "slider-label";
+    const valSpan = document.createElement("span");
+    valSpan.className = "val";
+    label.innerHTML = `<span>${axis.toUpperCase()}</span>`;
+    label.appendChild(valSpan);
+
+    const input = document.createElement("input");
+    input.type = "range";
+    if (group.isRotation) {
+      // Dragged in degrees for intuition; stored/output in radians.
+      input.min = "-180";
+      input.max = "180";
+      input.step = "0.1";
+      input.value = THREE.MathUtils.radToDeg(group.store[axis]);
+    } else {
+      input.min = "-2";
+      input.max = "2";
+      input.step = "0.001";
+      input.value = group.store[axis];
+    }
+
+    function updateLabel() {
+      if (group.isRotation) {
+        const deg = parseFloat(input.value);
+        valSpan.textContent = `${deg.toFixed(1)}° (${THREE.MathUtils.degToRad(deg).toFixed(4)} rad)`;
+      } else {
+        valSpan.textContent = parseFloat(input.value).toFixed(3);
+      }
+    }
+    updateLabel();
+
+    input.addEventListener("input", () => {
+      group.store[axis] = group.isRotation
+        ? THREE.MathUtils.degToRad(parseFloat(input.value))
+        : parseFloat(input.value);
+      updateLabel();
+      applyPose();
+    });
+
+    block.appendChild(label);
+    block.appendChild(input);
+    container.appendChild(block);
+  }
+}
+
+// --- ADS toggle button + output/copy ---------------------------------------
+const btnAds = document.getElementById("btn-ads");
+btnAds.addEventListener("click", () => {
+  adsToggle = !adsToggle;
+  btnAds.textContent = `ADS: ${adsToggle ? "On" : "Off"}`;
+  btnAds.classList.toggle("active", adsToggle);
+  applyPose();
 });
 
-sliderScale.addEventListener("input", () => {
-  state.scale = parseFloat(sliderScale.value);
-  applyState();
-});
-sliderX.addEventListener("input", () => {
-  currentVec().x = parseFloat(sliderX.value);
-  applyState();
-});
-sliderY.addEventListener("input", () => {
-  currentVec().y = parseFloat(sliderY.value);
-  applyState();
-});
-sliderZ.addEventListener("input", () => {
-  currentVec().z = parseFloat(sliderZ.value);
-  applyState();
+const outputEl = document.getElementById("output");
+function refreshOutput() {
+  const p = (v) => v.toFixed(4);
+  outputEl.textContent =
+    `const HIP_POSITION = new THREE.Vector3(${p(state.hipPos.x)}, ${p(state.hipPos.y)}, ${p(state.hipPos.z)});\n` +
+    `const HIP_ROTATION = new THREE.Euler(${p(state.hipRot.x)}, ${p(state.hipRot.y)}, ${p(state.hipRot.z)});\n` +
+    `const ADS_POSITION = new THREE.Vector3(${p(state.adsPos.x)}, ${p(state.adsPos.y)}, ${p(state.adsPos.z)});\n` +
+    `const ADS_ROTATION = new THREE.Euler(${p(state.adsRot.x)}, ${p(state.adsRot.y)}, ${p(state.adsRot.z)});`;
+}
+refreshOutput();
+
+const btnCopy = document.getElementById("btn-copy");
+btnCopy.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(outputEl.textContent);
+    btnCopy.textContent = "Copied!";
+  } catch {
+    // Clipboard API can be blocked (permissions/insecure context); the
+    // output block has user-select: all as a manual fallback.
+    btnCopy.textContent = "Select text below";
+  }
+  setTimeout(() => (btnCopy.textContent = "Copy Code"), 1200);
 });
 
-applyState();
-
-// --- Resize + render loop --------------------------------------------------
+// --- Resize + render loop ---------------------------------------------------
 window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
-  orbitCamera.aspect = window.innerWidth / window.innerHeight;
-  orbitCamera.updateProjectionMatrix();
-  fpsCamera.aspect = window.innerWidth / window.innerHeight;
-  fpsCamera.updateProjectionMatrix();
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
 });
 
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   if (armsMixer) armsMixer.update(dt);
-  orbitControls.update();
-  renderer.render(scene, activeCamera);
+  renderer.render(scene, camera);
 });
 </script>
 </body>
