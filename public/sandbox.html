@@ -88,6 +88,25 @@
 
   hr { border: none; border-top: 1px solid rgba(255, 255, 255, 0.12); margin: 12px 0; }
 
+  /* Mirrors #damage-numbers / .damage-number in src/style.css exactly. */
+  #damage-numbers { position: fixed; inset: 0; overflow: hidden; pointer-events: none; user-select: none; z-index: 6; }
+  .damage-number {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: #ffd977;
+    text-shadow: 0 0 6px rgba(0, 0, 0, 0.9), 0 2px 4px rgba(0, 0, 0, 0.7);
+    animation: damage-number-pop 0.8s ease-out forwards;
+  }
+  .damage-number.headshot { color: #ff5b45; font-size: 1.3rem; }
+  @keyframes damage-number-pop {
+    0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+    12% { opacity: 1; transform: translate(-50%, -58%) scale(1.35); }
+    30% { transform: translate(-50%, -80%) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, -190%) scale(0.9); }
+  }
+
   #output {
     background: #0c0c0f;
     border: 1px solid rgba(255, 255, 255, 0.1);
@@ -108,8 +127,11 @@
 
 <div id="hint">
   Click the scene to look around (Esc to release)<br />
-  Hold Right-Click or use the ADS button to aim
+  Hold Right-Click or use the ADS button to aim<br />
+  Left-click to fire at the dummies
 </div>
+
+<div id="damage-numbers"></div>
 
 <div id="crosshair">
   <div class="ch-line ch-h"></div>
@@ -173,6 +195,20 @@ const DRACO_DECODER_PATH = "/vendor/draco/";
 // pass; this room is only for HIP_*/ADS_* position + rotation.
 const VIEWMODEL_SCALE = 0.01;
 
+// Hardcoded, measured-once offset from the fully-assembled wrapper's own
+// origin (post-scale, post camera-bone-alignment, post 180° yaw) to the
+// gun's actual bounding-box center — i.e. "how far off is the rig's local
+// origin from the shoulder, from where the gun visually sits." Rotating
+// HIP_ROTATION/ADS_ROTATION previously swung the barrel through a huge arc
+// because that origin sat at the shoulder while the barrel was ~0.13-0.17
+// units away in local space; shifting wrapper's position by -this makes
+// the gun's own center coincide with the pivot the sliders rotate around.
+// Measured via Box3().setFromObject(wrapper) right after construction,
+// while wrapper was still unparented — re-measure and update this constant
+// if player_arms.glb, VIEWMODEL_SCALE, or the alignment logic below ever
+// changes. MUST be mirrored exactly into src/playerArms.js (see there).
+const GUN_CENTER_OFFSET = new THREE.Vector3(0, 0.169, -0.127);
+
 const EYE_HEIGHT = 1.8; // matches main.js: PLAYER_HALF_HEIGHT + PLAYER_RADIUS + EYE_HEIGHT
 
 // Seeded from the exact current constants in src/playerArms.js.
@@ -225,6 +261,8 @@ renderer.domElement.addEventListener("mousedown", (e) => {
   if (e.button === 2) {
     adsRightMouseHeld = true;
     applyPose();
+  } else if (e.button === 0) {
+    if (document.pointerLockElement === renderer.domElement) fireShot();
   }
 });
 window.addEventListener("mouseup", (e) => {
@@ -247,20 +285,102 @@ dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(dracoLoader);
 
-// Two stationary target dummies at 10m and 30m — no AnimationMixer is ever
-// created for either, so they stay frozen in the file's bind pose (no AI,
-// no movement, nothing to strip beyond just never animating them). Loaded
-// once and SkeletonUtils-cloned for the second copy so the ~116MB GLB
-// isn't fetched twice.
-gltfLoader.load(SWAT_MESH_URL, (gltf) => {
-  const dummyNear = gltf.scene;
-  dummyNear.position.set(0, 0, -10);
-  scene.add(dummyNear);
+// Two stationary target dummies at 10m/30m, offset on X so they're not
+// staring straight through each other down the same line — no
+// AnimationMixer is ever created for either, so they stay frozen in the
+// file's bind pose (no AI, no movement, nothing to strip beyond just never
+// animating them). Loaded once and SkeletonUtils-cloned for the second
+// copy so the ~116MB GLB isn't fetched twice.
+// GUN_DAMAGE/HEADSHOT_* mirror the real constants in src/main.js and
+// src/botmodel.js so damage numbers here mean the same thing they would
+// in an actual match.
+const GUN_DAMAGE = 25;
+const HEADSHOT_MULTIPLIER = 2;
+const DUMMY_HEALTH_MAX = 100;
+// main.js's headshot check is hitPoint.y > bot.body.translation().y +
+// HEADSHOT_MIN_Y_OFFSET(0.52), where body.translation() is the physics
+// capsule's CENTER (ground + PLAYER_HALF_HEIGHT + PLAYER_RADIUS = 1.0m).
+// These dummies have no physics body, so approximate that same center as
+// dummy.position.y + 1.0 (dummy roots sit at ground/feet level).
+const HEADSHOT_MIN_Y = 1.0 + 0.52;
 
-  const dummyFar = cloneSkeleton(gltf.scene);
-  dummyFar.position.set(0, 0, -30);
-  scene.add(dummyFar);
+const targets = []; // { root, health } for every dummy, used by the raycast below
+
+function makeDummy(gltfScene, x, z) {
+  gltfScene.position.set(x, 0, z);
+  scene.add(gltfScene);
+  const dummy = { root: gltfScene, health: DUMMY_HEALTH_MAX };
+  gltfScene.traverse((obj) => {
+    if (obj.isMesh || obj.isSkinnedMesh) obj.userData.dummy = dummy;
+  });
+  targets.push(dummy);
+}
+
+gltfLoader.load(SWAT_MESH_URL, (gltf) => {
+  // Clone BEFORE either copy gets a userData.dummy tag — dummy.root
+  // circularly references the scene object itself, and SkeletonUtils.clone()
+  // copies userData via JSON.stringify() internally, which throws on a
+  // circular structure if the tag is already present at clone time.
+  const clonedScene = cloneSkeleton(gltf.scene);
+  makeDummy(gltf.scene, -3, -10);
+  makeDummy(clonedScene, 3, -30);
 });
+
+// --- Shooting: raycast + floating damage numbers, mirroring fireShot()/
+// spawnDamageNumber() in src/main.js — a THREE.Raycaster against the
+// dummies' meshes stands in for the real game's Rapier physics castRay
+// (no physics world exists in this sandbox), everything else (headshot
+// rule, damage math, DOM popup + CSS animation) is the same technique. ---
+const damageNumbersEl = document.getElementById("damage-numbers");
+const DAMAGE_NUMBER_LIFETIME_MS = 850;
+
+function spawnDamageNumber(worldPoint, amount, isHeadshot) {
+  const projected = new THREE.Vector3(
+    worldPoint.x,
+    worldPoint.y,
+    worldPoint.z
+  ).project(camera);
+  if (projected.z > 1) return; // behind the camera
+
+  const el = document.createElement("span");
+  el.className = isHeadshot ? "damage-number headshot" : "damage-number";
+  el.textContent = String(Math.round(amount));
+  const jitterX = (Math.random() - 0.5) * 28;
+  el.style.left = `${((projected.x + 1) / 2) * window.innerWidth + jitterX}px`;
+  el.style.top = `${((1 - projected.y) / 2) * window.innerHeight}px`;
+  damageNumbersEl.appendChild(el);
+  setTimeout(() => el.remove(), DAMAGE_NUMBER_LIFETIME_MS);
+}
+
+const raycaster = new THREE.Raycaster();
+raycaster.far = 100; // matches GUN_RANGE in main.js
+
+function fireShot() {
+  if (shootAction) {
+    shootAction.reset().play();
+    if (idleAction) shootAction.crossFadeFrom(idleAction, 0.08, false);
+  }
+
+  raycaster.set(camera.position, camera.getWorldDirection(new THREE.Vector3()));
+  const hits = raycaster.intersectObjects(
+    targets.map((t) => t.root),
+    true
+  );
+  if (hits.length === 0) return;
+
+  const dummy = hits[0].object.userData.dummy;
+  if (!dummy) return;
+
+  const isHeadshot = hits[0].point.y > dummy.root.position.y + HEADSHOT_MIN_Y;
+  const damage = isHeadshot ? GUN_DAMAGE * HEADSHOT_MULTIPLIER : GUN_DAMAGE;
+
+  // Never actually dies/despawns: once depleted it just resets to full, so
+  // it's a repeatable target instead of a one-shot kill.
+  dummy.health -= damage;
+  if (dummy.health <= 0) dummy.health = DUMMY_HEALTH_MAX;
+
+  spawnDamageNumber(hits[0].point, damage, isHeadshot);
+}
 
 // Player arms, attached directly to the camera exactly like
 // createPlayerArms() in src/playerArms.js.
@@ -269,6 +389,8 @@ camera.add(root);
 scene.add(camera);
 
 let armsMixer = null;
+let idleAction = null;
+let shootAction = null;
 const clock = new THREE.Clock();
 
 gltfLoader.load(PLAYER_ARMS_URL, (gltf) => {
@@ -278,7 +400,22 @@ gltfLoader.load(PLAYER_ARMS_URL, (gltf) => {
   if (gltf.animations && gltf.animations.length > 0) {
     armsMixer = new THREE.AnimationMixer(armsScene);
     const idleClip = gltf.animations.find((c) => /idle/i.test(c.name));
-    if (idleClip) armsMixer.clipAction(idleClip).play();
+    if (idleClip) {
+      idleAction = armsMixer.clipAction(idleClip);
+      idleAction.play();
+    }
+    const shootClip = gltf.animations.find((c) => /shoot/i.test(c.name));
+    if (shootClip) {
+      shootAction = armsMixer.clipAction(shootClip);
+      shootAction.setLoop(THREE.LoopOnce, 1);
+      shootAction.clampWhenFinished = false;
+      armsMixer.addEventListener("finished", (event) => {
+        if (event.action === shootAction && idleAction) {
+          idleAction.reset().play();
+          idleAction.crossFadeFrom(shootAction, 0.15, false);
+        }
+      });
+    }
   }
 
   // Same camera-bone alignment as src/playerArms.js: if the rig has a
@@ -298,6 +435,10 @@ gltfLoader.load(PLAYER_ARMS_URL, (gltf) => {
   const wrapper = new THREE.Group();
   wrapper.add(armsScene);
   wrapper.rotation.y = Math.PI;
+  // Re-centers the (already rotated) gun so its visual center — not the
+  // shoulder — sits at root's origin, i.e. at the pivot HIP_ROTATION/
+  // ADS_ROTATION actually rotate around. See GUN_CENTER_OFFSET above.
+  wrapper.position.sub(GUN_CENTER_OFFSET);
   root.add(wrapper);
 
   const CROSSHAIR_NAME_PATTERN = /crosshair|reticle/i;

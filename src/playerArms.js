@@ -19,9 +19,9 @@ import * as THREE from "three";
 // is a reasonable starting point, not the model's raw/unprocessed
 // coordinates. Get HIP_* framed nicely in the corner first, then tune ADS_*
 // so the sights line up dead-center with the crosshair.
-const HIP_POSITION = new THREE.Vector3(0.12, -0.15, 0.05);
+const HIP_POSITION = new THREE.Vector3(0.05, -0.37, -0.005);
 const HIP_ROTATION = new THREE.Euler(0, 0, 0);
-const ADS_POSITION = new THREE.Vector3(0, -0.05, 0.18);
+const ADS_POSITION = new THREE.Vector3(-0.025, -0.3425, -0.01);
 const ADS_ROTATION = new THREE.Euler(0, 0, 0);
 
 // TODO: the new FBX-to-GLB conversion came in at a different scale than the
@@ -29,7 +29,21 @@ const ADS_ROTATION = new THREE.Euler(0, 0, 0);
 // loaded scene before the camera-bone alignment below measures it, so
 // HIP_*/ADS_* stay in the same "camera-local meters" space regardless of
 // what this is set to).
-const VIEWMODEL_SCALE = 1;
+const VIEWMODEL_SCALE = 0.01;
+
+// Hardcoded, measured-once offset from the fully-assembled wrapper's own
+// origin (post-scale, post camera-bone-alignment, post 180° yaw) to the
+// gun's actual bounding-box center — i.e. how far the rig's local origin
+// sits from the shoulder versus where the gun visually is. Without this,
+// HIP_ROTATION/ADS_ROTATION pivot around the shoulder and swing the barrel
+// through a huge arc for a small rotation; shifting wrapper's position by
+// -this makes the gun's own center coincide with that pivot instead, so it
+// twists cleanly in place. Measured via
+// Box3().setFromObject(wrapper).getCenter() right after wrapper's
+// construction below, while unparented — mirrored exactly from
+// public/sandbox.html's GUN_CENTER_OFFSET; re-measure both together if
+// player_arms.glb, VIEWMODEL_SCALE, or the alignment logic changes.
+const GUN_CENTER_OFFSET = new THREE.Vector3(0, 0.169, -0.127);
 
 // TODO: nudge to match the gun barrel's actual on-screen tip once HIP_* is
 // dialed in above — this drives the tracer origin (in main.js) AND the
@@ -247,6 +261,10 @@ export function createPlayerArms(camera) {
       const wrapper = new THREE.Group();
       wrapper.add(scene);
       wrapper.rotation.y = Math.PI;
+      // Re-centers the (already rotated) gun so its visual center — not the
+      // shoulder — sits at root's origin, i.e. at the pivot HIP_ROTATION/
+      // ADS_ROTATION actually rotate around. See GUN_CENTER_OFFSET above.
+      wrapper.position.sub(GUN_CENTER_OFFSET);
       swayGroup.add(wrapper);
       armsWrapper = wrapper;
 
