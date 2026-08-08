@@ -459,6 +459,30 @@ export function createPlayerArms(camera) {
         flashLight.intensity = 0;
       }
 
+      // Absolute ADS kill-switch (not shooting/reloading): the weight clamp
+      // above only zeroes Walk/Run's own base weight — it can't stop
+      // crossFadeTo() below from still calling .play()/.crossFadeFrom() on
+      // them, which schedules a fresh fade-in interpolant every time
+      // locomotion state changes (e.g. right when a one-shot finishes and
+      // falls back to "still moving" -> Walk). That interpolant is a
+      // multiplier layered on top of the weight clamp, so it SHOULD still
+      // resolve to ~0 — but leaving Walk/Run merely "faded to near-zero"
+      // instead of fully out of mixer evaluation is exactly the kind of gap
+      // this file has already been bitten by once. Skipped while a one-shot
+      // is active so it doesn't fight Shoot/Reload's own crossfade-out of
+      // whatever was current (idle, here, once the block below stops Walk/
+      // Run from ever becoming current while aiming) — forcing idle to
+      // weight 1 at the same time as an active one-shot would double-count
+      // both actions' contributions instead of a clean blend.
+      if (state.wantAds && !activeOneShot) {
+        if (actions.walk && actions.walk.isRunning()) actions.walk.stop();
+        if (actions.run && actions.run.isRunning()) actions.run.stop();
+        if (actions.idle && actions.idle.getEffectiveWeight() !== 1) {
+          actions.idle.play();
+          actions.idle.setEffectiveWeight(1);
+        }
+      }
+
       if (!mixer) return;
       mixer.update(deltaTime);
 
@@ -468,9 +492,20 @@ export function createPlayerArms(camera) {
       // landing on idle if the player has since stopped moving (satisfying
       // "then return to idle" for the common case) or continuing
       // walk/run if they kept moving while firing/reloading, rather than
-      // forcing a jarring snap-to-idle either way.
+      // forcing a jarring snap-to-idle either way. While aiming, Walk/Run
+      // are never even offered as an option — regardless of movement, so
+      // the fallback right after a one-shot finishes can't hand control
+      // back to them either — only Idle. This is the actual fix for the
+      // reported bug: the weight clamp above reduces Walk/Run's
+      // contribution to ~0, but "current action" was still becoming Walk
+      // whenever moveSpeed01 > 0 even while fully aimed, and it's THAT
+      // clip being active (crossfading, scheduling weight interpolants,
+      // etc.) that let a stray frame or two of motion leak through —
+      // most visibly right as a one-shot's fallback re-triggered it.
       if (activeOneShot) return;
-      if (state.sprinting && actions.run) {
+      if (state.wantAds) {
+        if (actions.idle) crossFadeTo(actions.idle, LOCOMOTION_FADE_SECONDS);
+      } else if (state.sprinting && actions.run) {
         crossFadeTo(actions.run, LOCOMOTION_FADE_SECONDS);
       } else if (state.moveSpeed01 > 0 && actions.walk) {
         crossFadeTo(actions.walk, LOCOMOTION_FADE_SECONDS);
