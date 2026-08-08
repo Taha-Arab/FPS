@@ -72,16 +72,26 @@ const MUZZLE_FLASH_OFFSET = new THREE.Vector3(0, 0, 0);
 
 const ADS_LERP_PER_SECOND = 14; // how fast the hip/ADS pose blends
 // How much of the Walk/Run animation's bone motion still reaches the gun
-// while fully aimed in — the exaggerated hip-fire walk cycle throws the
-// sights off-center, so this dials it down to a barely-there residual
-// instead of cutting it to a dead 0 (which reads as the gun freezing
-// mid-air relative to the legs' implied motion). Driven by adsBlend below,
-// which is already a smoothed 0-1 lerp of wantAds — reusing it here means
-// this fades in/out on the same curve as the hip->ADS pose blend, with no
-// separate lerp timer needed.
-const ADS_LOCOMOTION_WEIGHT_MIN = 0.05;
+// while fully aimed in. A residual walk cycle (previously left at 0.05, not
+// 0) still swings the arm/hand bones — since front and rear sights are
+// skinned to different points along the gun, ANY bone rotation moves them
+// by different amounts and throws them out of alignment with each other,
+// which a pure position offset (the sway below) can never do on its own.
+// Clamped fully to 0 so no animation motion reaches the gun at all while
+// aiming. Driven by adsBlend below, which is already a smoothed 0-1 lerp of
+// wantAds — reusing it here means this fades in/out on the same curve as
+// the hip->ADS pose blend, with no separate lerp timer needed.
+const ADS_LOCOMOTION_WEIGHT_MIN = 0;
 const SWAY_AMOUNT = 0.0016;
 const SWAY_MAX = 0.035;
+// Microscopic ADS-only "weapon inertia": the gun lags a hair behind the
+// player's own camera-relative movement (strafe -> X, forward/back -> Y),
+// like it has physical mass, instead of tracking the camera perfectly
+// rigidly. Deliberately tiny (per-request range 0.001-0.002) — this must
+// stay below the threshold of conscious notice, purely a subconscious
+// "this weighs something" cue, never big enough to actually disrupt aim.
+const ADS_TRANSLATIONAL_LAG_MULTIPLIER = 0.0015;
+const ADS_TRANSLATIONAL_LAG_LERP_PER_SECOND = 6; // how fast the lag catches up/releases
 const LOCOMOTION_FADE_SECONDS = 0.2;
 const ONE_SHOT_FADE_SECONDS = 0.08;
 const MUZZLE_FLASH_MS = 45; // how long the flash sprite/light stays lit
@@ -163,6 +173,14 @@ export function createPlayerArms(camera) {
 
   let adsBlend = 0; // 0 = hip, 1 = aiming down sights
   const swayTarget = new THREE.Vector2();
+  // Eased mouse-look sway (fades to 0 approaching full ADS) and the ADS
+  // translational-lag effect (fades to 0 approaching hip-fire) are summed
+  // into swayGroup.position each frame in update() — kept as two separate
+  // running values, each with its own ease rate, rather than one shared
+  // value, since they fade in opposite directions and would otherwise fight
+  // whichever one's target hits 0 first.
+  const mouseSway = new THREE.Vector2();
+  const translationalLag = new THREE.Vector2();
   const hipQuat = new THREE.Quaternion().setFromEuler(HIP_ROTATION);
   const adsQuat = new THREE.Quaternion().setFromEuler(ADS_ROTATION);
   const tmpPos = new THREE.Vector3();
@@ -343,7 +361,10 @@ export function createPlayerArms(camera) {
       return adsBlend;
     },
 
-    // state: { wantAds, sprinting, moveSpeed01 }
+    // state: { wantAds, sprinting, moveSpeed01, moveForward, moveRight }
+    // moveForward/moveRight are camera-relative WASD input in -1..1, from
+    // main.js's computeHorizontalMovement() (captured before it rotates
+    // them into world space) — used below for the ADS translational lag.
     update(deltaTime, state) {
       const adsTarget = state.wantAds && !state.sprinting ? 1 : 0;
       const lerpStep = 1 - Math.exp(-ADS_LERP_PER_SECOND * deltaTime);
@@ -376,16 +397,34 @@ export function createPlayerArms(camera) {
       if (actions.walk) actions.walk.weight = locomotionWeight;
       if (actions.run) actions.run.weight = locomotionWeight;
 
-      // Mouse sway eases back to center; fully locked out at full ADS so
-      // the sights don't drift off the target as the gun pivots with
-      // mouse movement — (1 - adsBlend) reaches exactly 0 there, rigidly
-      // pinning swayGroup to root instead of just damping it.
+      // Mouse-look sway eases back to center; fully locked out approaching
+      // full ADS so the sights don't drift off the target as the gun pivots
+      // with mouse movement — (1 - adsBlend) reaches exactly 0 there.
+      // swayGroup only ever has its .position touched (never .rotation or
+      // .quaternion) anywhere in this file, so this — and the translational
+      // lag right below — can only ever translate the gun, never rotate it;
+      // front and rear sights, being rigidly skinned to the same un-rotated
+      // mesh, therefore can't be knocked out of alignment with each other
+      // by either effect, by construction rather than by an explicit guard.
       const swayEase = 1 - Math.exp(-10 * deltaTime);
-      swayGroup.position.x +=
-        (swayTarget.x * (1 - adsBlend) - swayGroup.position.x) * swayEase;
-      swayGroup.position.y +=
-        (swayTarget.y * (1 - adsBlend) - swayGroup.position.y) * swayEase;
+      mouseSway.x += (swayTarget.x * (1 - adsBlend) - mouseSway.x) * swayEase;
+      mouseSway.y += (swayTarget.y * (1 - adsBlend) - mouseSway.y) * swayEase;
       swayTarget.multiplyScalar(Math.exp(-6 * deltaTime));
+
+      // ADS-only translational lag: a microscopic opposite-of-movement
+      // offset (strafe -> X, forward/back -> Y) that fades in approaching
+      // full ADS via the same adsBlend multiplier, so it's silent during
+      // hip-fire and eases away the moment ADS releases.
+      const lagTargetX =
+        -(state.moveRight || 0) * ADS_TRANSLATIONAL_LAG_MULTIPLIER * adsBlend;
+      const lagTargetY =
+        -(state.moveForward || 0) * ADS_TRANSLATIONAL_LAG_MULTIPLIER * adsBlend;
+      const lagEase = 1 - Math.exp(-ADS_TRANSLATIONAL_LAG_LERP_PER_SECOND * deltaTime);
+      translationalLag.x += (lagTargetX - translationalLag.x) * lagEase;
+      translationalLag.y += (lagTargetY - translationalLag.y) * lagEase;
+
+      swayGroup.position.x = mouseSway.x + translationalLag.x;
+      swayGroup.position.y = mouseSway.y + translationalLag.y;
 
       // Muzzle flash timeout — independent of the mixer, so it still
       // decays even on the rare frame the model hasn't loaded yet.

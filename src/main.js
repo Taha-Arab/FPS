@@ -2827,6 +2827,13 @@ function startRenderLoop({
   let isSprinting = false;
   // 0..1 "how much horizontal movement input this frame" for weapon bob.
   let moveInput01 = 0;
+  // Camera-relative WASD input (-1..1 each), fed to the viewmodel for its
+  // ADS translational-lag effect — see computeHorizontalMovement() below,
+  // which computes these BEFORE rotating them into world space, so they're
+  // already "forward"/"right" relative to the view, matching playerArms.js's
+  // own camera-local convention.
+  let moveInputForward = 0;
+  let moveInputRight = 0;
   // Milestone 7: true while the player's collider is the shorter crouch
   // capsule. Driven by hold-C plus a headroom check when standing up.
   let isCrouching = false;
@@ -3711,6 +3718,8 @@ function startRenderLoop({
     const worldZ = inputForward * -cosYaw + inputRight * -sinYaw;
 
     moveInput01 = inputLength > 0 ? 1 : 0;
+    moveInputForward = inputForward;
+    moveInputRight = inputRight;
 
     // Sprint: Shift + forward movement, blocked while crouching, aiming,
     // firing, or reloading — the standard modern-FPS rule set.
@@ -3865,6 +3874,8 @@ function startRenderLoop({
     if (!playing) {
       isSprinting = false;
       moveInput01 = 0;
+      moveInputForward = 0;
+      moveInputRight = 0;
     }
     const targetFov =
       isAiming && !isSprinting && playing
@@ -3881,6 +3892,8 @@ function startRenderLoop({
       wantAds: isAiming && playing,
       sprinting: isSprinting,
       moveSpeed01: moveInput01,
+      moveForward: moveInputForward,
+      moveRight: moveInputRight,
     });
 
     // Hide the crosshair while ADS (the iron sights are the aim reference).
