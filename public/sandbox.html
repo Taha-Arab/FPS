@@ -211,11 +211,19 @@ const GUN_CENTER_OFFSET = new THREE.Vector3(0, 0.169, -0.127);
 
 const EYE_HEIGHT = 1.8; // matches main.js: PLAYER_HALF_HEIGHT + PLAYER_RADIUS + EYE_HEIGHT
 
-// Seeded from the exact current constants in src/playerArms.js.
+// Seeded from src/playerArms.js's HIP_POSITION/ADS_POSITION, COMPENSATED
+// by +GUN_CENTER_OFFSET. Those constants were calibrated back when
+// wrapper sat at root's origin (position (0,0,0)) — i.e. root.position
+// WAS the gun's world offset directly. Now that wrapper.position is
+// permanently offset by -GUN_CENTER_OFFSET (see above), the gun's world
+// offset is root.position + wrapper.position, so root.position has to be
+// the OLD calibrated value PLUS GUN_CENTER_OFFSET to land the gun in the
+// same visible spot as before — without this, the old values put the gun
+// behind the camera (verified: armsScene ended up at local Z > 0).
 const state = {
-  hipPos: { x: 0.05, y: -0.37, z: -0.005 },
+  hipPos: { x: 0.05, y: -0.201, z: -0.132 },
   hipRot: { x: 0, y: 0, z: 0 }, // radians
-  adsPos: { x: -0.025, y: -0.3425, z: -0.01 },
+  adsPos: { x: -0.025, y: -0.1735, z: -0.137 },
   adsRot: { x: 0, y: 0, z: 0 }, // radians
 };
 let adsToggle = false;

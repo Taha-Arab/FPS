@@ -19,9 +19,20 @@ import * as THREE from "three";
 // is a reasonable starting point, not the model's raw/unprocessed
 // coordinates. Get HIP_* framed nicely in the corner first, then tune ADS_*
 // so the sights line up dead-center with the crosshair.
-const HIP_POSITION = new THREE.Vector3(0.05, -0.37, -0.005);
+//
+// These are the original calibrated values (0.05, -0.37, -0.005) /
+// (-0.025, -0.3425, -0.01) PLUS GUN_CENTER_OFFSET (see below). They were
+// tuned back when wrapper sat at root's local origin, i.e. root.position
+// WAS the gun's world offset directly; now that wrapper.position is
+// permanently shifted by -GUN_CENTER_OFFSET, the gun's world offset is
+// root.position + wrapper.position, so this had to move by +GUN_CENTER_OFFSET
+// to land the gun in the same visible spot as before that shift — without
+// this compensation the old values put the gun's local Z behind the
+// camera (verified empirically: armsScene ended up at local Z > +0.12,
+// i.e. behind the near plane, hence invisible).
+const HIP_POSITION = new THREE.Vector3(0.05, -0.201, -0.132);
 const HIP_ROTATION = new THREE.Euler(0, 0, 0);
-const ADS_POSITION = new THREE.Vector3(-0.025, -0.3425, -0.01);
+const ADS_POSITION = new THREE.Vector3(-0.025, -0.1735, -0.137);
 const ADS_ROTATION = new THREE.Euler(0, 0, 0);
 
 // TODO: the new FBX-to-GLB conversion came in at a different scale than the
