@@ -149,7 +149,11 @@ import {
   SHOOT_ANIM_HOLD_MS,
 } from "./botmodel.js";
 import { loadGameAssets } from "./assets.js";
+import { inject } from "@vercel/analytics";
 
+
+// Initialize Vercel Web Analytics
+inject();
 // Resolved GLB assets (feat/fps-overhaul) — null until the async load in
 // startMatch() finishes; every consumer falls back to procedural models.
 let gameAssets = null;
