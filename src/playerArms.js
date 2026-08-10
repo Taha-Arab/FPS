@@ -64,11 +64,37 @@ const GUN_CENTER_OFFSET = new THREE.Vector3(0, 0.169, -0.127);
 // muzzle origin.
 const MUZZLE_TIP_OFFSET = new THREE.Vector3(0.05, -0.05, -0.6);
 
-// TODO: the flash currently sits too far back on the barrel — nudge this
-// forward along -Z (camera-local forward) to walk the light/sprite out to
-// the actual barrel tip. Layered on top of muzzleTip/MUZZLE_TIP_OFFSET
-// above, so it only moves the flash, not the tracer origin.
-const MUZZLE_FLASH_OFFSET = new THREE.Vector3(0, 0, 0);
+// Muzzle flash tuning, calibrated in public/flash_sandbox.html (see that
+// file for the live-tuning tool these came from — it mirrors this exact
+// sprite/pivot/scale/rotation/light setup so future re-calibration can
+// happen there before copying values back here).
+const MUZZLE_FLASH_TEXTURE_URL = "/assets/muzzle_flash.png";
+// Offset from muzzleTip (itself offset from root by MUZZLE_TIP_OFFSET) out
+// to the barrel tip — layered on top of muzzleTip, so it only moves the
+// flash, not the tracer origin.
+const MUZZLE_FLASH_OFFSET = new THREE.Vector3(-0.029, 0.187, 0.440);
+// Base in-plane rotation for the flash sprite (radians, Z-axis around
+// MUZZLE_FLASH_PIVOT below) — 6.2832 rad is a full 360°, i.e. visually
+// identical to 0, but kept as the exact sandbox-calibrated value rather
+// than simplified, in case the source texture/pivot combo is later tuned
+// to a genuinely different orientation.
+const MUZZLE_FLASH_ROTATION = 6.2832;
+// Per-shot random flutter added on TOP of the base rotation above (not a
+// replacement for it) — the calibrated base orientation stays intact shot
+// to shot, this just keeps consecutive flashes from looking identical.
+const MUZZLE_FLASH_ROTATION_JITTER = THREE.MathUtils.degToRad(30);
+// sprite.center: the pivot BOTH the rotation above AND the scale below are
+// applied around. Off-center (not 0.5, 0.5) because the flash texture's
+// bright "hot spot" isn't dead-center in the image — pivoting there instead
+// of the geometric center is what makes MUZZLE_FLASH_ROTATION/jitter twist
+// cleanly in place instead of visibly arcing.
+const MUZZLE_FLASH_PIVOT = new THREE.Vector2(0.43, 0.49);
+const MUZZLE_FLASH_SCALE = 0.12; // world units, applied uniformly to sprite.scale.x/y
+const MUZZLE_FLASH_LIGHT_MAX_INTENSITY = 14;
+// Exponential per-frame decay rate for the PointLight: intensity *=
+// exp(-rate*dt). rate=60 lands intensity under 1% of max by ~0.077s,
+// inside the requested 0.05-0.1s window without a hard cutoff pop.
+const MUZZLE_FLASH_LIGHT_DECAY_RATE = 60;
 
 const ADS_LERP_PER_SECOND = 14; // how fast the hip/ADS pose blends
 // How much of the Walk/Run animation's bone motion still reaches the gun
@@ -103,7 +129,7 @@ const ADS_ROTATIONAL_LAG_MULTIPLIER = 0.0015;
 const ADS_ROTATIONAL_LAG_LERP_PER_SECOND = 6; // how fast the lag catches up/releases
 const LOCOMOTION_FADE_SECONDS = 0.2;
 const ONE_SHOT_FADE_SECONDS = 0.08;
-const MUZZLE_FLASH_MS = 45; // how long the flash sprite/light stays lit
+const MUZZLE_FLASH_MS = 45; // how long the flash sprite stays visible
 
 // Maps each locomotion/action slot to a pattern matched against this GLB's
 // own animation names ("Armature|Idle", "Armature|Shoot", etc.) rather than
@@ -149,29 +175,30 @@ export function createPlayerArms(camera) {
   muzzleTip.position.copy(MUZZLE_TIP_OFFSET);
   root.add(muzzleTip);
 
-  // Muzzle flash: a small glowing plane cross + point light, parented under
-  // a flashAnchor offset from muzzleTip by MUZZLE_FLASH_OFFSET (see above)
-  // so the flash can be walked out to the barrel tip independently of the
-  // tracer origin (muzzleTip itself).
+  // Muzzle flash: additive 2D sprite (real texture) + PointLight, parented
+  // under a flashAnchor offset from muzzleTip by MUZZLE_FLASH_OFFSET so the
+  // flash can be walked out to the barrel tip independently of the tracer
+  // origin (muzzleTip itself). Calibrated in public/flash_sandbox.html —
+  // constants above are a 1:1 port of the tuned sandbox values.
   const flashAnchor = new THREE.Object3D();
   flashAnchor.position.copy(MUZZLE_FLASH_OFFSET);
   muzzleTip.add(flashAnchor);
 
-  const flashMat = new THREE.MeshBasicMaterial({
-    color: 0xffd977,
+  const flashTexture = new THREE.TextureLoader().load(MUZZLE_FLASH_TEXTURE_URL);
+  const flashSpriteMat = new THREE.SpriteMaterial({
+    map: flashTexture,
+    blending: THREE.AdditiveBlending,
     transparent: true,
-    opacity: 0.9,
     depthWrite: false,
-    side: THREE.DoubleSide,
   });
-  const flashGeo = new THREE.PlaneGeometry(0.14, 0.14);
-  const flashA = new THREE.Mesh(flashGeo, flashMat);
-  const flashB = new THREE.Mesh(flashGeo, flashMat);
-  flashB.rotation.z = Math.PI / 4;
-  const flashGroup = new THREE.Group();
-  flashGroup.add(flashA, flashB);
-  flashGroup.visible = false;
-  flashAnchor.add(flashGroup);
+  const flashSprite = new THREE.Sprite(flashSpriteMat);
+  // center = pivot for both in-plane rotation (material.rotation) and scale.
+  // Off-center on purpose — see MUZZLE_FLASH_PIVOT comment above.
+  flashSprite.center.copy(MUZZLE_FLASH_PIVOT);
+  // Uniform X/Y; Sprite is billboarded so scale.z is unused.
+  flashSprite.scale.set(MUZZLE_FLASH_SCALE, MUZZLE_FLASH_SCALE, 1);
+  flashSprite.visible = false;
+  flashAnchor.add(flashSprite);
 
   const flashLight = new THREE.PointLight(0xffc36b, 0, 6, 2);
   flashAnchor.add(flashLight);
@@ -380,11 +407,21 @@ export function createPlayerArms(camera) {
     fire() {
       playOneShot(actions.shoot);
 
-      flashGroup.visible = true;
-      flashGroup.rotation.z = Math.random() * Math.PI;
-      flashGroup.scale.setScalar(0.8 + Math.random() * 0.5);
-      flashLight.intensity = 14;
+      // Base calibrated orientation + a small random flutter so consecutive
+      // shots don't look identical. THREE.Sprite ignores ancestor rotation
+      // for its billboard facing — ONLY SpriteMaterial.rotation twists it
+      // in-plane — so both flashAnchor and the material stay in sync (the
+      // anchor matters if anything non-billboarded is parented under it later).
+      const rotation =
+        MUZZLE_FLASH_ROTATION +
+        (Math.random() * 2 - 1) * MUZZLE_FLASH_ROTATION_JITTER;
+      flashAnchor.rotation.z = rotation;
+      flashSpriteMat.rotation = rotation;
+
+      flashSprite.visible = true;
       flashHideAt = performance.now() + MUZZLE_FLASH_MS;
+      // Spike the light; update() lerps/decays it back to 0 over ~0.05–0.1s.
+      flashLight.intensity = MUZZLE_FLASH_LIGHT_MAX_INTENSITY;
     },
 
     // Plays the Reload clip once. Call from startReload() in main.js, which
@@ -479,11 +516,23 @@ export function createPlayerArms(camera) {
       rotationalLag.y += (yawLagTarget - rotationalLag.y) * rotLagEase;
       pivotGroup.rotation.set(rotationalLag.x, rotationalLag.y, 0);
 
-      // Muzzle flash timeout — independent of the mixer, so it still
-      // decays even on the rare frame the model hasn't loaded yet.
-      if (flashGroup.visible && performance.now() >= flashHideAt) {
-        flashGroup.visible = false;
-        flashLight.intensity = 0;
+      // Muzzle flash: hide the sprite after its short window, and decay the
+      // PointLight smoothly toward 0 (independent of the mixer, so it still
+      // runs even on the rare frame the model hasn't loaded yet).
+      if (flashSprite.visible && performance.now() >= flashHideAt) {
+        flashSprite.visible = false;
+      }
+      // Exponential lerp toward 0: intensity *= exp(-rate*dt). rate=60 lands
+      // under ~1% of max by ~0.077s — inside the 0.05–0.1s window without a
+      // hard cutoff pop. Clamp the last crumb so we don't keep multiplying
+      // forever below visible thresholds.
+      if (flashLight.intensity > 0) {
+        flashLight.intensity = THREE.MathUtils.lerp(
+          flashLight.intensity,
+          0,
+          1 - Math.exp(-MUZZLE_FLASH_LIGHT_DECAY_RATE * deltaTime)
+        );
+        if (flashLight.intensity < 0.01) flashLight.intensity = 0;
       }
 
       // Absolute ADS kill-switch (not shooting/reloading): the weight clamp
