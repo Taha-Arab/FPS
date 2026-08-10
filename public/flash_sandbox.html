@@ -132,6 +132,18 @@
     <div class="slider-label"><span>Rotation (Z)</span><span class="val" id="val-rotation"></span></div>
     <input type="range" id="slider-rotation" min="0" max="360" step="1" />
   </div>
+  <div class="slider-block">
+    <div class="slider-label"><span>Pivot X</span><span class="val" id="val-pivot-x"></span></div>
+    <input type="range" id="slider-pivot-x" min="0" max="1" step="0.01" />
+  </div>
+  <div class="slider-block">
+    <div class="slider-label"><span>Pivot Y</span><span class="val" id="val-pivot-y"></span></div>
+    <input type="range" id="slider-pivot-y" min="0" max="1" step="0.01" />
+  </div>
+  <div class="slider-block">
+    <div class="slider-label"><span>Scale</span><span class="val" id="val-scale"></span></div>
+    <input type="range" id="slider-scale" min="0.1" max="2" step="0.01" />
+  </div>
 
   <hr />
   <div id="output"></div>
@@ -185,15 +197,25 @@ const EYE_HEIGHT = 1.8; // matches main.js: PLAYER_HALF_HEIGHT + PLAYER_RADIUS +
 // firing. Full-auto fire (see tryFireShot() below) still drives the
 // raycast/damage logic against the dummies; it just no longer touches the
 // flash's own visibility or intensity.
-const MUZZLE_FLASH_SPRITE_SIZE = 0.2; // world units, square
 const MUZZLE_FLASH_LIGHT_MAX_INTENSITY = 14;
 
 // Seeded from the current MUZZLE_FLASH_OFFSET in src/playerArms.js.
-// rotationDeg is a NEW export (see MUZZLE_FLASH_ROTATION in the output
-// block) with no equivalent in src/playerArms.js yet — that file currently
-// randomizes flash rotation per shot instead of using a fixed value; wire
-// this up by hand once you've picked a value here.
-const state = { x: -0.025, y: 0.18, z: 0.408, rotationDeg: 0 };
+// rotationDeg/pivotX/pivotY/scale are NEW exports (see the output block)
+// with no equivalent in src/playerArms.js yet — that file currently
+// randomizes flash rotation per shot and hardcodes its scale instead of
+// using fixed calibrated values; wire these up by hand once you've picked
+// values here. pivotX/pivotY default to 0.5/0.5 (dead center, THREE.Sprite's
+// own default) and scale defaults to what this sandbox previously
+// hardcoded as its sprite size, so nothing jumps on load.
+const state = {
+  x: -0.025,
+  y: 0.18,
+  z: 0.408,
+  rotationDeg: 0,
+  pivotX: 0.5,
+  pivotY: 0.5,
+  scale: 0.2,
+};
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1a1e);
@@ -352,7 +374,12 @@ const flashSpriteMat = new THREE.SpriteMaterial({
   depthWrite: false,
 });
 const flashSprite = new THREE.Sprite(flashSpriteMat);
-flashSprite.scale.setScalar(MUZZLE_FLASH_SPRITE_SIZE);
+// Scale + center (pivot) are both set for real in applyState() below, once
+// the sliders are wired up — this is just a same-as-default placeholder so
+// the sprite isn't at its raw (1,1,1)/(0.5,0.5) THREE.js defaults for the
+// one frame before that first applyState() call.
+flashSprite.scale.set(state.scale, state.scale, 1);
+flashSprite.center.set(state.pivotX, state.pivotY);
 flashSprite.visible = true; // permanently on for calibration - see notes above
 flashAnchor.add(flashSprite);
 
@@ -492,9 +519,23 @@ function applyState() {
   flashAnchor.rotation.z = rotationRad;
   flashSpriteMat.rotation = rotationRad;
 
+  // sprite.center is the pivot BOTH the material's in-plane rotation above
+  // AND the scale below are applied around - (0.5, 0.5) is the texture's
+  // geometric center. If the flash texture's actual bright "hot spot"
+  // isn't perfectly centered in the image, rotating around the geometric
+  // center makes it visibly arc/swing; moving the pivot onto the hot spot
+  // itself (PIVOT_X/PIVOT_Y) makes rotation twist cleanly in place instead.
+  flashSprite.center.set(state.pivotX, state.pivotY);
+  // Uniform: scale.x and scale.y both driven by the same slider value, per
+  // the request. scale.z is left alone - Sprite rendering is inherently
+  // 2D/billboarded and never reads it.
+  flashSprite.scale.set(state.scale, state.scale, 1);
+
   outputEl.textContent =
     `const MUZZLE_FLASH_OFFSET = new THREE.Vector3(${state.x.toFixed(3)}, ${state.y.toFixed(3)}, ${state.z.toFixed(3)});\n` +
-    `const MUZZLE_FLASH_ROTATION = ${rotationRad.toFixed(4)}; // radians, ${state.rotationDeg.toFixed(0)}deg (Z-axis)`;
+    `const MUZZLE_FLASH_ROTATION = ${rotationRad.toFixed(4)}; // radians, ${state.rotationDeg.toFixed(0)}deg (Z-axis)\n` +
+    `const MUZZLE_FLASH_PIVOT = new THREE.Vector2(${state.pivotX.toFixed(2)}, ${state.pivotY.toFixed(2)});\n` +
+    `const MUZZLE_FLASH_SCALE = ${state.scale.toFixed(2)};`;
 }
 
 for (const axis of ["x", "y", "z"]) {
@@ -505,6 +546,22 @@ for (const axis of ["x", "y", "z"]) {
   slider.addEventListener("input", () => {
     state[axis] = parseFloat(slider.value);
     valEl.textContent = state[axis].toFixed(3);
+    applyState();
+  });
+}
+
+// pivotX/pivotY/scale all use the same 2-decimal, step-0.01 convention, so
+// they're wired the same way as the X/Y/Z loop above rather than repeating
+// near-identical blocks for each.
+const TWO_DECIMAL_CONTROLS = { "pivot-x": "pivotX", "pivot-y": "pivotY", scale: "scale" };
+for (const [elementId, key] of Object.entries(TWO_DECIMAL_CONTROLS)) {
+  const slider = document.getElementById(`slider-${elementId}`);
+  const valEl = document.getElementById(`val-${elementId}`);
+  slider.value = state[key];
+  valEl.textContent = state[key].toFixed(2);
+  slider.addEventListener("input", () => {
+    state[key] = parseFloat(slider.value);
+    valEl.textContent = state[key].toFixed(2);
     applyState();
   });
 }
