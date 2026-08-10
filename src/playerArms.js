@@ -69,9 +69,9 @@ const MUZZLE_TIP_OFFSET = new THREE.Vector3(0.05, -0.05, -0.6);
 // sprite/pivot/scale/rotation/light setup so future re-calibration can
 // happen there before copying values back here).
 const MUZZLE_FLASH_TEXTURE_URL = "/assets/muzzle_flash.png";
-// Offset from muzzleTip (itself offset from root by MUZZLE_TIP_OFFSET) out
-// to the barrel tip — layered on top of muzzleTip, so it only moves the
-// flash, not the tracer origin.
+// Offset from muzzleTip (itself offset from swayGroup by MUZZLE_TIP_OFFSET)
+// out to the barrel tip — layered on top of muzzleTip, so it only moves
+// the flash, not the tracer origin.
 const MUZZLE_FLASH_OFFSET = new THREE.Vector3(-0.029, 0.187, 0.440);
 // Base in-plane rotation for the flash sprite (radians, Z-axis around
 // MUZZLE_FLASH_PIVOT below) — 6.2832 rad is a full 360°, i.e. visually
@@ -171,9 +171,17 @@ export function createPlayerArms(camera) {
   root.position.copy(HIP_POSITION);
   root.rotation.copy(HIP_ROTATION);
 
+  // Muzzle tip + flash MUST live under swayGroup (same parent as the
+  // arms mesh), NOT under root. root only owns the hip/ADS pose; mouse-look
+  // sway is written to swayGroup.position every frame. Parenting the flash
+  // as a sibling of swayGroup made it ignore that sway — during rapid
+  // left/right look the gun slid under sway while the flash stayed glued
+  // to root, reading as a 1-frame trail/detachment from the barrel tip.
+  // MUZZLE_TIP_OFFSET was calibrated against the resting (zero-sway) pose,
+  // where swayGroup is identity, so the same local offset is correct here.
   const muzzleTip = new THREE.Object3D();
   muzzleTip.position.copy(MUZZLE_TIP_OFFSET);
-  root.add(muzzleTip);
+  swayGroup.add(muzzleTip);
 
   // Muzzle flash: additive 2D sprite (real texture) + PointLight, parented
   // under a flashAnchor offset from muzzleTip by MUZZLE_FLASH_OFFSET so the
@@ -516,25 +524,6 @@ export function createPlayerArms(camera) {
       rotationalLag.y += (yawLagTarget - rotationalLag.y) * rotLagEase;
       pivotGroup.rotation.set(rotationalLag.x, rotationalLag.y, 0);
 
-      // Muzzle flash: hide the sprite after its short window, and decay the
-      // PointLight smoothly toward 0 (independent of the mixer, so it still
-      // runs even on the rare frame the model hasn't loaded yet).
-      if (flashSprite.visible && performance.now() >= flashHideAt) {
-        flashSprite.visible = false;
-      }
-      // Exponential lerp toward 0: intensity *= exp(-rate*dt). rate=60 lands
-      // under ~1% of max by ~0.077s — inside the 0.05–0.1s window without a
-      // hard cutoff pop. Clamp the last crumb so we don't keep multiplying
-      // forever below visible thresholds.
-      if (flashLight.intensity > 0) {
-        flashLight.intensity = THREE.MathUtils.lerp(
-          flashLight.intensity,
-          0,
-          1 - Math.exp(-MUZZLE_FLASH_LIGHT_DECAY_RATE * deltaTime)
-        );
-        if (flashLight.intensity < 0.01) flashLight.intensity = 0;
-      }
-
       // Absolute ADS kill-switch (not shooting/reloading): the weight clamp
       // above only zeroes Walk/Run's own base weight — it can't stop
       // crossFadeTo() below from still calling .play()/.crossFadeFrom() on
@@ -559,34 +548,59 @@ export function createPlayerArms(camera) {
         }
       }
 
-      if (!mixer) return;
-      mixer.update(deltaTime);
+      if (mixer) {
+        mixer.update(deltaTime);
 
-      // Locomotion (idle/walk/run) only drives while no one-shot
-      // (shoot/reload) is currently playing. Once the one-shot's mixer
-      // "finished" event clears activeOneShot, this resumes on its own —
-      // landing on idle if the player has since stopped moving (satisfying
-      // "then return to idle" for the common case) or continuing
-      // walk/run if they kept moving while firing/reloading, rather than
-      // forcing a jarring snap-to-idle either way. While aiming, Walk/Run
-      // are never even offered as an option — regardless of movement, so
-      // the fallback right after a one-shot finishes can't hand control
-      // back to them either — only Idle. This is the actual fix for the
-      // reported bug: the weight clamp above reduces Walk/Run's
-      // contribution to ~0, but "current action" was still becoming Walk
-      // whenever moveSpeed01 > 0 even while fully aimed, and it's THAT
-      // clip being active (crossfading, scheduling weight interpolants,
-      // etc.) that let a stray frame or two of motion leak through —
-      // most visibly right as a one-shot's fallback re-triggered it.
-      if (activeOneShot) return;
-      if (state.wantAds) {
-        if (actions.idle) crossFadeTo(actions.idle, LOCOMOTION_FADE_SECONDS);
-      } else if (state.sprinting && actions.run) {
-        crossFadeTo(actions.run, LOCOMOTION_FADE_SECONDS);
-      } else if (state.moveSpeed01 > 0 && actions.walk) {
-        crossFadeTo(actions.walk, LOCOMOTION_FADE_SECONDS);
-      } else if (actions.idle) {
-        crossFadeTo(actions.idle, LOCOMOTION_FADE_SECONDS);
+        // Locomotion (idle/walk/run) only drives while no one-shot
+        // (shoot/reload) is currently playing. Once the one-shot's mixer
+        // "finished" event clears activeOneShot, this resumes on its own —
+        // landing on idle if the player has since stopped moving (satisfying
+        // "then return to idle" for the common case) or continuing
+        // walk/run if they kept moving while firing/reloading, rather than
+        // forcing a jarring snap-to-idle either way. While aiming, Walk/Run
+        // are never even offered as an option — regardless of movement, so
+        // the fallback right after a one-shot finishes can't hand control
+        // back to them either — only Idle. This is the actual fix for the
+        // reported bug: the weight clamp above reduces Walk/Run's
+        // contribution to ~0, but "current action" was still becoming Walk
+        // whenever moveSpeed01 > 0 even while fully aimed, and it's THAT
+        // clip being active (crossfading, scheduling weight interpolants,
+        // etc.) that let a stray frame or two of motion leak through —
+        // most visibly right as a one-shot's fallback re-triggered it.
+        if (!activeOneShot) {
+          if (state.wantAds) {
+            if (actions.idle) crossFadeTo(actions.idle, LOCOMOTION_FADE_SECONDS);
+          } else if (state.sprinting && actions.run) {
+            crossFadeTo(actions.run, LOCOMOTION_FADE_SECONDS);
+          } else if (state.moveSpeed01 > 0 && actions.walk) {
+            crossFadeTo(actions.walk, LOCOMOTION_FADE_SECONDS);
+          } else if (actions.idle) {
+            crossFadeTo(actions.idle, LOCOMOTION_FADE_SECONDS);
+          }
+        }
+      }
+
+      // Muzzle flash bookkeeping LAST — after hip/ADS pose, mouse sway,
+      // ADS rotational lag, and the animation mixer have all written this
+      // frame's final transforms. The flash is parented under swayGroup so
+      // it inherits those poses automatically (no manual reposition); this
+      // block only handles sprite timeout + light decay, and must not run
+      // before the sway/lag writes above or an early return would skip it
+      // while a one-shot is playing.
+      if (flashSprite.visible && performance.now() >= flashHideAt) {
+        flashSprite.visible = false;
+      }
+      // Exponential lerp toward 0: intensity *= exp(-rate*dt). rate=60 lands
+      // under ~1% of max by ~0.077s — inside the 0.05–0.1s window without a
+      // hard cutoff pop. Clamp the last crumb so we don't keep multiplying
+      // forever below visible thresholds.
+      if (flashLight.intensity > 0) {
+        flashLight.intensity = THREE.MathUtils.lerp(
+          flashLight.intensity,
+          0,
+          1 - Math.exp(-MUZZLE_FLASH_LIGHT_DECAY_RATE * deltaTime)
+        );
+        if (flashLight.intensity < 0.01) flashLight.intensity = 0;
       }
     },
   };
