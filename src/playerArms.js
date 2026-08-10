@@ -219,10 +219,29 @@ export function createPlayerArms(camera) {
   // Re-triggering the SAME one-shot while it's already playing (e.g.
   // full-auto fire) restarts it from frame 0 instead of crossfading, so
   // rapid shots don't blend into a smeared half-played animation.
+  //
+  // clampWhenFinished MUST be true, not false. Verified against three.js's
+  // own source (AnimationAction.js): a LoopOnce action that reaches its end
+  // sets `this.paused = true` if clampWhenFinished, or `this.enabled =
+  // false` otherwise — and _updateWeight() short-circuits any DISABLED
+  // action's effective weight straight to 0, ignoring the fade interpolant
+  // entirely. With clampWhenFinished=false (the previous setting), the
+  // moment Shoot finished, it went disabled — meaning the crossFadeTo(idle)
+  // call that runs right after in update() scheduled a fadeOut() on Shoot
+  // that was a complete no-op (already forced to 0), while idle's fadeIn()
+  // still ramped 0->1 over LOCOMOTION_FADE_SECONDS. Their weights never
+  // summed to 1 during that entire window, so the "missing" fraction fell
+  // back to the raw, un-animated bind pose — the hand visibly popping/
+  // sliding as if reset to a different pose, right as firing stopped.
+  // clampWhenFinished=true instead PAUSES (not disables) the action at its
+  // final frame, keeping it enabled so fadeOut() actually ramps its weight
+  // down in lockstep with idle's fadeIn() — reset() below (always called on
+  // every trigger, restart or not) un-pauses and re-enables it regardless,
+  // so this doesn't affect re-triggering full-auto fire or a fresh reload.
   function playOneShot(action) {
     if (!action) return;
     action.setLoop(THREE.LoopOnce, 1);
-    action.clampWhenFinished = false;
+    action.clampWhenFinished = true;
     const isRestart = currentAction === action;
     action.reset().play();
     if (!isRestart && currentAction) {
@@ -373,6 +392,14 @@ export function createPlayerArms(camera) {
     // no separate wiring needed for either trigger.
     reload() {
       playOneShot(actions.reload);
+    },
+
+    // The Reload clip's own duration in ms, so main.js's isReloading timer
+    // can match the actual 3D animation instead of a hand-tuned guess that
+    // could drift out of sync with it. Null if the clip never loaded (main.js
+    // falls back to its own constant in that case).
+    getReloadDurationMs() {
+      return actions.reload ? actions.reload.getClip().duration * 1000 : null;
     },
 
     getAdsBlend() {

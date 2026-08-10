@@ -64,19 +64,6 @@
     <div id="hit-marker"></div>
 
     <!--
-      Reload indicator (feat/fps-overhaul). Progress arc + label just below
-      the crosshair while a reload is in flight; the arc's stroke-dashoffset
-      is driven per-frame from tick() in src/main.js.
-    -->
-    <div id="reload-indicator" class="hidden">
-      <svg viewBox="0 0 48 48">
-        <circle class="reload-arc-track" cx="24" cy="24" r="20"></circle>
-        <circle id="reload-arc-progress" cx="24" cy="24" r="20"></circle>
-      </svg>
-      <span id="reload-indicator-label">RELOADING&hellip;</span>
-    </div>
-
-    <!--
       Floating combat damage numbers (feat/fps-overhaul). Filled from
       spawnDamageNumber() in src/main.js — each hit spawns one short-lived
       popup at the impact point's screen projection.

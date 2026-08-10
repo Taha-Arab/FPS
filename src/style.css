@@ -492,56 +492,6 @@ button {
   animation: hit-marker-flash 0.12s ease-out;
 }
 
-/* --- Reload progress arc (feat/fps-overhaul) --------------------------- */
-/* Sits just below the crosshair; the progress circle's dashoffset is set
-   per-frame from JS as the reload advances. */
-
-#reload-indicator {
-  position: fixed;
-  top: calc(50% + 34px);
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  pointer-events: none;
-  user-select: none;
-  z-index: 6;
-}
-
-#reload-indicator svg {
-  width: 44px;
-  height: 44px;
-  transform: rotate(-90deg); /* arc starts at 12 o'clock */
-}
-
-.reload-arc-track,
-#reload-arc-progress {
-  fill: none;
-  stroke-width: 4;
-}
-
-.reload-arc-track {
-  stroke: rgba(255, 255, 255, 0.18);
-}
-
-#reload-arc-progress {
-  stroke: var(--accent-bright);
-  stroke-linecap: round;
-  stroke-dasharray: 125.66; /* 2π · r20 */
-  stroke-dashoffset: 125.66;
-  filter: drop-shadow(0 0 4px rgba(240, 190, 74, 0.6));
-}
-
-#reload-indicator-label {
-  font-size: 0.66rem;
-  font-weight: 700;
-  letter-spacing: 0.22em;
-  color: var(--accent-bright);
-  text-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
-}
-
 /* --- Floating combat damage numbers (feat/fps-overhaul) ---------------- */
 
 #damage-numbers {

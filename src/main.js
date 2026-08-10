@@ -1979,25 +1979,7 @@ let isAiming = false;
 const ammoHud = document.getElementById("ammo-hud");
 const ammoText = document.getElementById("ammo-text");
 
-// Reload progress arc near the crosshair (feat/fps-overhaul). The arc's
-// dashoffset is advanced every frame in tick() from these timestamps;
-// visibility is owned by updateAmmoDisplay() since that's already called on
-// every isReloading transition (start, finish, respawn, soft reset).
-const reloadIndicatorEl = document.getElementById("reload-indicator");
-const reloadArcProgressEl = document.getElementById("reload-arc-progress");
-const RELOAD_ARC_CIRCUMFERENCE = 125.66; // matches stroke-dasharray in CSS
-let reloadStartedAt = 0;
-
-function updateReloadArc(now) {
-  if (!isReloading) return;
-  const progress = Math.min(1, (now - reloadStartedAt) / RELOAD_TIME_MS);
-  reloadArcProgressEl.style.strokeDashoffset = String(
-    RELOAD_ARC_CIRCUMFERENCE * (1 - progress)
-  );
-}
-
 function updateAmmoDisplay() {
-  reloadIndicatorEl.classList.toggle("hidden", !isReloading);
   if (isReloading) {
     ammoText.textContent = "Reloading...";
     // Don't flash "low ammo" red while the "Reloading..." text is already
@@ -2018,17 +2000,25 @@ function startReload() {
   if (isReloading || currentAmmo === MAGAZINE_SIZE) return;
 
   isReloading = true;
-  reloadStartedAt = performance.now();
-  reloadArcProgressEl.style.strokeDashoffset = String(RELOAD_ARC_CIRCUMFERENCE);
+  // Cancel ADS instantly if a reload starts while aiming - the mirror-image
+  // case (can't START aiming while already reloading) is guarded at the
+  // right-mouse mousedown listener above. adsBlend still eases back to the
+  // hip pose smoothly on its own lerp in playerArms.js's update() - only
+  // the isAiming STATE flips immediately, not a hard position snap.
+  isAiming = false;
   updateAmmoDisplay();
   playReloadSound();
   weaponViewmodel.reload(); // covers both the manual R key and auto-reload-on-empty
 
+  // Read the Reload clip's own duration instead of a hand-tuned constant,
+  // so isReloading can't outlast (or fall short of) the actual 3D
+  // animation - RELOAD_TIME_MS is only a fallback if the clip never loaded.
+  const reloadDurationMs = weaponViewmodel.getReloadDurationMs() ?? RELOAD_TIME_MS;
   const reloadTimeoutId = setTimeout(() => {
     currentAmmo = MAGAZINE_SIZE;
     isReloading = false;
     updateAmmoDisplay();
-  }, RELOAD_TIME_MS);
+  }, reloadDurationMs);
   trackTimeout(reloadTimeoutId);
 }
 
@@ -3155,7 +3145,13 @@ function startRenderLoop({
     renderer.domElement.addEventListener("mousedown", (event) => {
       if (event.button === 2) {
         // Right mouse: aim-down-sights (only meaningful while playing).
-        if (document.pointerLockElement === renderer.domElement) {
+        // Blocked while reloading — see the mirror-image case in
+        // startReload(), which cancels ADS instantly if a reload starts
+        // while already aiming.
+        if (
+          document.pointerLockElement === renderer.domElement &&
+          !isReloading
+        ) {
           isAiming = true;
         }
         return;
@@ -3898,9 +3894,6 @@ function startRenderLoop({
 
     // Hide the crosshair while ADS (the iron sights are the aim reference).
     crosshairEl.classList.toggle("hidden", weaponViewmodel.getAdsBlend() > 0.5);
-
-    // Advance the reload progress arc while a reload is in flight.
-    updateReloadArc(timestamp);
 
     updateAudioListenerFromCamera();
     renderKillFeed();

@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Muzzle Flash Calibration</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1a1e; font-family: -apple-system, "Segoe UI", sans-serif; }
+  canvas { display: block; cursor: crosshair; }
+
+  #hint {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    color: #b8b8c0;
+    font-size: 12px;
+    background: rgba(20, 20, 24, 0.7);
+    padding: 8px 10px;
+    border-radius: 6px;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  #panel {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    width: 300px;
+    background: rgba(20, 20, 24, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    padding: 14px;
+    color: #e6e6e6;
+    font-size: 12px;
+    z-index: 10;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  }
+  #panel h1 { font-size: 13px; margin: 0 0 10px; color: #fff; letter-spacing: 0.02em; }
+
+  .slider-block { margin-bottom: 9px; }
+  .slider-label {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 3px;
+    color: #b8b8c0;
+  }
+  .slider-label span.val { color: #ffd977; font-family: "SF Mono", Consolas, monospace; }
+  input[type="range"] { width: 100%; }
+
+  hr { border: none; border-top: 1px solid rgba(255, 255, 255, 0.12); margin: 12px 0; }
+
+  #output {
+    background: #0c0c0f;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 5px;
+    padding: 8px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre;
+    color: #9be89b;
+    overflow-x: auto;
+    user-select: all;
+  }
+</style>
+</head>
+<body>
+
+<div id="hint">Click the scene to look around (Esc to release)</div>
+
+<div id="panel">
+  <h1>Muzzle Flash Calibration</h1>
+
+  <div class="slider-block">
+    <div class="slider-label"><span>X</span><span class="val" id="val-x"></span></div>
+    <input type="range" id="slider-x" min="-0.5" max="0.5" step="0.001" />
+  </div>
+  <div class="slider-block">
+    <div class="slider-label"><span>Y</span><span class="val" id="val-y"></span></div>
+    <input type="range" id="slider-y" min="-0.5" max="0.5" step="0.001" />
+  </div>
+  <div class="slider-block">
+    <div class="slider-label"><span>Z</span><span class="val" id="val-z"></span></div>
+    <input type="range" id="slider-z" min="-0.5" max="0.5" step="0.001" />
+  </div>
+
+  <hr />
+  <div id="output"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+
+// ---------------------------------------------------------------------------
+// Muzzle flash calibration sandbox (feat/player-arms) — NOT part of the
+// Vite build (three.js loaded from a CDN via importmap). Live-tunes
+// MUZZLE_FLASH_OFFSET for src/playerArms.js: loads player_arms.glb exactly
+// like the real game (same scale/pivot/alignment logic), attaches the same
+// muzzle flash sprite+PointLight to muzzleTip, and lets X/Y/Z sliders walk
+// MUZZLE_FLASH_OFFSET out to the barrel tip. The flash is left permanently
+// visible here (rather than the real game's fire-triggered 45ms flash) so
+// there's something to look at while dragging sliders.
+// ---------------------------------------------------------------------------
+
+const PLAYER_ARMS_URL = "/assets/player/player_arms.glb";
+const DRACO_DECODER_PATH = "/vendor/draco/";
+
+// Mirrors src/playerArms.js's own constants exactly — this sandbox has no
+// build-time link to that file, so re-read it by hand if these ever change.
+const VIEWMODEL_SCALE = 0.01;
+const GUN_CENTER_OFFSET = new THREE.Vector3(0, 0.169, -0.127);
+const HIP_POSITION = new THREE.Vector3(0.05, -0.201, -0.132);
+const MUZZLE_TIP_OFFSET = new THREE.Vector3(0.05, -0.05, -0.6);
+
+const EYE_HEIGHT = 1.8; // matches main.js: PLAYER_HALF_HEIGHT + PLAYER_RADIUS + EYE_HEIGHT
+
+// Seeded from the current MUZZLE_FLASH_OFFSET in src/playerArms.js.
+const state = { x: 0, y: 0, z: 0 };
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a1e);
+scene.add(new THREE.GridHelper(20, 20, 0x555566, 0x333340));
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(4, 8, 5);
+scene.add(sun);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// Matches src/main.js's PerspectiveCamera exactly (fov/near/far).
+const camera = new THREE.PerspectiveCamera(
+  75,
+  window.innerWidth / window.innerHeight,
+  0.001,
+  1000
+);
+camera.rotation.order = "YXZ";
+camera.position.set(0, EYE_HEIGHT, 0);
+
+// --- Pointer-lock mouselook (mirrors main.js's YXZ FPS look) --------------
+let yaw = 0;
+let pitch = 0;
+const MOUSE_SENSITIVITY = 0.0022;
+
+renderer.domElement.addEventListener("click", () => {
+  renderer.domElement.requestPointerLock();
+});
+document.addEventListener("mousemove", (e) => {
+  if (document.pointerLockElement !== renderer.domElement) return;
+  yaw -= e.movementX * MOUSE_SENSITIVITY;
+  pitch -= e.movementY * MOUSE_SENSITIVITY;
+  pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+  camera.rotation.set(pitch, yaw, 0);
+});
+
+// --- Loaders ---------------------------------------------------------------
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
+const gltfLoader = new GLTFLoader();
+gltfLoader.setDRACOLoader(dracoLoader);
+
+// Player arms, attached directly to the camera exactly like
+// createPlayerArms() in src/playerArms.js — same wrapper/pivot chain, just
+// with no ADS/sway/locomotion since this tool only cares about the flash.
+const root = new THREE.Group();
+camera.add(root);
+root.position.copy(HIP_POSITION);
+
+const muzzleTip = new THREE.Object3D();
+muzzleTip.position.copy(MUZZLE_TIP_OFFSET);
+root.add(muzzleTip);
+
+// Muzzle flash: identical geometry/material/light setup to
+// src/playerArms.js's fire()-triggered flash, but left permanently visible
+// here instead of timed out after MUZZLE_FLASH_MS.
+const flashAnchor = new THREE.Object3D();
+muzzleTip.add(flashAnchor);
+
+const flashMat = new THREE.MeshBasicMaterial({
+  color: 0xffd977,
+  transparent: true,
+  opacity: 0.9,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+});
+const flashGeo = new THREE.PlaneGeometry(0.14, 0.14);
+const flashA = new THREE.Mesh(flashGeo, flashMat);
+const flashB = new THREE.Mesh(flashGeo, flashMat);
+flashB.rotation.z = Math.PI / 4;
+const flashGroup = new THREE.Group();
+flashGroup.add(flashA, flashB);
+flashAnchor.add(flashGroup);
+
+const flashLight = new THREE.PointLight(0xffc36b, 14, 6, 2);
+flashAnchor.add(flashLight);
+
+let armsMixer = null;
+const clock = new THREE.Clock();
+
+gltfLoader.load(PLAYER_ARMS_URL, (gltf) => {
+  const armsScene = gltf.scene;
+  armsScene.scale.setScalar(VIEWMODEL_SCALE);
+
+  if (gltf.animations && gltf.animations.length > 0) {
+    armsMixer = new THREE.AnimationMixer(armsScene);
+    const idleClip = gltf.animations.find((c) => /idle/i.test(c.name));
+    if (idleClip) armsMixer.clipAction(idleClip).play();
+  }
+
+  armsScene.updateMatrixWorld(true);
+  const cameraBone = armsScene.getObjectByName("camera_01");
+  if (cameraBone) {
+    const camBoneWorld = cameraBone.getWorldPosition(new THREE.Vector3());
+    armsScene.position.sub(camBoneWorld);
+  } else {
+    console.error(
+      "flash_sandbox: no camera_01 bone found on player_arms.glb — " +
+        "skipping the auto camera-alignment offset, matching " +
+        "src/playerArms.js's fallback"
+    );
+  }
+  const wrapper = new THREE.Group();
+  wrapper.add(armsScene);
+  wrapper.rotation.y = Math.PI;
+  wrapper.position.sub(GUN_CENTER_OFFSET);
+  root.add(wrapper);
+
+  const CROSSHAIR_NAME_PATTERN = /crosshair|reticle/i;
+  armsScene.traverse((obj) => {
+    if (obj.isMesh || obj.isSkinnedMesh) {
+      obj.frustumCulled = false;
+      if (CROSSHAIR_NAME_PATTERN.test(obj.name)) obj.visible = false;
+    }
+  });
+});
+
+// --- Sliders + output --------------------------------------------------
+const outputEl = document.getElementById("output");
+function applyState() {
+  flashAnchor.position.set(state.x, state.y, state.z);
+  outputEl.textContent = `const MUZZLE_FLASH_OFFSET = new THREE.Vector3(${state.x.toFixed(3)}, ${state.y.toFixed(3)}, ${state.z.toFixed(3)});`;
+}
+
+for (const axis of ["x", "y", "z"]) {
+  const slider = document.getElementById(`slider-${axis}`);
+  const valEl = document.getElementById(`val-${axis}`);
+  slider.value = state[axis];
+  valEl.textContent = state[axis].toFixed(3);
+  slider.addEventListener("input", () => {
+    state[axis] = parseFloat(slider.value);
+    valEl.textContent = state[axis].toFixed(3);
+    applyState();
+  });
+}
+applyState();
+
+// --- Resize + render loop ---------------------------------------------------
+window.addEventListener("resize", () => {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+});
+
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (armsMixer) armsMixer.update(dt);
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
