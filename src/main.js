@@ -1974,7 +1974,13 @@ let isReloading = false;
 // continuously (full-auto) instead of once per click.
 let isFiring = false;
 // True while right mouse is held (aim-down-sights, modern-overhaul).
+// isAiming is the GAME's ADS state (blocked while reloading, cancelled the
+// instant a reload starts) - isRightMouseDown below tracks the PHYSICAL
+// button independent of that, so a reload finishing while the player never
+// let go can resume isAiming automatically instead of requiring a fresh
+// click.
 let isAiming = false;
+let isRightMouseDown = false;
 
 const ammoHud = document.getElementById("ammo-hud");
 const ammoText = document.getElementById("ammo-text");
@@ -2018,6 +2024,15 @@ function startReload() {
     currentAmmo = MAGAZINE_SIZE;
     isReloading = false;
     updateAmmoDisplay();
+
+    // Auto-resume ADS: if the player never physically let go of right-mouse
+    // during the reload, re-enter ADS the instant it's allowed again
+    // instead of leaving them stuck at hip-fire until they release and
+    // re-click. Same pointer-lock guard as the manual mousedown handler,
+    // so this can't re-aim while the game is paused/unfocused.
+    if (isRightMouseDown && document.pointerLockElement === renderer.domElement) {
+      isAiming = true;
+    }
   }, reloadDurationMs);
   trackTimeout(reloadTimeoutId);
 }
@@ -3144,6 +3159,10 @@ function startRenderLoop({
     shootInputBound = true;
     renderer.domElement.addEventListener("mousedown", (event) => {
       if (event.button === 2) {
+        // Tracks the physical button regardless of pointer-lock/reloading
+        // state, so startReload()'s finish callback can tell whether to
+        // auto-resume ADS - see there.
+        isRightMouseDown = true;
         // Right mouse: aim-down-sights (only meaningful while playing).
         // Blocked while reloading — see the mirror-image case in
         // startReload(), which cancels ADS instantly if a reload starts
@@ -3162,7 +3181,10 @@ function startRenderLoop({
     });
     renderer.domElement.addEventListener("mouseup", (event) => {
       if (event.button === 0) isFiring = false;
-      if (event.button === 2) isAiming = false;
+      if (event.button === 2) {
+        isRightMouseDown = false;
+        isAiming = false;
+      }
     });
   }
 

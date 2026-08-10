@@ -100,6 +100,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 
 // ---------------------------------------------------------------------------
 // Muzzle flash calibration sandbox (feat/player-arms) — NOT part of the
@@ -130,8 +131,21 @@ const state = { x: 0, y: 0, z: 0 };
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1a1e);
 scene.add(new THREE.GridHelper(20, 20, 0x555566, 0x333340));
-scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+
+// Matches src/environment.js's proven-working light setup exactly (the
+// real game renders this same GLB fine with these). Every material on
+// this model is fully metallic (metalness=1, confirmed by inspecting the
+// loaded meshes) — a metal surface's appearance comes almost entirely
+// from specular/environment reflection, not diffuse light, so this
+// sandbox's original dimmer AmbientLight(0.6)+DirectionalLight(1.2) left
+// it looking essentially black against the dark background. This alone
+// wasn't enough margin for a scene with no environment map at all
+// (neither this file nor the real game sets scene.environment), so a
+// RoomEnvironment is also added below — the textbook-correct way to give
+// metalness=1 PBR materials something to reflect without needing a real
+// HDR asset.
+scene.add(new THREE.HemisphereLight(0xbdd4e7, 0x8a8072, 1.5));
+const sun = new THREE.DirectionalLight(0xfff1dd, 3.2);
 sun.position.set(4, 8, 5);
 scene.add(sun);
 
@@ -139,6 +153,9 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
+
+const pmremGenerator = new THREE.PMREMGenerator(renderer);
+scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
 
 // Matches src/main.js's PerspectiveCamera exactly (fov/near/far).
 const camera = new THREE.PerspectiveCamera(
@@ -175,6 +192,10 @@ gltfLoader.setDRACOLoader(dracoLoader);
 // Player arms, attached directly to the camera exactly like
 // createPlayerArms() in src/playerArms.js — same wrapper/pivot chain, just
 // with no ADS/sway/locomotion since this tool only cares about the flash.
+// camera itself is also added to scene (not strictly required — three.js's
+// renderer updates an unparented camera's matrixWorld either way — but
+// matches sandbox.html's pattern and removes any doubt about it).
+scene.add(camera);
 const root = new THREE.Group();
 camera.add(root);
 root.position.copy(HIP_POSITION);
