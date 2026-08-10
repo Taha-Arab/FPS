@@ -102,7 +102,7 @@
 
 <div id="hint">
   Click the scene to look around (Esc to release)<br />
-  Left-click to fire at the dummies
+  Hold Left-Click to full-auto fire at the dummies
 </div>
 
 <div id="damage-numbers"></div>
@@ -127,6 +127,10 @@
   <div class="slider-block">
     <div class="slider-label"><span>Z</span><span class="val" id="val-z"></span></div>
     <input type="range" id="slider-z" min="-0.5" max="0.5" step="0.001" />
+  </div>
+  <div class="slider-block">
+    <div class="slider-label"><span>Rotation (Z)</span><span class="val" id="val-rotation"></span></div>
+    <input type="range" id="slider-rotation" min="0" max="360" step="1" />
   </div>
 
   <hr />
@@ -174,17 +178,22 @@ const MUZZLE_TIP_OFFSET = new THREE.Vector3(0.05, -0.05, -0.6);
 
 const EYE_HEIGHT = 1.8; // matches main.js: PLAYER_HALF_HEIGHT + PLAYER_RADIUS + EYE_HEIGHT
 
-// Muzzle flash tuning.
+// Muzzle flash tuning. This sandbox is now a STATIC calibration view — the
+// sprite and light stay permanently on at full strength instead of popping
+// per shot (see flashSprite/flashLight setup below and the render loop),
+// so offsets/rotation can be judged continuously without needing to keep
+// firing. Full-auto fire (see tryFireShot() below) still drives the
+// raycast/damage logic against the dummies; it just no longer touches the
+// flash's own visibility or intensity.
 const MUZZLE_FLASH_SPRITE_SIZE = 0.2; // world units, square
-const MUZZLE_FLASH_VISIBLE_MS = 60; // how long the sprite itself stays visible
 const MUZZLE_FLASH_LIGHT_MAX_INTENSITY = 14;
-// Exponential decay rate for the PointLight: 1-exp(-rate*dt) per frame.
-// rate=60 reaches ~1% of max intensity by ~0.077s, landing in the
-// requested 0.05-0.1s window without a hard cutoff.
-const MUZZLE_FLASH_LIGHT_DECAY_RATE = 60;
 
 // Seeded from the current MUZZLE_FLASH_OFFSET in src/playerArms.js.
-const state = { x: -0.025, y: 0.18, z: 0.408 };
+// rotationDeg is a NEW export (see MUZZLE_FLASH_ROTATION in the output
+// block) with no equivalent in src/playerArms.js yet — that file currently
+// randomizes flash rotation per shot instead of using a fixed value; wire
+// this up by hand once you've picked a value here.
+const state = { x: -0.025, y: 0.18, z: 0.408, rotationDeg: 0 };
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1a1e);
@@ -231,10 +240,18 @@ const MOUSE_SENSITIVITY = 0.0022;
 renderer.domElement.addEventListener("click", () => {
   renderer.domElement.requestPointerLock();
 });
+// Full-auto: held LMB keeps firing every FIRE_INTERVAL_MS (600 RPM) via
+// tryFireShot() in the render loop below, mirroring main.js's own
+// isFiring/tryFireShot() pattern - not a single shot per click anymore.
+let isFiring = false;
 renderer.domElement.addEventListener("mousedown", (e) => {
   if (e.button === 0 && document.pointerLockElement === renderer.domElement) {
-    fireShot();
+    isFiring = true;
+    tryFireShot(performance.now()); // fire immediately, don't wait a full interval
   }
+});
+window.addEventListener("mouseup", (e) => {
+  if (e.button === 0) isFiring = false;
 });
 document.addEventListener("mousemove", (e) => {
   if (document.pointerLockElement !== renderer.domElement) return;
@@ -336,13 +353,11 @@ const flashSpriteMat = new THREE.SpriteMaterial({
 });
 const flashSprite = new THREE.Sprite(flashSpriteMat);
 flashSprite.scale.setScalar(MUZZLE_FLASH_SPRITE_SIZE);
-flashSprite.visible = false;
+flashSprite.visible = true; // permanently on for calibration - see notes above
 flashAnchor.add(flashSprite);
 
-const flashLight = new THREE.PointLight(0xffc36b, 0, 6, 2);
+const flashLight = new THREE.PointLight(0xffc36b, MUZZLE_FLASH_LIGHT_MAX_INTENSITY, 6, 2);
 flashAnchor.add(flashLight);
-
-let flashHideAt = 0;
 
 // --- Shooting: raycast + floating damage numbers + muzzle flash, mirroring
 // fireShot()/spawnDamageNumber() in src/main.js and fire() in
@@ -357,15 +372,22 @@ let idleAction = null;
 let shootAction = null;
 const clock = new THREE.Clock();
 
-function fireShot() {
-  // Muzzle flash: random Z rotation each shot so consecutive flashes don't
-  // look identical, sprite shown for a short fixed window, light popped to
-  // max and left to decay smoothly in the render loop below.
-  flashSpriteMat.rotation = Math.random() * Math.PI * 2;
-  flashSprite.visible = true;
-  flashHideAt = performance.now() + MUZZLE_FLASH_VISIBLE_MS;
-  flashLight.intensity = MUZZLE_FLASH_LIGHT_MAX_INTENSITY;
+// 600 RPM full-auto, matching the request - mirrors FIRE_RATE_RPM/
+// FIRE_INTERVAL_MS in src/main.js (though that one currently runs at 300).
+const FIRE_INTERVAL_MS = 60000 / 600;
+let lastShotTime = 0;
 
+function tryFireShot(now) {
+  if (!isFiring) return;
+  if (now - lastShotTime < FIRE_INTERVAL_MS) return;
+  lastShotTime = now;
+  fireShot();
+}
+
+function fireShot() {
+  // No flash-triggering here anymore - the sprite/light are permanently on
+  // for calibration (see their setup above). Firing now only drives the
+  // shoot animation + raycast/damage logic.
   if (shootAction) {
     shootAction.reset().play();
     if (idleAction) shootAction.crossFadeFrom(idleAction, 0.08, false);
@@ -457,7 +479,22 @@ gltfLoader.load(PLAYER_ARMS_URL, (gltf) => {
 const outputEl = document.getElementById("output");
 function applyState() {
   flashAnchor.position.set(state.x, state.y, state.z);
-  outputEl.textContent = `const MUZZLE_FLASH_OFFSET = new THREE.Vector3(${state.x.toFixed(3)}, ${state.y.toFixed(3)}, ${state.z.toFixed(3)});`;
+
+  const rotationRad = THREE.MathUtils.degToRad(state.rotationDeg);
+  // Rotating flashAnchor (the group) is the scene-graph-correct thing to
+  // do, and matters for anything non-billboarded parented under it later -
+  // but THREE.Sprite ignores its ancestors' .rotation entirely for its own
+  // billboard orientation (it always faces the camera; ONLY
+  // SpriteMaterial.rotation controls its in-plane twist around the view
+  // axis). Setting just flashAnchor.rotation.z would silently do nothing
+  // visible to the sprite, so both are kept in sync here. PointLight is
+  // omnidirectional and unaffected by rotation either way.
+  flashAnchor.rotation.z = rotationRad;
+  flashSpriteMat.rotation = rotationRad;
+
+  outputEl.textContent =
+    `const MUZZLE_FLASH_OFFSET = new THREE.Vector3(${state.x.toFixed(3)}, ${state.y.toFixed(3)}, ${state.z.toFixed(3)});\n` +
+    `const MUZZLE_FLASH_ROTATION = ${rotationRad.toFixed(4)}; // radians, ${state.rotationDeg.toFixed(0)}deg (Z-axis)`;
 }
 
 for (const axis of ["x", "y", "z"]) {
@@ -471,6 +508,17 @@ for (const axis of ["x", "y", "z"]) {
     applyState();
   });
 }
+
+const rotationSlider = document.getElementById("slider-rotation");
+const rotationValEl = document.getElementById("val-rotation");
+rotationSlider.value = state.rotationDeg;
+rotationValEl.textContent = `${state.rotationDeg.toFixed(0)}°`;
+rotationSlider.addEventListener("input", () => {
+  state.rotationDeg = parseFloat(rotationSlider.value);
+  rotationValEl.textContent = `${state.rotationDeg.toFixed(0)}°`;
+  applyState();
+});
+
 applyState();
 
 // --- Resize + render loop ---------------------------------------------------
@@ -483,17 +531,7 @@ window.addEventListener("resize", () => {
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   if (armsMixer) armsMixer.update(dt);
-
-  if (flashSprite.visible && performance.now() >= flashHideAt) {
-    flashSprite.visible = false;
-  }
-  // Smooth exponential decay toward 0 rather than a hard cutoff/timeout,
-  // per the request - see MUZZLE_FLASH_LIGHT_DECAY_RATE above for the math.
-  if (flashLight.intensity > 0) {
-    flashLight.intensity *= Math.exp(-MUZZLE_FLASH_LIGHT_DECAY_RATE * dt);
-    if (flashLight.intensity < 0.01) flashLight.intensity = 0;
-  }
-
+  tryFireShot(performance.now());
   renderer.render(scene, camera);
 });
 </script>
