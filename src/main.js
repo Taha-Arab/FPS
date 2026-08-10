@@ -140,6 +140,8 @@ import {
   buildBoundaryWallProp,
   buildFloodlightTower,
   buildScatterDecor,
+  isBlastWallCover,
+  getBlastWallColliderLayers,
 } from "./props.js";
 import { createPlayerArms } from "./playerArms.js";
 import {
@@ -417,6 +419,48 @@ function buildArena(groundSize) {
 const STANDING_PLATFORM_CLEARANCE = 2.25;
 const CROUCH_PLATFORM_CLEARANCE = 1.35;
 const PLATFORM_DECK_HALF_THICKNESS = 0.15;
+// Deck top faces (clearance + full thickness) — elevated access ramps must
+// meet these at their high end while their walkable low end sits at y ≈ 0.
+const STANDING_DECK_TOP_Y =
+  STANDING_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS * 2;
+const CROUCH_DECK_TOP_Y =
+  CROUCH_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS * 2;
+
+// Fit a constant-thickness cuboid ramp (tilted about X) so the walkable top
+// runs from y ≈ 0 up to deckTopY. Without this, grounding the bottom toe
+// leaves a ~2·hy lip that forces a jump onto the slope.
+function fitRampToGroundAndDeck(hy, tiltRadians, deckTopY) {
+  const cos = Math.cos(tiltRadians);
+  const sinAbs = Math.abs(Math.sin(tiltRadians));
+  const hz = deckTopY / (2 * sinAbs);
+  const y = deckTopY / 2 - hy * cos;
+  return { hy, hz, y, tiltRadians };
+}
+
+// Place the ramp's center Z so its high-end top edge lands on targetHighZ
+// (usually the deck's ±Z face). For θ ≥ 0 the high top is at local z = −hz;
+// for θ < 0 it is at local z = +hz.
+function rampCenterZForHighEdge(targetHighZ, hy, hz, tiltRadians) {
+  const localZHigh = tiltRadians >= 0 ? -hz : hz;
+  return (
+    targetHighZ -
+    hy * Math.sin(tiltRadians) -
+    localZHigh * Math.cos(tiltRadians)
+  );
+}
+
+// Precomputed elevated-ramp fits shared by BASE + mid/outer helpers.
+const STANDING_RAMP_45 = fitRampToGroundAndDeck(
+  0.2,
+  0.45,
+  STANDING_DECK_TOP_Y
+);
+const STANDING_RAMP_60 = fitRampToGroundAndDeck(
+  0.2,
+  0.6,
+  STANDING_DECK_TOP_Y
+);
+const CROUCH_RAMP_45 = fitRampToGroundAndDeck(0.18, 0.45, CROUCH_DECK_TOP_Y);
 
 // Box obstacles. { hx, hy, hz } are half-extents, { x, z } is the center
 // position (each rests on the ground, so its world Y position is just its
@@ -439,7 +483,8 @@ const BASE_BOX_OBSTACLE_DEFS = [
   // East side: kept sparser than the west - an open lane for repositioning
   // instead of matching cover-for-cover (a mirrored layout was the exact
   // "too uniform" problem from before).
-  { hx: 0.5, hy: 0.9, hz: 2.2, x: 8, z: -6 }, // lone wall segment
+  // Cleared west of the east bridge's −Z ramp (was clipping at x: 8, z: -6).
+  { hx: 0.5, hy: 0.9, hz: 2.2, x: 7, z: -7 }, // lone wall segment
 
   // Minor cover near the far spawn area (kept well clear of the actual
   // spawn point) so that end of the map isn't completely bare.
@@ -447,7 +492,9 @@ const BASE_BOX_OBSTACLE_DEFS = [
 
   // Light cover on the direct approach to the chokepoint from each spawn -
   // enough to duck behind mid-fight, not enough to block the spawn itself.
-  { hx: 0.9, hy: 0.7, hz: 0.9, x: 4, z: 3 }, // near player's spawn side
+  // x nudged east so the gap past the choke's east half stays ≥ ~1.2m
+  // (capsule diameter 0.8 + margin) — bots were squeezing the old 0.7m lane.
+  { hx: 0.9, hy: 0.7, hz: 0.9, x: 5.3, z: 3 }, // near player's spawn side
 ];
 
 // Pillar obstacles: round cover, a shape boxes alone can't give. Cylinders
@@ -459,19 +506,22 @@ const BASE_PILLAR_OBSTACLE_DEFS = [
   { radius: 0.6, height: 2.2, x: -5.3, z: 5 },
   // East flank kept deliberately sparse (see the box comment above) -
   // just one pillar, far out, for a bit of cover without closing the lane.
-  { radius: 0.5, height: 2.4, x: 11, z: 6 },
+  // Nudged clear of the east bridge's +Z access ramp.
+  { radius: 0.5, height: 2.4, x: 12, z: 7 },
   // Light cover near the chokepoint's east exit, giving a spot to hold an
   // angle after passing through without blocking the passage itself.
   { radius: 0.55, height: 2.6, x: 5, z: -1 },
   // Mirrors the "light cover near spawn approach" role from the box list
   // above, but on the far side and using a different shape - keeps the
   // two ends functionally balanced without looking like a mirrored copy.
-  { radius: 0.5, height: 2.0, x: -4, z: -3 },
+  // Pulled slightly west so clear gap past the choke's west half is ≥ 1.2m.
+  { radius: 0.5, height: 2.0, x: -4.5, z: -3 },
 ];
 
 // Ramp obstacles: boxes tilted around X. ~15° is under Rapier's default
-// max climbable slope (45°). Rotating a box around its center dips the
-// low edge slightly below y = 0 — harmless against the static ground.
+// max climbable slope (45°). hz must be long enough that the walkable top
+// dips to y ≤ 0 when the center sits at y = hy — otherwise the toe floats
+// and the player has to jump onto the slope.
 const BASE_RAMP_OBSTACLE_DEFS = [
   {
     hx: 1.8,
@@ -502,8 +552,29 @@ const BASE_ELEVATED_STRUCTURE_PIECE_DEFS = [
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 11.4, y: STANDING_PLATFORM_CLEARANCE / 2, z: -3.5 },
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 8.6, y: STANDING_PLATFORM_CLEARANCE / 2, z: -0.5 },
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: 11.4, y: STANDING_PLATFORM_CLEARANCE / 2, z: -0.5 },
-  { type: "ramp", hx: 1.3, hy: 0.2, hz: 2.52, x: 10, y: 1.275, z: 1.98, tiltRadians: 0.45 },
-  { type: "ramp", hx: 1.3, hy: 0.2, hz: 2.52, x: 10, y: 1.275, z: -5.98, tiltRadians: -0.45 },
+  // Dual access ramps (keep both): bridge sits near center so either team
+  // can climb. Fitted so walkable tops run ground → deck (no lip).
+  // East deck spans z ∈ [-3.8, -0.2]; +Z ramp high edge at -0.2, −Z at -3.8.
+  {
+    type: "ramp",
+    hx: 1.3,
+    hy: STANDING_RAMP_45.hy,
+    hz: STANDING_RAMP_45.hz,
+    x: 10,
+    y: STANDING_RAMP_45.y,
+    z: rampCenterZForHighEdge(-0.2, STANDING_RAMP_45.hy, STANDING_RAMP_45.hz, 0.45),
+    tiltRadians: 0.45,
+  },
+  {
+    type: "ramp",
+    hx: 1.3,
+    hy: STANDING_RAMP_45.hy,
+    hz: STANDING_RAMP_45.hz,
+    x: 10,
+    y: STANDING_RAMP_45.y,
+    z: rampCenterZForHighEdge(-3.8, STANDING_RAMP_45.hy, STANDING_RAMP_45.hz, -0.45),
+    tiltRadians: -0.45,
+  },
 
   // --- West raised platform: stand-under + one ramp ---
   {
@@ -519,9 +590,21 @@ const BASE_ELEVATED_STRUCTURE_PIECE_DEFS = [
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -9.3, y: STANDING_PLATFORM_CLEARANCE / 2, z: 8.1 },
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -11.7, y: STANDING_PLATFORM_CLEARANCE / 2, z: 10.3 },
   { type: "box", hx: 0.15, hy: STANDING_PLATFORM_CLEARANCE / 2, hz: 0.15, x: -9.3, y: STANDING_PLATFORM_CLEARANCE / 2, z: 10.3 },
-  { type: "ramp", hx: 1.2, hy: 0.2, hz: 1.97, x: -10.5, y: 1.275, z: 12.01, tiltRadians: 0.6 },
+  // West deck +Z face at z = 9.2 + 1.3 = 10.5.
+  {
+    type: "ramp",
+    hx: 1.2,
+    hy: STANDING_RAMP_60.hy,
+    hz: STANDING_RAMP_60.hz,
+    x: -10.5,
+    y: STANDING_RAMP_60.y,
+    z: rampCenterZForHighEdge(10.5, STANDING_RAMP_60.hy, STANDING_RAMP_60.hz, 0.6),
+    tiltRadians: 0.6,
+  },
 
-  // --- Low crouch underpass (SW bot corner) ---
+  // --- Low crouch underpass (NW / enemy half) ---
+  // Deck pulled south from z: -12 → -9.5 so the −Z-facing ramp stays inside
+  // the 1v1 pad (walls at |z| = 15) instead of punching through the north wall.
   {
     type: "box",
     hx: 1.3,
@@ -529,13 +612,29 @@ const BASE_ELEVATED_STRUCTURE_PIECE_DEFS = [
     hz: 1.3,
     x: -11.5,
     y: CROUCH_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS,
-    z: -12,
+    z: -9.5,
   },
-  { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -12.6, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -13.1 },
-  { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -10.4, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -13.1 },
-  { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -12.6, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -10.9 },
-  { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -10.4, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -10.9 },
-  { type: "ramp", hx: 1.1, hy: 0.18, hz: 1.52, x: -11.5, y: 0.825, z: -9.41, tiltRadians: 0.45 },
+  { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -12.6, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -10.68 },
+  { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -10.4, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -10.68 },
+  { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -12.6, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -8.32 },
+  { type: "box", hx: 0.12, hy: CROUCH_PLATFORM_CLEARANCE / 2, hz: 0.12, x: -10.4, y: CROUCH_PLATFORM_CLEARANCE / 2, z: -8.32 },
+  // Enemy-half structure: ramp faces RED (−Z), high edge on deck's −Z face
+  // (z = -9.5 - 1.3 = -10.8).
+  {
+    type: "ramp",
+    hx: 1.1,
+    hy: CROUCH_RAMP_45.hy,
+    hz: CROUCH_RAMP_45.hz,
+    x: -11.5,
+    y: CROUCH_RAMP_45.y,
+    z: rampCenterZForHighEdge(
+      -10.8,
+      CROUCH_RAMP_45.hy,
+      CROUCH_RAMP_45.hz,
+      -0.45
+    ),
+    tiltRadians: -0.45,
+  },
 ];
 
 // Mid-ring cover for 3v3+ (45m / half ≈ 22.5). Sits in the band outside
@@ -546,7 +645,8 @@ const MID_RING_BOX_OBSTACLE_DEFS = [
   // Extend the center chokepoint's job: wing walls so wider maps can't
   // freely snipe past the ends of the original gap wall.
   { hx: 2.2, hy: 1.4, hz: 0.55, x: -12, z: 0 },
-  { hx: 2.0, hy: 1.3, hz: 0.5, x: 13, z: 1.5 },
+  // Was (13, 1.5) — clipped the east bridge's +Z ramp; parked further east.
+  { hx: 2.0, hy: 1.3, hz: 0.5, x: 15, z: 1.5 },
 
   // West mid-ring: tight cover pocket (matches west-dense feel).
   { hx: 1.1, hy: 1.0, hz: 1.1, x: -17, z: 8 },
@@ -562,14 +662,17 @@ const MID_RING_BOX_OBSTACLE_DEFS = [
   { hx: 2.4, hy: 0.55, hz: 0.5, x: -8, z: -18 },
   { hx: 1.8, hy: 0.6, hz: 0.5, x: 9, z: -17 },
   { hx: 2.2, hy: 0.55, hz: 0.5, x: 6, z: 18 },
-  { hx: 1.2, hy: 0.8, hz: 1.0, x: -14, z: 16 },
+  // Was (-14, 16) — only 0.6m clear of the mid crouch underpass; nudged
+  // east/south so bots can pass between crate and deck.
+  { hx: 1.2, hy: 0.8, hz: 1.0, x: -13.2, z: 16.5 },
 ];
 
 const MID_RING_PILLAR_OBSTACLE_DEFS = [
   { radius: 0.55, height: 2.3, x: -15.5, z: 4 },
   { radius: 0.5, height: 2.1, x: -17, z: -14 },
   { radius: 0.5, height: 2.4, x: 18, z: 2 },
-  { radius: 0.55, height: 2.0, x: 14, z: 14 },
+  // Was (14, 14) — sat inside the mid-ring ground ramp footprint.
+  { radius: 0.55, height: 2.0, x: 11.5, z: 14 },
   { radius: 0.5, height: 2.2, x: -6, z: 17 },
   { radius: 0.5, height: 2.3, x: 5, z: -18.5 },
 ];
@@ -579,38 +682,46 @@ const MID_RING_RAMP_OBSTACLE_DEFS = [
   { hx: 1.6, hy: 0.28, hz: 2.2, x: 15, z: 12, tiltRadians: 0.26 },
 ];
 
-// Helper: standing deck + 4 corner legs + one +Z access ramp. Used by the
+// Helper: standing deck + 4 corner legs + one access ramp. Used by the
 // mid/outer rings so we don't hand-copy the same leg pattern each time.
-function makeStandingDeckPieces(x, z, hx, hz) {
+// rampOnPositiveZ: true = approach from BLUE (+Z); false = from RED (−Z).
+function makeStandingDeckPieces(x, z, hx, hz, rampOnPositiveZ = true) {
   const deckY = STANDING_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS;
   const legHy = STANDING_PLATFORM_CLEARANCE / 2;
   const leg = 0.15;
+  const ramp = STANDING_RAMP_45;
+  const tiltRadians = rampOnPositiveZ ? ramp.tiltRadians : -ramp.tiltRadians;
+  const highEdgeZ = rampOnPositiveZ ? z + hz : z - hz;
+  const zRamp = rampCenterZForHighEdge(highEdgeZ, ramp.hy, ramp.hz, tiltRadians);
   return [
     { type: "box", hx, hy: PLATFORM_DECK_HALF_THICKNESS, hz, x, y: deckY, z },
     { type: "box", hx: leg, hy: legHy, hz: leg, x: x - hx + leg, y: legHy, z: z - hz + leg },
     { type: "box", hx: leg, hy: legHy, hz: leg, x: x + hx - leg, y: legHy, z: z - hz + leg },
     { type: "box", hx: leg, hy: legHy, hz: leg, x: x - hx + leg, y: legHy, z: z + hz - leg },
     { type: "box", hx: leg, hy: legHy, hz: leg, x: x + hx - leg, y: legHy, z: z + hz - leg },
-    // Ramp on +Z: high end meets the deck's south edge.
     {
       type: "ramp",
       hx: Math.min(hx, 1.3),
-      hy: 0.2,
-      hz: 2.52,
+      hy: ramp.hy,
+      hz: ramp.hz,
       x,
-      y: 1.275,
-      z: z + hz + 2.0,
-      tiltRadians: 0.45,
+      y: ramp.y,
+      z: zRamp,
+      tiltRadians,
     },
   ];
 }
 
-function makeCrouchUnderpassPieces(x, z) {
+function makeCrouchUnderpassPieces(x, z, rampOnPositiveZ = true) {
   const hx = 1.2;
   const hz = 1.2;
   const deckY = CROUCH_PLATFORM_CLEARANCE + PLATFORM_DECK_HALF_THICKNESS;
   const legHy = CROUCH_PLATFORM_CLEARANCE / 2;
   const leg = 0.12;
+  const ramp = CROUCH_RAMP_45;
+  const tiltRadians = rampOnPositiveZ ? ramp.tiltRadians : -ramp.tiltRadians;
+  const highEdgeZ = rampOnPositiveZ ? z + hz : z - hz;
+  const zRamp = rampCenterZForHighEdge(highEdgeZ, ramp.hy, ramp.hz, tiltRadians);
   return [
     { type: "box", hx, hy: PLATFORM_DECK_HALF_THICKNESS, hz, x, y: deckY, z },
     { type: "box", hx: leg, hy: legHy, hz: leg, x: x - hx + leg, y: legHy, z: z - hz + leg },
@@ -620,34 +731,37 @@ function makeCrouchUnderpassPieces(x, z) {
     {
       type: "ramp",
       hx: 1.1,
-      hy: 0.18,
-      hz: 1.52,
+      hy: ramp.hy,
+      hz: ramp.hz,
       x,
-      y: 0.825,
-      z: z + hz + 1.35,
-      tiltRadians: 0.45,
+      y: ramp.y,
+      z: zRamp,
+      tiltRadians,
     },
   ];
 }
 
 const MID_RING_ELEVATED_STRUCTURE_PIECE_DEFS = [
-  // NE standing deck (east open lane, north of center).
-  ...makeStandingDeckPieces(17, -14, 1.5, 1.4),
-  // SW crouch underpass (west dense side, player corner of mid-ring).
-  ...makeCrouchUnderpassPieces(-17, 14),
+  // NE standing deck (enemy half) — ramp faces RED (−Z).
+  ...makeStandingDeckPieces(17, -14, 1.5, 1.4, false),
+  // SW crouch underpass (player half) — ramp faces BLUE (+Z).
+  ...makeCrouchUnderpassPieces(-17, 14, true),
 ];
 
 // Outer-ring cover for 5v5 (60m / half = 30). Fills |coord| ~22–27 so the
 // biggest pad doesn't open into empty rim alleys. Still denser west,
 // lighter east; adds another N/S sightline break layer.
 const OUTER_RING_BOX_OBSTACLE_DEFS = [
-  { hx: 2.5, hy: 1.45, hz: 0.55, x: -22, z: 0 },
+  // Was x: -22 — only 0.45m clear of the mid-ring west wall on 5v5.
+  { hx: 2.5, hy: 1.45, hz: 0.55, x: -23.2, z: 0 },
   { hx: 2.2, hy: 1.3, hz: 0.5, x: 23, z: -1 },
   { hx: 1.2, hy: 1.0, hz: 1.2, x: -24, z: 12 },
-  { hx: 0.55, hy: 1.15, hz: 2.6, x: -25, z: -6 },
+  // Was (-25, -6) — clipped through the outer west standing deck at (-24, -8).
+  { hx: 0.55, hy: 1.15, hz: 2.6, x: -26.5, z: -3 },
   { hx: 1.1, hy: 0.85, hz: 1.1, x: -23, z: -18 },
   { hx: 0.5, hy: 0.95, hz: 2.2, x: 24, z: -14 },
-  { hx: 1.0, hy: 0.75, hz: 0.95, x: 23, z: 8 },
+  // Was (23, 8) — clipped the outer east deck's +Z access ramp.
+  { hx: 1.0, hy: 0.75, hz: 0.95, x: 20.5, z: 9 },
   { hx: 2.6, hy: 0.55, hz: 0.5, x: -10, z: -25 },
   { hx: 2.0, hy: 0.6, hz: 0.5, x: 12, z: -24 },
   { hx: 2.4, hy: 0.55, hz: 0.5, x: 8, z: 25 },
@@ -657,24 +771,35 @@ const OUTER_RING_BOX_OBSTACLE_DEFS = [
 
 const OUTER_RING_PILLAR_OBSTACLE_DEFS = [
   { radius: 0.55, height: 2.4, x: -22, z: 6 },
-  { radius: 0.5, height: 2.2, x: -24, z: -12 },
+  // Was (-24, -12) — sat inside the flipped outer-west deck ramp (−Z).
+  { radius: 0.5, height: 2.2, x: -27, z: -16 },
   { radius: 0.5, height: 2.3, x: 25, z: 0 },
-  { radius: 0.55, height: 2.1, x: 21, z: 16 },
+  // Was (21, 16) — sat inside the outer SE ground ramp footprint.
+  // Parked NW of the ramp (now at z: 15) and clear of the (20, 20) crate.
+  { radius: 0.55, height: 2.1, x: 18, z: 17 },
   { radius: 0.5, height: 2.2, x: -8, z: 24 },
   { radius: 0.5, height: 2.4, x: 6, z: -25 },
-  { radius: 0.55, height: 2.0, x: -18, z: 24 },
-  { radius: 0.5, height: 2.3, x: 18, z: -22 },
+  // Was (-18, 24) — only ~0.59m clear of the NW outer crate.
+  { radius: 0.55, height: 2.0, x: -16.5, z: 24.5 },
+  // Nudged south so it stays clear of the mid NE deck's −Z ramp on 5v5.
+  { radius: 0.5, height: 2.3, x: 18, z: -23 },
 ];
 
 const OUTER_RING_RAMP_OBSTACLE_DEFS = [
   { hx: 1.7, hy: 0.28, hz: 2.3, x: -22, z: -22, tiltRadians: 0.26 },
-  { hx: 1.5, hy: 0.28, hz: 2.0, x: 22, z: 14, tiltRadians: 0.26 },
+  // hz was 2.0 — too short for hy/tilt, so the walkable toe floated ~3.6cm
+  // above ground. 2.2 matches the mid-ring mound and dips the top below y=0.
+  // z nudged south to keep ≥ 1.2m clear of the outer east deck's +Z ramp.
+  { hx: 1.5, hy: 0.28, hz: 2.2, x: 22, z: 15, tiltRadians: 0.26 },
 ];
 
 const OUTER_RING_ELEVATED_STRUCTURE_PIECE_DEFS = [
-  ...makeStandingDeckPieces(24, 4, 1.5, 1.5),
-  ...makeStandingDeckPieces(-24, -8, 1.4, 1.3),
-  ...makeCrouchUnderpassPieces(22, -22),
+  // Player-half east deck — ramp faces BLUE (+Z).
+  ...makeStandingDeckPieces(24, 4, 1.5, 1.5, true),
+  // Enemy-half west deck — ramp faces RED (−Z).
+  ...makeStandingDeckPieces(-24, -8, 1.4, 1.3, false),
+  // Enemy-half SE crouch underpass — ramp faces RED (−Z).
+  ...makeCrouchUnderpassPieces(22, -22, false),
 ];
 
 // Runtime layout filled by buildArenaCover() before physics/minimap run.
@@ -2695,7 +2820,23 @@ async function initPhysics() {
   // above. Same "no parent rigid body" static pattern as the ground/walls.
   // Being real Rapier colliders (not just visuals) means they already
   // block the Milestone 4 gun's hitscan raycast (below) with no extra work.
+  //
+  // Blast / T-walls are a stepped taper (wide base, narrow upright). A
+  // single full-width cuboid left invisible air collision beside the top,
+  // so those defs get stacked cuboids from getBlastWallColliderLayers().
   for (const box of boxObstacleDefs) {
+    if (isBlastWallCover(box)) {
+      for (const layer of getBlastWallColliderLayers(box)) {
+        world.createCollider(
+          RAPIER.ColliderDesc.cuboid(layer.hx, layer.hy, layer.hz).setTranslation(
+            layer.x,
+            layer.y,
+            layer.z
+          )
+        );
+      }
+      continue;
+    }
     const boxColliderDesc = RAPIER.ColliderDesc.cuboid(
       box.hx,
       box.hy,

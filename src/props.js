@@ -117,6 +117,48 @@ function box(group, w, h, d, mat, x, y, z, ry = 0) {
 
 // --- Blast wall (concrete T-wall) row -------------------------------------
 // For tall, thin box defs. Panels run along the def's long axis.
+//
+// Layer scales are shared with physics (see getBlastWallColliderLayers) so the
+// stepped visual taper matches the stacked cuboid colliders — a single full-
+// width box left invisible walls beside the narrow upper slab.
+
+/** Same rule as the cover dispatcher: tall + thin → blast / T-wall. */
+export function isBlastWallCover(def) {
+  const thin = Math.min(def.hx, def.hz) <= 0.7;
+  return def.hy >= 1.0 && thin;
+}
+
+// Nominal fractions from buildBlastWall (ignores per-panel height jitter).
+export const BLAST_WALL_LAYERS = {
+  base: { heightFrac: 0.2, yCenterFrac: 0.1, thicknessScale: 1.0 },
+  mid: { heightFrac: 0.16, yCenterFrac: 0.26, thicknessScale: 0.78 },
+  // Cap lip is tiny; fold into the upright so we only need 3 colliders.
+  slab: { heightFrac: 0.82, yCenterFrac: 0.59, thicknessScale: 0.55 },
+};
+
+/**
+ * Stacked cuboid half-extents + world centers for a blast-wall def.
+ * Each entry is { hx, hy, hz, x, y, z } ready for RAPIER.ColliderDesc.cuboid.
+ */
+export function getBlastWallColliderLayers(def) {
+  const alongX = def.hx >= def.hz;
+  const longHalf = alongX ? def.hx : def.hz;
+  const thinHalf = alongX ? def.hz : def.hx;
+  const height = def.hy * 2;
+
+  return Object.values(BLAST_WALL_LAYERS).map((layer) => {
+    const layerHy = (height * layer.heightFrac) / 2;
+    const layerThinHalf = thinHalf * layer.thicknessScale;
+    return {
+      hx: alongX ? longHalf : layerThinHalf,
+      hy: layerHy,
+      hz: alongX ? layerThinHalf : longHalf,
+      x: def.x,
+      y: height * layer.yCenterFrac,
+      z: def.z,
+    };
+  });
+}
 
 function buildBlastWall(def) {
   const m = getMats();
@@ -139,29 +181,42 @@ function buildBlastWall(def) {
     const slabW = actualWidth * 0.94;
     const slab = shadowed(
       new THREE.Mesh(
-        new THREE.BoxGeometry(slabW, jitterH * 0.82, thickness * 0.55),
+        new THREE.BoxGeometry(
+          slabW,
+          jitterH * BLAST_WALL_LAYERS.slab.heightFrac,
+          thickness * BLAST_WALL_LAYERS.slab.thicknessScale
+        ),
         m.concrete
       )
     );
-    slab.position.y = jitterH * 0.18 + (jitterH * 0.82) / 2;
+    slab.position.y =
+      jitterH * 0.18 + (jitterH * BLAST_WALL_LAYERS.slab.heightFrac) / 2;
     panel.add(slab);
 
     // Tapered base: wider footing wedge.
     const base = shadowed(
       new THREE.Mesh(
-        new THREE.BoxGeometry(slabW, jitterH * 0.2, thickness),
+        new THREE.BoxGeometry(
+          slabW,
+          jitterH * BLAST_WALL_LAYERS.base.heightFrac,
+          thickness * BLAST_WALL_LAYERS.base.thicknessScale
+        ),
         m.concrete
       )
     );
-    base.position.y = jitterH * 0.1;
+    base.position.y = jitterH * BLAST_WALL_LAYERS.base.yCenterFrac;
     panel.add(base);
     const mid = shadowed(
       new THREE.Mesh(
-        new THREE.BoxGeometry(slabW, jitterH * 0.16, thickness * 0.78),
+        new THREE.BoxGeometry(
+          slabW,
+          jitterH * BLAST_WALL_LAYERS.mid.heightFrac,
+          thickness * BLAST_WALL_LAYERS.mid.thicknessScale
+        ),
         m.concrete
       )
     );
-    mid.position.y = jitterH * 0.26;
+    mid.position.y = jitterH * BLAST_WALL_LAYERS.mid.yCenterFrac;
     panel.add(mid);
 
     // Small cap lip.
@@ -326,8 +381,7 @@ export function buildColumnProp(def) {
 // --- Box cover dispatcher --------------------------------------------------
 
 export function buildBoxCoverProp(def) {
-  const thin = Math.min(def.hx, def.hz) <= 0.7;
-  if (def.hy >= 1.0 && thin) return buildBlastWall(def);
+  if (isBlastWallCover(def)) return buildBlastWall(def);
   if (def.hy <= 0.6) return buildSandbagWall(def);
   return buildContainer(def);
 }
@@ -335,12 +389,30 @@ export function buildBoxCoverProp(def) {
 // --- Plated ramp with side rails ------------------------------------------
 // Used for both ground ramps and elevated ramp pieces. The visual plate
 // matches the collider box; rails ride the top face's long edges.
+//
+// Deck UVs use a per-mesh material clone with repeat scaled to the plate's
+// width × slope length (meters). BoxGeometry UVs are 0–1 per face, so a
+// shared singleton material would stretch when hz grows to kill the toe lip.
 
 export function buildRampProp(def, y, tiltRadians) {
   const m = getMats();
   const group = new THREE.Group();
 
-  box(group, def.hx * 2, def.hy * 2, def.hz * 2, m.deck, 0, 0, 0);
+  const w = def.hx * 2;
+  const h = def.hy * 2;
+  const d = def.hz * 2;
+
+  // Clone map + normalMap so repeat is unique to this ramp size.
+  const deckMat = m.deck.clone();
+  deckMat.map = m.deck.map.clone();
+  deckMat.normalMap = m.deck.normalMap.clone();
+  // ~1 UV unit per world meter → plating density stays constant as hz changes.
+  deckMat.map.repeat.set(w, d);
+  deckMat.normalMap.repeat.set(w, d);
+  deckMat.map.needsUpdate = true;
+  deckMat.normalMap.needsUpdate = true;
+
+  box(group, w, h, d, deckMat, 0, 0, 0);
 
   const railH = 0.05;
   for (const side of [-1, 1]) {
@@ -348,7 +420,7 @@ export function buildRampProp(def, y, tiltRadians) {
       group,
       0.06,
       railH * 2,
-      def.hz * 2,
+      d,
       m.darkSteel,
       side * (def.hx - 0.04),
       def.hy + railH,
