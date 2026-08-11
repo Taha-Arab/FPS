@@ -907,7 +907,9 @@ const PLAYER_HALF_HEIGHT = 0.6;
 // level, a bit below the very top of the capsule).
 const EYE_HEIGHT = 0.8;
 
-// Crouch (Milestone 7): static height/speed change only — no slide.
+// Crouch (Milestone 7): static height/speed change. Sprint+crouch also
+// triggers a slide (below) layered on top of this same collider/camera
+// height change.
 // Total crouch height = 2 * (0.15 + 0.4) = 1.1m, which fits under the
 // 1.35m low underpass with a bit of margin. Capsule is center-based, so
 // entering/exiting crouch also shifts body Y by CROUCH_CENTER_OFFSET to
@@ -926,6 +928,26 @@ const MOVE_SPEED = 5; // meters/second
 // crouching, aiming, or firing — standard modern-FPS rules.
 const SPRINT_MOVE_SPEED = 7.6;
 const JUMP_SPEED = 6; // initial upward velocity, in meters/second
+
+// Slide: sprint + crouch triggers a speed burst that decays based on the
+// ground slope underneath, layered on top of the crouch collider/camera
+// change above. See getGroundSlopeInfo()/updateSlide() further down.
+const SLIDE_INITIAL_SPEED_MULTIPLIER = 1.3; // applied to SPRINT_MOVE_SPEED
+const SLIDE_MAX_DURATION_SECONDS = 1.6; // safety cap even on a long downhill
+const SLIDE_MIN_SPEED = MOVE_SPEED; // slide exits once decayed below this
+const SLIDE_MAX_SPEED = SPRINT_MOVE_SPEED * 1.6; // downhill accel cap
+// Flat-ground decay is exponential smoothing toward SLIDE_MIN_SPEED; this
+// time constant reaches ~98% decayed by ~1 second ("over ~1.0 second").
+const SLIDE_FLAT_DECAY_TAU_SECONDS = 0.25;
+const SLIDE_UPHILL_DECAY_TAU_SECONDS = SLIDE_FLAT_DECAY_TAU_SECONDS / 2; // 2x rate
+const SLIDE_DOWNHILL_ACCEL = 1.5; // meters/second^2 while sliding downhill
+const SLOPE_FLAT_THRESHOLD_RADIANS = 0.1745; // ~10 degrees
+// Dead zone around perpendicular slope-crossing so classification doesn't
+// flip-flop between the downhill/uphill branches right at the boundary.
+const SLIDE_SLOPE_ALIGNMENT_DEADZONE = 0.15;
+const SLIDE_GROUND_RAY_MARGIN = 0.3; // extra ray length past the capsule's feet
+const SLIDE_CAMERA_ROLL_RADIANS = 0.061; // ~3.5 degrees
+const SLIDE_CAMERA_ROLL_TRANSITION_SECONDS = 0.15;
 
 // FOV states (modern-overhaul): base view, aim-down-sights zoom, and a
 // slight sprint widen for a sense of speed. Blended smoothly in tick().
@@ -3049,6 +3071,38 @@ function startRenderLoop({
   // blend is smoothed; jump/fall still track the body instantly.
   let crouchCameraBlend = 0;
 
+  // Slide state. isSliding implies isCrouching (same shrunk collider);
+  // slideDirection is locked at trigger time — no mid-slide steering.
+  let isSliding = false;
+  let slideSpeed = 0;
+  let slideDirection = { x: 0, z: 0 };
+  let slideTimer = 0;
+  // Rising-edge detector for the crouch key — needed because keysPressed
+  // has no built-in edge detection (unlike jump, a slide must only trigger
+  // once per press, not every frame the combo is held).
+  let crouchKeyHeldLastFrame = false;
+  // Set when a slide auto-stands the player (timer/speed-decay exit while
+  // Crouch is still held) so the still-held key doesn't immediately force
+  // them back down. Cleared the next time the key is released.
+  let crouchSuppressedUntilReleased = false;
+  // 0..1, eased toward isSliding the same way crouchCameraBlend is, drives
+  // the camera roll "juice". Sign is decided at trigger time from strafe
+  // input (see startSlide()).
+  let slideRollBlend = 0;
+  let slideRollSign = 1;
+  // Horizontal velocity carried from a slide into a slide-jump's airtime —
+  // this controller has no persistent velocity between frames otherwise
+  // (WASD directly drives position deltas), so this is the explicit
+  // momentum-carry workaround. Cleared once the player lands again.
+  let airMomentum = { x: 0, z: 0 };
+  // True once computeHorizontalMovement() has actually observed an
+  // airborne (computedGrounded() === false) frame while airMomentum is
+  // active. Needed because computedGrounded() is one-frame-stale: without
+  // this guard, the still-true grounded reading on the very frame a slide-
+  // jump sets airMomentum would immediately clear it again before it's
+  // ever applied.
+  let airMomentumAirborneSeen = false;
+
   // -----------------------------------------------------------------
   // Crouch helpers (Milestone 7)
   // -----------------------------------------------------------------
@@ -3118,15 +3172,181 @@ function startRenderLoop({
     isCrouching = false;
   }
 
-  function updateCrouch() {
+  // -----------------------------------------------------------------
+  // Slide
+  // -----------------------------------------------------------------
+  // Sprint + tap Crouch triggers a slide: an initial speed burst, layered
+  // on the crouch collider/camera change above, that decays based on the
+  // ground slope underneath (see getGroundSlopeInfo()) and can be carried
+  // into a jump (see airMomentum).
+
+  // Downward raycast from the player's current capsule center. Returns the
+  // incline angle (radians from horizontal) and the horizontal steepest-
+  // descent direction, or null if there's no ground within range (e.g. the
+  // player just slid off a ledge).
+  function getGroundSlopeInfo() {
+    const pos = playerBody.translation();
+    const currentHalfHeight = isCrouching
+      ? CROUCH_HALF_HEIGHT
+      : PLAYER_HALF_HEIGHT;
+    const rayLength =
+      currentHalfHeight + PLAYER_RADIUS + SLIDE_GROUND_RAY_MARGIN;
+    const ray = new RAPIER.Ray(pos, { x: 0, y: -1, z: 0 });
+    const hit = world.castRayAndGetNormal(
+      ray,
+      rayLength,
+      true,
+      undefined,
+      undefined,
+      playerCollider
+    );
+    if (hit === null) return null;
+
+    const normal = hit.normal;
+    const angle = Math.acos(Math.min(1, Math.max(-1, normal.y)));
+
+    // Steepest-descent direction = world-down projected onto the slope
+    // plane: downhill = down - normal * dot(down, normal). down = (0,-1,0)
+    // so this reduces to (normal.x * normal.y, normal.z * normal.y) on the
+    // XZ plane once the Y term is dropped for the horizontal comparison.
+    const rawX = normal.x * normal.y;
+    const rawZ = normal.z * normal.y;
+    const rawLength = Math.hypot(rawX, rawZ);
+    const downhillX = rawLength > 0 ? rawX / rawLength : 0;
+    const downhillZ = rawLength > 0 ? rawZ / rawLength : 0;
+
+    return { angle, downhillX, downhillZ };
+  }
+
+  function startSlide() {
+    const input = computeWorldInputDirection();
+    const inputLength = Math.hypot(input.worldX, input.worldZ);
+    // Sprint requires forward input, so this is always nonzero in practice;
+    // the camera-forward fallback just avoids a divide-by-zero if that
+    // condition is ever loosened.
+    slideDirection =
+      inputLength > 0
+        ? { x: input.worldX / inputLength, z: input.worldZ / inputLength }
+        : { x: -Math.sin(yaw), z: -Math.cos(yaw) };
+
+    // Roll direction follows strafe input at the trigger moment (A = left,
+    // D = right); straight-forward-only defaults to a subtle right tilt.
+    slideRollSign = input.inputRight < 0 ? -1 : 1;
+
+    setPlayerCrouch(true);
+    slideSpeed = SPRINT_MOVE_SPEED * SLIDE_INITIAL_SPEED_MULTIPLIER;
+    slideTimer = 0;
+    isSliding = true;
+  }
+
+  // carryMomentum: true when the slide is ending because the player left
+  // the ground (slide-jump, or sliding off a ledge) — stashes the current
+  // slide velocity into airMomentum so it carries into the airtime instead
+  // of vanishing. False for a normal grounded exit (timer/speed/crouch
+  // release), where regular WASD ground movement takes over immediately.
+  function endSlide(carryMomentum) {
+    if (carryMomentum) {
+      airMomentum = {
+        x: slideDirection.x * slideSpeed,
+        z: slideDirection.z * slideSpeed,
+      };
+    }
+    isSliding = false;
+    slideSpeed = 0;
+  }
+
+  function updateSlide(deltaTime) {
+    slideTimer += deltaTime;
+
+    const slope = getGroundSlopeInfo();
+    if (slope === null) {
+      // Slid off a ledge - no ground under the raycast to slide against.
+      endSlide(true);
+      return;
+    }
+
+    if (slope.angle > SLOPE_FLAT_THRESHOLD_RADIANS) {
+      const alignment =
+        slideDirection.x * slope.downhillX + slideDirection.z * slope.downhillZ;
+      if (alignment > SLIDE_SLOPE_ALIGNMENT_DEADZONE) {
+        // Downhill: suspend decay, add a slight accelerating pull so the
+        // slide continues down the incline instead of petering out.
+        slideSpeed = Math.min(
+          SLIDE_MAX_SPEED,
+          slideSpeed + SLIDE_DOWNHILL_ACCEL * deltaTime
+        );
+      } else if (alignment < -SLIDE_SLOPE_ALIGNMENT_DEADZONE) {
+        // Uphill: decay twice as fast so momentum drains quickly.
+        const step = 1 - Math.exp(-deltaTime / SLIDE_UPHILL_DECAY_TAU_SECONDS);
+        slideSpeed += (SLIDE_MIN_SPEED - slideSpeed) * step;
+      } else {
+        // Crossing the slope near-perpendicular to its fall line: treat
+        // like flat ground rather than picking a side at the boundary.
+        const step = 1 - Math.exp(-deltaTime / SLIDE_FLAT_DECAY_TAU_SECONDS);
+        slideSpeed += (SLIDE_MIN_SPEED - slideSpeed) * step;
+      }
+    } else {
+      // Flat ground: smooth-damp back to walking speed over ~1 second.
+      const step = 1 - Math.exp(-deltaTime / SLIDE_FLAT_DECAY_TAU_SECONDS);
+      slideSpeed += (SLIDE_MIN_SPEED - slideSpeed) * step;
+    }
+
+    const wantCrouch = !!keysPressed["KeyC"] || !!keysPressed["ControlLeft"];
+    const wantJump = !!keysPressed["Space"];
+    const naturalEnd =
+      slideTimer >= SLIDE_MAX_DURATION_SECONDS || slideSpeed < SLIDE_MIN_SPEED;
+
+    if (naturalEnd || !wantCrouch || wantJump) {
+      endSlide(wantJump);
+      if (naturalEnd) {
+        // Timer/speed-decay exits happen while the player is usually still
+        // holding Crouch — auto-stand instead of falling straight into an
+        // indefinite crouch-walk. setPlayerCrouch(false) is the same
+        // ceiling-checked stand-up the manual crouch-release path uses, so
+        // this can't clip the player into a low ceiling.
+        setPlayerCrouch(false);
+        // Require a release + re-press before crouch can trigger again so
+        // the still-held key doesn't immediately force the player back
+        // down on the very next frame.
+        crouchSuppressedUntilReleased = true;
+      }
+    }
+  }
+
+  function updateCrouchAndSlide(deltaTime) {
     // C or left Ctrl (modern PC standard) both crouch.
     const wantCrouch = !!keysPressed["KeyC"] || !!keysPressed["ControlLeft"];
+    const crouchJustPressed = wantCrouch && !crouchKeyHeldLastFrame;
+    crouchKeyHeldLastFrame = wantCrouch;
+
+    if (isSliding) {
+      updateSlide(deltaTime);
+      return;
+    }
+
+    // Sprinting (which already implies grounded forward motion, not
+    // aiming/firing/reloading) + a fresh crouch press starts a slide
+    // instead of the plain static crouch below.
+    if (
+      crouchJustPressed &&
+      isSprinting &&
+      characterController.computedGrounded()
+    ) {
+      startSlide();
+      return;
+    }
+
     if (wantCrouch) {
-      if (!isCrouching) setPlayerCrouch(true);
-    } else if (isCrouching) {
-      // Retry stand each frame so releasing C under a low ceiling, then
-      // walking out, still lets the player stand once headroom is clear.
-      setPlayerCrouch(false);
+      // Suppressed right after a slide auto-stand until the key is
+      // released once — see crouchSuppressedUntilReleased above.
+      if (!isCrouching && !crouchSuppressedUntilReleased) setPlayerCrouch(true);
+    } else {
+      crouchSuppressedUntilReleased = false;
+      if (isCrouching) {
+        // Retry stand each frame so releasing C under a low ceiling, then
+        // walking out, still lets the player stand once headroom is clear.
+        setPlayerCrouch(false);
+      }
     }
   }
 
@@ -3157,6 +3377,12 @@ function startRenderLoop({
     if (Math.abs(pos.x) <= limit && Math.abs(pos.z) <= limit) return;
 
     verticalVelocity = 0;
+    isSliding = false;
+    slideSpeed = 0;
+    slideRollBlend = 0;
+    airMomentum = { x: 0, z: 0 };
+    airMomentumAirborneSeen = false;
+    crouchSuppressedUntilReleased = false;
     if (isCrouching) {
       playerCollider.setShape(
         new RAPIER.Capsule(PLAYER_HALF_HEIGHT, PLAYER_RADIUS)
@@ -3184,6 +3410,12 @@ function startRenderLoop({
     playerRespawnRemainingMs = null;
     deathOverlay.classList.add("hidden");
     verticalVelocity = 0;
+    isSliding = false;
+    slideSpeed = 0;
+    slideRollBlend = 0;
+    airMomentum = { x: 0, z: 0 };
+    airMomentumAirborneSeen = false;
+    crouchSuppressedUntilReleased = false;
 
     // Force standing before the teleport so death mid-crouch can't leave
     // the shorter capsule stuck on a standing spawn height.
@@ -3932,9 +4164,11 @@ function startRenderLoop({
     }
   }
 
-  function computeHorizontalMovement(deltaTime) {
-    // Read WASD as a simple -1/0/1 input vector, "forward"/"right" relative
-    // to the player (not world axes yet).
+  // Reads WASD, normalizes, and rotates it by camera yaw into a world-space
+  // direction. Shared by computeHorizontalMovement() (every frame's actual
+  // movement) and startSlide() (which needs "current input direction" at
+  // the instant a slide triggers, before that frame's movement is computed).
+  function computeWorldInputDirection() {
     let inputForward = 0;
     let inputRight = 0;
     if (keysPressed["KeyW"]) inputForward += 1;
@@ -3959,30 +4193,68 @@ function startRenderLoop({
     const worldX = inputForward * -sinYaw + inputRight * cosYaw;
     const worldZ = inputForward * -cosYaw + inputRight * -sinYaw;
 
-    moveInput01 = inputLength > 0 ? 1 : 0;
-    moveInputForward = inputForward;
-    moveInputRight = inputRight;
+    return { worldX, worldZ, inputForward, inputRight };
+  }
+
+  function computeHorizontalMovement(deltaTime) {
+    const input = computeWorldInputDirection();
+
+    moveInput01 =
+      input.inputForward !== 0 || input.inputRight !== 0 ? 1 : 0;
+    moveInputForward = input.inputForward;
+    moveInputRight = input.inputRight;
 
     // Sprint: Shift + forward movement, blocked while crouching, aiming,
-    // firing, or reloading — the standard modern-FPS rule set.
+    // firing, or reloading — the standard modern-FPS rule set. (isCrouching
+    // is already true while sliding, so this naturally excludes slides too.)
     isSprinting =
       (!!keysPressed["ShiftLeft"] || !!keysPressed["ShiftRight"]) &&
-      inputForward > 0 &&
+      input.inputForward > 0 &&
       !isCrouching &&
       !isAiming &&
       !isFiring &&
       !isReloading;
 
-    // Crouch is a static speed reduction only (no slide) — see Milestone 7.
+    // While sliding, horizontal movement is driven entirely by the slide's
+    // own decaying velocity — WASD input is ignored (no mid-slide steering)
+    // until updateSlide()/endSlide() hands control back.
+    if (isSliding) {
+      return {
+        x: slideDirection.x * slideSpeed * deltaTime,
+        z: slideDirection.z * slideSpeed * deltaTime,
+      };
+    }
+
+    // Crouch is a static speed reduction; sliding (above) is the dynamic one.
     const speed = isCrouching
       ? CROUCH_MOVE_SPEED
       : isSprinting
         ? SPRINT_MOVE_SPEED
         : MOVE_SPEED;
-    return {
-      x: worldX * speed * deltaTime,
-      z: worldZ * speed * deltaTime,
-    };
+    let dx = input.worldX * speed * deltaTime;
+    let dz = input.worldZ * speed * deltaTime;
+
+    // Slide-jump momentum carry: this kinematic controller has no
+    // persistent velocity between frames otherwise, so a jump (or ledge
+    // fall) out of a slide stashes its horizontal speed in airMomentum and
+    // it's added on top of normal air-control WASD movement here until the
+    // player lands again. computedGrounded() is one-frame-stale (still
+    // reads true on the very frame the jump/fall is triggered), so
+    // airMomentumAirborneSeen guards against clearing airMomentum on that
+    // same stale-true frame before it's ever actually applied.
+    if (!characterController.computedGrounded()) {
+      dx += airMomentum.x * deltaTime;
+      dz += airMomentum.z * deltaTime;
+      airMomentumAirborneSeen = true;
+    } else if (
+      airMomentumAirborneSeen &&
+      (airMomentum.x !== 0 || airMomentum.z !== 0)
+    ) {
+      airMomentum = { x: 0, z: 0 };
+      airMomentumAirborneSeen = false;
+    }
+
+    return { x: dx, z: dz };
   }
 
   function tick(timestamp) {
@@ -4006,9 +4278,12 @@ function startRenderLoop({
       regenPlayerHealth(timestamp, deltaTime);
       regenAllBotsHealth(timestamp, deltaTime);
 
-      // Hold-C crouch (Milestone 7): resize capsule / adjust speed before
-      // movement so this frame's collide-and-slide uses the right shape.
-      updateCrouch();
+      // Hold-C crouch / sprint+tap-C slide: resize capsule, adjust speed,
+      // and advance slide decay before movement so this frame's
+      // collide-and-slide uses the right shape and speed. isSprinting here
+      // is last frame's value (computeHorizontalMovement runs after this),
+      // the same one-frame staleness computedGrounded() already has below.
+      updateCrouchAndSlide(deltaTime);
 
       // computedGrounded() reflects the result of *last* frame's movement
       // computation. Using it to decide this frame's gravity/jump is a
@@ -4110,6 +4385,15 @@ function startRenderLoop({
       -PITCH_LIMIT,
       Math.min(PITCH_LIMIT, pitch + recoilPitch)
     );
+
+    // Slide camera roll ("juice"): eases in/out over
+    // SLIDE_CAMERA_ROLL_TRANSITION_SECONDS the same way crouchCameraBlend
+    // does, direction set once at slide trigger (see startSlide()).
+    const targetSlideRollBlend = isSliding ? 1 : 0;
+    const slideRollStep =
+      1 - Math.exp(-deltaTime / SLIDE_CAMERA_ROLL_TRANSITION_SECONDS);
+    slideRollBlend += (targetSlideRollBlend - slideRollBlend) * slideRollStep;
+    camera.rotation.z = -slideRollSign * SLIDE_CAMERA_ROLL_RADIANS * slideRollBlend;
 
     // --- Modern-overhaul: FOV blending + weapon viewmodel animation ---
     const playing = !isPaused && !isDead && !matchEnded;
