@@ -1040,10 +1040,6 @@ const ALLY_BOT_COLOR = 0x3366cc;
 // into the other's spawn area. Picked via pickSafeSpawnPoint(), which
 // filters out any point too close to a living player/bot.
 
-// Player drop-in height — a bit above the ground so load/respawn visibly
-// settles via gravity (same feel as the old fixed PLAYER_SPAWN_POSITION).
-const PLAYER_SPAWN_DROP_Y = 3;
-
 const BLUE_TEAM_SPAWN_POINTS = [
   { x: 0, z: 5 }, // original center-south
   { x: 2.5, z: 9 },
@@ -1058,7 +1054,9 @@ const BLUE_TEAM_SPAWN_POINTS = [
   { x: -9, z: 2.2 }, // behind west crate, south side
   { x: -12.5, z: 8 }, // west rim, near the west platform
   { x: -5.5, z: 13.5 }, // south rim, near the ramp
-  { x: 9.5, z: 4 }, // east flank, near the east pillar
+  // x:9.5 z:4 clipped the East bridge's +Z access ramp (footprint extends
+  // to z:5.28, well past the deck's own z:-0.2 edge) - moved north, clear.
+  { x: 9.5, z: 8 }, // east flank, near the east pillar
   { x: 12.5, z: 3 }, // east rim
   { x: 3, z: 13 }, // south rim
   { x: -8.5, z: 12.5 }, // south rim, west side
@@ -1075,11 +1073,15 @@ const RED_TEAM_SPAWN_POINTS = [
   // mirror layout (keeps the west-dense/east-sparse cover asymmetry).
   { x: -7, z: -11.5 }, // north rim, near the crouch underpass
   { x: -11.5, z: -6.5 }, // west rim
-  { x: 9.5, z: -4.5 }, // east flank
+  // x:9.5 z:-4.5 and x:11.5 z:-7.5 both clipped the East bridge's -Z access
+  // ramp (footprint x:[8.7,11.3] z:[-9.28,-3.42] - much wider than the
+  // deck box alone, which the original overlap check didn't account for).
+  // Moved south/east, clear of the ramp.
+  { x: 10.5, z: -11 }, // east flank
   { x: 12.5, z: -3 }, // east rim
   { x: -3, z: -13.5 }, // north rim
   { x: 3, z: -13.5 }, // north rim, near the low wall
-  { x: 11.5, z: -7.5 }, // east rim
+  { x: 13, z: -9 }, // east rim
 ];
 
 // Fisher-Yates shuffle of a shallow copy — used so match-start spawns don't
@@ -1137,26 +1139,63 @@ function pickSafeSpawnPoint(spawnPoints, livingPositions) {
   return best;
 }
 
-function getBlueTeamSpawnTranslation(livingPositions) {
+// Spawn "drop to floor": hardcoded spawn points only carry {x, z}, so a
+// point placed over a ramp or elevated deck used to teleport entities to a
+// fixed ground-level Y and leave them embedded in whatever's actually
+// there. Instead, cast straight down from above every static collider in
+// the arena (ground, ramps, elevated decks, blast-wall stacked layers -
+// none of them are sensors or filtered, so an unfiltered ray hits all of
+// them) and snap to rest exactly on the topmost surface at that column.
+const SPAWN_DROP_RAY_START_Y = 10; // above the tallest deck/blast-wall (~3m)
+const SPAWN_DROP_RAY_MAX_DISTANCE = 15;
+
+// Y of the topmost static surface at (x, z), or 0 (bare ground) in the
+// practically-impossible case nothing is hit - the ground slab collider
+// spans the whole pad, so this is just a defensive floor.
+function findSpawnSurfaceY(world, x, z, excludeCollider) {
+  const ray = new RAPIER.Ray(
+    { x, y: SPAWN_DROP_RAY_START_Y, z },
+    { x: 0, y: -1, z: 0 }
+  );
+  const hit = world.castRay(
+    ray,
+    SPAWN_DROP_RAY_MAX_DISTANCE,
+    true,
+    undefined,
+    undefined,
+    excludeCollider
+  );
+  if (hit === null) return 0;
+  // dir is unit-length, so timeOfImpact is already the drop distance.
+  return SPAWN_DROP_RAY_START_Y - hit.timeOfImpact;
+}
+
+// Converts a {x, z} spawn point into a full translation resting exactly on
+// top of whatever's physically there. excludeCollider is optional - pass
+// the entity's own collider when respawning so the ray can't hit its old
+// (soon-to-be-vacated) position; omit it at creation time, when no such
+// collider exists yet.
+function snapSpawnPointToFloor(world, point, excludeCollider) {
+  const surfaceY = findSpawnSurfaceY(world, point.x, point.z, excludeCollider);
+  return {
+    x: point.x,
+    y: surfaceY + PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
+    z: point.z,
+  };
+}
+
+function getBlueTeamSpawnTranslation(world, livingPositions, excludeCollider) {
   const point = pickSafeSpawnPoint(BLUE_TEAM_SPAWN_POINTS, livingPositions);
-  return { x: point.x, y: PLAYER_SPAWN_DROP_Y, z: point.z };
+  return snapSpawnPointToFloor(world, point, excludeCollider);
 }
 
-function getRedTeamSpawnTranslation(livingPositions) {
+function getRedTeamSpawnTranslation(world, livingPositions, excludeCollider) {
   const point = pickSafeSpawnPoint(RED_TEAM_SPAWN_POINTS, livingPositions);
-  return {
-    x: point.x,
-    y: PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
-    z: point.z,
-  };
+  return snapSpawnPointToFloor(world, point, excludeCollider);
 }
 
-function botStandingSpawnTranslation(point) {
-  return {
-    x: point.x,
-    y: PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
-    z: point.z,
-  };
+function botStandingSpawnTranslation(world, point, excludeCollider) {
+  return snapSpawnPointToFloor(world, point, excludeCollider);
 }
 
 // How far a bot can "see" a hostile - same scale as the player's GUN_RANGE.
@@ -1357,7 +1396,7 @@ function createBotInstance(world, team, spawnPoint, tier) {
       ? buildSwatModel(team, gameAssets)
       : buildSoldierModel(team);
   const group = model.group;
-  const spawn = botStandingSpawnTranslation(spawnPoint);
+  const spawn = botStandingSpawnTranslation(world, spawnPoint);
   group.position.set(spawn.x, spawn.y, spawn.z);
   scene.add(group);
 
@@ -2983,6 +3022,17 @@ async function initPhysics() {
     world.createCollider(pieceColliderDesc);
   }
 
+  // A freshly created static collider isn't visible to castRay() until the
+  // physics pipeline has run at least once - the broad-phase query
+  // structure it needs is only built/updated during a step. No rigid
+  // bodies exist yet at this point (player/bot bodies are created below,
+  // using the snap this step unblocks), so this can't move or simulate
+  // anything; it purely warms up queries before snapSpawnPointToFloor()
+  // raycasts against the ramps/decks/walls created above. Without this,
+  // every match-start raycast silently returns null and spawns fall back
+  // to flat-ground height regardless of what's actually there.
+  world.step();
+
   // Shuffle spawn pools once so the player + ally bots don't stack on the
   // same blue point at match start (respawns still pick randomly later).
   const blueSpawns = shuffleSpawnPoints(BLUE_TEAM_SPAWN_POINTS);
@@ -2992,12 +3042,9 @@ async function initPhysics() {
   // (via setNextKinematicTranslation) instead of letting Rapier's forces
   // push it around like a normal dynamic object. This gives precise,
   // responsive FPS-style control instead of physics-y/bouncy movement.
-  // Reserve blueSpawns[0] for the player; allies start at index 1.
-  const initialPlayerSpawn = {
-    x: blueSpawns[0].x,
-    y: PLAYER_SPAWN_DROP_Y,
-    z: blueSpawns[0].z,
-  };
+  // Reserve blueSpawns[0] for the player; allies start at index 1. Same
+  // drop-to-floor raycast snap as every bot, not a fixed drop-in height.
+  const initialPlayerSpawn = snapSpawnPointToFloor(world, blueSpawns[0]);
   const playerBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
     initialPlayerSpawn.x,
     initialPlayerSpawn.y,
@@ -3389,7 +3436,10 @@ function startRenderLoop({
       );
       isCrouching = false;
     }
-    playerBody.setTranslation(getBlueTeamSpawnTranslation(getLivingEntityPositions()), true);
+    playerBody.setTranslation(
+      getBlueTeamSpawnTranslation(world, getLivingEntityPositions(), playerCollider),
+      true
+    );
     snapCameraHeightToPlayer();
   }
 
@@ -3430,7 +3480,10 @@ function startRenderLoop({
     // normal per-frame collide-and-slide movement) since this needs to take
     // effect immediately - it's called from a setTimeout, not from inside
     // tick()'s usual movement step. Random blue-team spawn each time.
-    playerBody.setTranslation(getBlueTeamSpawnTranslation(getLivingEntityPositions()), true);
+    playerBody.setTranslation(
+      getBlueTeamSpawnTranslation(world, getLivingEntityPositions(), playerCollider),
+      true
+    );
     snapCameraHeightToPlayer();
 
     setPlayerHealth(PLAYER_MAX_HEALTH);
@@ -3462,9 +3515,11 @@ function startRenderLoop({
     const spawnPosition =
       bot.team === "blue"
         ? botStandingSpawnTranslation(
-            pickSafeSpawnPoint(BLUE_TEAM_SPAWN_POINTS, livingPositions)
+            world,
+            pickSafeSpawnPoint(BLUE_TEAM_SPAWN_POINTS, livingPositions),
+            bot.collider
           )
-        : getRedTeamSpawnTranslation(livingPositions);
+        : getRedTeamSpawnTranslation(world, livingPositions, bot.collider);
     bot.body.setTranslation(spawnPosition, true);
     bot.group.position.set(spawnPosition.x, spawnPosition.y, spawnPosition.z);
     bot.group.rotation.y = 0;
