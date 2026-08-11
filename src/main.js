@@ -1015,7 +1015,8 @@ const ALLY_BOT_COLOR = 0x3366cc;
 // (north) side. Points are hand-placed clear of Milestone 3 cover and M7
 // platforms (capsule radius ~0.4 plus margin). Both zones stay on their
 // own side of the center chokepoint so neither can immediately see/shoot
-// into the other's spawn area. Pick randomly via pickRandomSpawnPoint().
+// into the other's spawn area. Picked via pickSafeSpawnPoint(), which
+// filters out any point too close to a living player/bot.
 
 // Player drop-in height — a bit above the ground so load/respawn visibly
 // settles via gravity (same feel as the old fixed PLAYER_SPAWN_POSITION).
@@ -1027,6 +1028,18 @@ const BLUE_TEAM_SPAWN_POINTS = [
   { x: 7, z: 11 },
   { x: -2, z: 12 },
   { x: 5.5, z: 6.5 },
+  // Added for the larger bot roster: kept within the 1v1 pad (|coord| <=
+  // 14, GROUND_HALF - 1 at the smallest arena size) so they stay valid on
+  // every team-size preset, not just 5v5. Clustered near BASE_* cover
+  // (west crate/pillar, west platform, east pillar) and the south rim so
+  // respawns have more room to spread out.
+  { x: -9, z: 2.2 }, // behind west crate, south side
+  { x: -12.5, z: 8 }, // west rim, near the west platform
+  { x: -5.5, z: 13.5 }, // south rim, near the ramp
+  { x: 9.5, z: 4 }, // east flank, near the east pillar
+  { x: 12.5, z: 3 }, // east rim
+  { x: 3, z: 13 }, // south rim
+  { x: -8.5, z: 12.5 }, // south rim, west side
 ];
 
 const RED_TEAM_SPAWN_POINTS = [
@@ -1035,11 +1048,17 @@ const RED_TEAM_SPAWN_POINTS = [
   { x: 2.5, z: -9 },
   { x: 7, z: -11 },
   { x: -8, z: -5.5 },
+  // Added for the larger bot roster: same |coord| <= 14 constraint as the
+  // blue additions above, mirrored onto the north half but not a straight
+  // mirror layout (keeps the west-dense/east-sparse cover asymmetry).
+  { x: -7, z: -11.5 }, // north rim, near the crouch underpass
+  { x: -11.5, z: -6.5 }, // west rim
+  { x: 9.5, z: -4.5 }, // east flank
+  { x: 12.5, z: -3 }, // east rim
+  { x: -3, z: -13.5 }, // north rim
+  { x: 3, z: -13.5 }, // north rim, near the low wall
+  { x: 11.5, z: -7.5 }, // east rim
 ];
-
-function pickRandomSpawnPoint(spawnPoints) {
-  return spawnPoints[Math.floor(Math.random() * spawnPoints.length)];
-}
 
 // Fisher-Yates shuffle of a shallow copy — used so match-start spawns don't
 // stack multiple bots on the same point when counts > 1.
@@ -1054,13 +1073,55 @@ function shuffleSpawnPoints(spawnPoints) {
   return copy;
 }
 
-function getBlueTeamSpawnTranslation() {
-  const point = pickRandomSpawnPoint(BLUE_TEAM_SPAWN_POINTS);
+// Minimum clearance (meters) a spawn candidate must keep from every living
+// player/bot. Below this a respawn can drop someone directly on top of an
+// entity that's already standing there.
+const SPAWN_PROXIMITY_RADIUS = 4;
+
+// Spawn points only carry {x, z}; pin them to standing height so distance
+// comparisons against live entity positions are stable.
+function spawnPointToVector3(point) {
+  return new THREE.Vector3(point.x, PLAYER_HALF_HEIGHT + PLAYER_RADIUS, point.z);
+}
+
+// Distance from a candidate spawn point to whichever living player/bot is
+// closest to it.
+function nearestLivingEntityDistance(point, livingPositions) {
+  const candidateVec = spawnPointToVector3(point);
+  let nearest = Infinity;
+  for (const pos of livingPositions) {
+    const distance = candidateVec.distanceTo(pos);
+    if (distance < nearest) nearest = distance;
+  }
+  return nearest;
+}
+
+// Proximity-filtered spawn pick: tries spawn points in random order and
+// returns the first one with no living player/bot within
+// SPAWN_PROXIMITY_RADIUS. If every point is that crowded, falls back to
+// whichever point has the most clearance from its nearest entity.
+function pickSafeSpawnPoint(spawnPoints, livingPositions) {
+  const candidates = shuffleSpawnPoints(spawnPoints);
+  let best = candidates[0];
+  let bestClearance = -Infinity;
+  for (const candidate of candidates) {
+    const clearance = nearestLivingEntityDistance(candidate, livingPositions);
+    if (clearance >= SPAWN_PROXIMITY_RADIUS) return candidate;
+    if (clearance > bestClearance) {
+      bestClearance = clearance;
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+function getBlueTeamSpawnTranslation(livingPositions) {
+  const point = pickSafeSpawnPoint(BLUE_TEAM_SPAWN_POINTS, livingPositions);
   return { x: point.x, y: PLAYER_SPAWN_DROP_Y, z: point.z };
 }
 
-function getRedTeamSpawnTranslation() {
-  const point = pickRandomSpawnPoint(RED_TEAM_SPAWN_POINTS);
+function getRedTeamSpawnTranslation(livingPositions) {
+  const point = pickSafeSpawnPoint(RED_TEAM_SPAWN_POINTS, livingPositions);
   return {
     x: point.x,
     y: PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
@@ -3069,6 +3130,24 @@ function startRenderLoop({
     }
   }
 
+  // Every currently-alive player/bot position, in world space. Feeds
+  // pickSafeSpawnPoint() (via getBlueTeamSpawnTranslation/etc.) so a
+  // respawn or OOB recovery doesn't drop someone on top of an entity
+  // that's already standing there.
+  function getLivingEntityPositions() {
+    const positions = [];
+    if (!isDead) {
+      const p = playerBody.translation();
+      positions.push(new THREE.Vector3(p.x, p.y, p.z));
+    }
+    for (const bot of bots) {
+      if (bot.destroyed) continue;
+      const p = bot.body.translation();
+      positions.push(new THREE.Vector3(p.x, p.y, p.z));
+    }
+    return positions;
+  }
+
   // Failsafe if the player somehow leaves the playable pad (e.g. a future
   // prop reopens a climb-out path). Soft teleport to spawn — no death/score
   // change — and force standing so a mid-crouch escape can't stick.
@@ -3084,7 +3163,7 @@ function startRenderLoop({
       );
       isCrouching = false;
     }
-    playerBody.setTranslation(getBlueTeamSpawnTranslation(), true);
+    playerBody.setTranslation(getBlueTeamSpawnTranslation(getLivingEntityPositions()), true);
     snapCameraHeightToPlayer();
   }
 
@@ -3119,7 +3198,7 @@ function startRenderLoop({
     // normal per-frame collide-and-slide movement) since this needs to take
     // effect immediately - it's called from a setTimeout, not from inside
     // tick()'s usual movement step. Random blue-team spawn each time.
-    playerBody.setTranslation(getBlueTeamSpawnTranslation(), true);
+    playerBody.setTranslation(getBlueTeamSpawnTranslation(getLivingEntityPositions()), true);
     snapCameraHeightToPlayer();
 
     setPlayerHealth(PLAYER_MAX_HEALTH);
@@ -3145,11 +3224,15 @@ function startRenderLoop({
     // Clear the clamped death pose and restart the idle clip.
     if (bot.model.isGlb) bot.model.resetAlive();
 
-    // Random team spawn each respawn (same pools as match start).
+    // Proximity-filtered team spawn each respawn (same pools as match
+    // start, but steered clear of whoever's still alive on the map).
+    const livingPositions = getLivingEntityPositions();
     const spawnPosition =
       bot.team === "blue"
-        ? botStandingSpawnTranslation(pickRandomSpawnPoint(BLUE_TEAM_SPAWN_POINTS))
-        : getRedTeamSpawnTranslation();
+        ? botStandingSpawnTranslation(
+            pickSafeSpawnPoint(BLUE_TEAM_SPAWN_POINTS, livingPositions)
+          )
+        : getRedTeamSpawnTranslation(livingPositions);
     bot.body.setTranslation(spawnPosition, true);
     bot.group.position.set(spawnPosition.x, spawnPosition.y, spawnPosition.z);
     bot.group.rotation.y = 0;
