@@ -2454,15 +2454,22 @@ function spawnDamageIndicator(attackerPosition) {
 }
 
 // -----------------------------------------------------------------------
-// Multi-killstreak announcements (feat/fps-overhaul)
+// Multi-kill combo chain (feat/fps-overhaul)
 // -----------------------------------------------------------------------
-// Player kills within a rolling 4s window trigger an upper-center banner:
+// Standard FPS combo-chain: each kill bumps multiKillCount and resets
+// multiKillTimer to MULTI_KILL_WINDOW_SECONDS. The timer ticks down every
+// frame in tick(); once it runs out the chain is broken and the count
+// resets to 0. This means the chain only grows on *consecutive* kills
+// within the window, so a banner (e.g. TRIPLE KILL!) fires once per
+// genuine streak instead of repeatedly as old kills age out of a rolling
+// window.
 // 3 = TRIPLE KILL!, 4 = QUAD KILL!, 5+ = KILL FRENZY!
 
 const killstreakBannerEl = document.getElementById("killstreak-banner");
-const KILLSTREAK_WINDOW_MS = 4000;
+const MULTI_KILL_WINDOW_SECONDS = 3.0;
 const KILLSTREAK_BANNER_MS = 1800; // matches the CSS animation length
-let killstreakTimestamps = [];
+let multiKillCount = 0;
+let multiKillTimer = 0;
 let killstreakHideTimeoutId = null;
 
 function showKillstreakBanner(text) {
@@ -2482,19 +2489,28 @@ function showKillstreakBanner(text) {
   trackTimeout(killstreakHideTimeoutId);
 }
 
-function registerPlayerKillForStreak(now) {
-  killstreakTimestamps.push(now);
-  killstreakTimestamps = killstreakTimestamps.filter(
-    (t) => now - t <= KILLSTREAK_WINDOW_MS
-  );
-  const streak = killstreakTimestamps.length;
-  if (streak === 3) showKillstreakBanner("TRIPLE KILL!");
-  else if (streak === 4) showKillstreakBanner("QUAD KILL!");
-  else if (streak >= 5) showKillstreakBanner("KILL FRENZY!");
+function registerPlayerKillForStreak() {
+  multiKillCount += 1;
+  multiKillTimer = MULTI_KILL_WINDOW_SECONDS;
+  if (multiKillCount === 3) showKillstreakBanner("TRIPLE KILL!");
+  else if (multiKillCount === 4) showKillstreakBanner("QUAD KILL!");
+  else if (multiKillCount >= 5) showKillstreakBanner("KILL FRENZY!");
+}
+
+// Called once per frame from tick() while the match is live. Counts down
+// multiKillTimer and breaks the combo chain once it expires.
+function updateMultiKillTimer(deltaTime) {
+  if (multiKillTimer <= 0) return;
+  multiKillTimer -= deltaTime;
+  if (multiKillTimer <= 0) {
+    multiKillTimer = 0;
+    multiKillCount = 0;
+  }
 }
 
 function resetKillstreak() {
-  killstreakTimestamps = [];
+  multiKillCount = 0;
+  multiKillTimer = 0;
   killstreakBannerEl.classList.add("hidden");
   killstreakBannerEl.classList.remove("active");
 }
@@ -2895,6 +2911,7 @@ function endMatch(winningTeamName) {
 function handlePlayerDeath(killerInfo = null) {
   playerDeaths += 1;
   playDeathSound();
+  resetKillstreak();
   pushKillFeedEntry(
     killerInfo ?? { label: "Enemy", team: "red" },
     "You",
@@ -2938,7 +2955,7 @@ function handleBotDeath(bot, killerInfo = null) {
   if (resolvedKiller.label === "You" && bot.team === "red") {
     playerKills += 1;
     playKillSound();
-    registerPlayerKillForStreak(performance.now());
+    registerPlayerKillForStreak();
   }
 
   if (bot.team === "red") {
@@ -4410,6 +4427,10 @@ function startRenderLoop({
       // Gradual health regeneration for player + every living bot.
       regenPlayerHealth(timestamp, deltaTime);
       regenAllBotsHealth(timestamp, deltaTime);
+
+      // Multi-kill combo chain: counts down the window since the last
+      // kill and breaks the chain once it expires.
+      updateMultiKillTimer(deltaTime);
 
       // Hold-C crouch / sprint+tap-C slide: resize capsule, adjust speed,
       // and advance slide decay before movement so this frame's
