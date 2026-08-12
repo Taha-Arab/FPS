@@ -2171,6 +2171,9 @@ function damagePlayer(amount, killerInfo = null) {
   playerRegenActive = false;
   playerRegenWasFull = false;
   playHitTakenSound();
+  // Only real attacks (see botFireShot()) carry a position — the debug
+  // KeyT test hit doesn't, and there's nothing to point an arc at then.
+  if (killerInfo?.position) spawnDamageIndicator(killerInfo.position);
   setPlayerHealth(playerHealth - amount);
   if (playerHealth === 0) handlePlayerDeath(killerInfo);
 }
@@ -2376,6 +2379,78 @@ function spawnDamageNumber(worldPoint, amount, isHeadshot = false) {
   el.style.top = `${((1 - projected.y) / 2) * window.innerHeight}px`;
   damageNumbersEl.appendChild(el);
   trackTimeout(setTimeout(() => el.remove(), DAMAGE_NUMBER_LIFETIME_MS));
+}
+
+// -----------------------------------------------------------------------
+// Directional damage indicator (feat/damage-indicator)
+// -----------------------------------------------------------------------
+// Each hit taken (with a known attacker position) spawns a short-lived arc
+// pointing toward the attacker, independent of any others already fading -
+// same "create, append, self-destroy via a tracked timeout" pattern as
+// spawnDamageNumber() above, so several hits from different directions in
+// quick succession all show at once instead of collapsing into one.
+
+const damageIndicatorsEl = document.getElementById("damage-indicators");
+const DAMAGE_INDICATOR_LIFETIME_MS = 1500;
+// Defensive cap so a hail of fire can't pile up an unbounded number of
+// live elements — each already self-removes after DAMAGE_INDICATOR_LIFETIME_MS,
+// so this is just a worst-case bound, not the normal path.
+const MAX_CONCURRENT_DAMAGE_INDICATORS = 5;
+const liveDamageIndicators = [];
+
+// Same rest-arc SVG every time (a 48°-ish arc centered on top/"ahead") -
+// only the wrapper's rotation, set below, differs per attacker bearing.
+// Two stacked circles sharing the exact same geometry (cx/cy/r/dasharray/
+// rotate): a wide, blurred "glow" underneath and a thin, jagged "core" on
+// top (the jaggedness comes from the shared #damage-indicator-jagged
+// filter in index.html - a feTurbulence/feDisplacementMap distortion, all
+// purely visual, no change to the arc's actual position/span/rotation).
+const DAMAGE_INDICATOR_SVG = `
+  <svg viewBox="0 0 200 200">
+    <circle class="damage-indicator-glow" cx="100" cy="100" r="85" stroke-dasharray="71 463" transform="rotate(-114 100 100)" />
+    <circle class="damage-indicator-core" cx="100" cy="100" r="85" stroke-dasharray="71 463" transform="rotate(-114 100 100)" />
+  </svg>
+`;
+
+// Signed angle (degrees) from the player's current look direction to
+// attackerPosition, flattened to the XZ plane. Mirrors computeYawTowards()/
+// the atan2(sin,cos) wrap idiom in rotateGroupTowards() (both closure-
+// scoped inside startRenderLoop, so re-derived here at module scope where
+// damagePlayer() and camera/yaw already live) - then negated, since that
+// convention's positive angle means "attacker to the world-yaw left",
+// while a CSS rotate(+deg) here needs to sweep clockwise (screen-right)
+// for an attacker on the player's right.
+function computeAttackerBearingDegrees(attackerPosition) {
+  const dx = attackerPosition.x - camera.position.x;
+  const dz = attackerPosition.z - camera.position.z;
+  const attackerYaw = Math.atan2(-dx, -dz);
+  const relative = Math.atan2(
+    Math.sin(attackerYaw - yaw),
+    Math.cos(attackerYaw - yaw)
+  );
+  return -relative * (180 / Math.PI);
+}
+
+function spawnDamageIndicator(attackerPosition) {
+  while (liveDamageIndicators.length >= MAX_CONCURRENT_DAMAGE_INDICATORS) {
+    liveDamageIndicators.shift().remove();
+  }
+
+  const bearingDegrees = computeAttackerBearingDegrees(attackerPosition);
+  const el = document.createElement("div");
+  el.className = "damage-indicator";
+  el.style.transform = `translate(-50%, -50%) rotate(${bearingDegrees}deg)`;
+  el.innerHTML = DAMAGE_INDICATOR_SVG;
+  damageIndicatorsEl.appendChild(el);
+  liveDamageIndicators.push(el);
+
+  trackTimeout(
+    setTimeout(() => {
+      el.remove();
+      const index = liveDamageIndicators.indexOf(el);
+      if (index !== -1) liveDamageIndicators.splice(index, 1);
+    }, DAMAGE_INDICATOR_LIFETIME_MS)
+  );
 }
 
 // -----------------------------------------------------------------------
@@ -3929,10 +4004,13 @@ function startRenderLoop({
       undefined,
       bot.collider
     );
+    // position feeds the directional damage indicator (damagePlayer() in
+    // module scope) - botEyePosition is world-space and already computed
+    // right here, so no extra lookup needed.
     const killerInfo =
       bot.team === "blue"
-        ? { label: "Ally", team: "blue" }
-        : { label: "Enemy", team: "red" };
+        ? { label: "Ally", team: "blue", position: botEyePosition }
+        : { label: "Enemy", team: "red", position: botEyePosition };
     if (hit) {
       const hitPoint = {
         x: botEyePosition.x + aimDirection.x * hit.timeOfImpact,
@@ -4745,6 +4823,8 @@ function returnToPrematchMenu() {
   hitMarkerEl.classList.remove("active");
   resetKillstreak();
   damageNumbersEl.innerHTML = "";
+  damageIndicatorsEl.innerHTML = "";
+  liveDamageIndicators.length = 0;
   recoilPitch = 0;
   recoilYaw = 0;
   yaw = 0;

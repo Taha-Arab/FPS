@@ -538,6 +538,77 @@ button {
   }
 }
 
+/* --- Directional damage indicator (feat/damage-indicator) -------------- */
+/* Each hit taken spawns one .damage-indicator (see spawnDamageIndicator()
+   in src/main.js) - a fixed-size arc, always identical SVG markup, with
+   only its wrapper's rotation (set inline per-instance, since it depends
+   on the attacker's live bearing) differing between spawns. */
+
+#damage-indicators {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.damage-indicator {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 200px;
+  height: 200px;
+  /* transform (translate to center + rotate to bearing) is set inline by
+     spawnDamageIndicator() - this animation only ever touches opacity, so
+     it can't stomp that inline rotation. */
+  animation: damage-indicator-fade 1.5s ease-out forwards;
+}
+
+.damage-indicator svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* Wide, soft, blood-red halo underneath - the "feathery glow fading
+   outwards". Blurred rather than jagged; the jitter should read on the
+   crisp core, not muddy up the soft part behind it. */
+.damage-indicator-glow {
+  fill: none;
+  stroke: rgba(196, 24, 12, 0.75);
+  stroke-width: 20;
+  stroke-linecap: round;
+  filter: blur(7px);
+}
+
+/* Thin, hot-orange, slightly jagged core - the "ember" itself. The
+   feTurbulence/feDisplacementMap filter (defined once in index.html,
+   shared by every spawned indicator) gives the line its crackling,
+   hand-drawn edge instead of a clean vector curve. */
+.damage-indicator-core {
+  fill: none;
+  stroke: #ff7a1a;
+  stroke-width: 4.5;
+  stroke-linecap: round;
+  filter: url(#damage-indicator-jagged) drop-shadow(0 0 5px rgba(255, 140, 26, 0.9));
+}
+
+@keyframes damage-indicator-fade {
+  0% {
+    opacity: 1;
+  }
+  /* A slight dip-then-flare before the final decay, so it reads as a
+     guttering ember rather than a linear UI fade. */
+  15% {
+    opacity: 0.8;
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 /* --- Multi-killstreak banner (feat/fps-overhaul) ----------------------- */
 
 #killstreak-banner {

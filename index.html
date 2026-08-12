@@ -121,6 +121,50 @@
     <div id="vignette"></div>
 
     <!--
+      Shared SVG defs for the damage indicator's jagged/energetic stroke
+      texture (feTurbulence + feDisplacementMap) — defined once here and
+      referenced via url(#damage-indicator-jagged) from every spawned
+      indicator in src/main.js, instead of repeating (and id-colliding) a
+      <filter> in each one's own markup. Zero-size and non-visual itself.
+    -->
+    <svg width="0" height="0" style="position: absolute">
+      <defs>
+        <filter
+          id="damage-indicator-jagged"
+          x="-60%"
+          y="-60%"
+          width="220%"
+          height="220%"
+        >
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency="0.85"
+            numOctaves="2"
+            seed="7"
+            result="noise"
+          />
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="noise"
+            scale="7"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+      </defs>
+    </svg>
+
+    <!--
+      Directional damage indicator (feat/damage-indicator). Screen-centered
+      container for the arcs spawned by spawnDamageIndicator() in
+      src/main.js — each hit taken adds one short-lived arc rotated toward
+      the attacker's bearing, independent of the others, so several hits
+      from different directions in quick succession show simultaneously.
+      pointer-events: none so it never blocks clicks/shots.
+    -->
+    <div id="damage-indicators"></div>
+
+    <!--
       Spawn-invulnerability overlay (Milestone 6). A pulsing blue vignette
       shown for a short window right after the player respawns (see
       respawnPlayer()/the invulnerability check in tick(), both in
