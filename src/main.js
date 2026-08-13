@@ -1800,6 +1800,15 @@ function playKillSound() {
 // Input handling: keyboard state + mouse look + pointer lock
 // -----------------------------------------------------------------------
 
+// Debug test-mode toggles (feat-ballistics-polish): "P" flips both at once
+// so a shot can be lined up on a stationary bot up close, safely, to check
+// impact-particle visuals without the bot moving/shooting back or actually
+// dying/dealing damage. DEBUG_FREEZE_BOTS is read in updateBot() (early
+// return skips all movement/aim/fire logic); DEBUG_GOD_MODE is read in
+// damagePlayer(). Not persisted - always off on a fresh page load.
+let DEBUG_FREEZE_BOTS = false;
+let DEBUG_GOD_MODE = false;
+
 // Tracks which keys are currently held down, keyed by event.code (layout-
 // independent, e.g. "KeyW" is always the key in the W position).
 const keysPressed = {};
@@ -1824,6 +1833,16 @@ window.addEventListener("keydown", (event) => {
   // not restart it every frame.
   if (event.code === "KeyR" && !isPaused && !isDead && !matchEnded) {
     startReload();
+  }
+
+  // Debug test mode (see flags above): freeze bots into stationary target
+  // dummies + make the player invulnerable, so impact visuals can be
+  // tested up close without dying or the bots wandering off. Same
+  // once-per-keypress pattern as KeyT/KeyR above.
+  if (event.code === "KeyP" && !isPaused && !isDead && !matchEnded) {
+    DEBUG_FREEZE_BOTS = !DEBUG_FREEZE_BOTS;
+    DEBUG_GOD_MODE = DEBUG_FREEZE_BOTS;
+    console.log(`[debug] test mode ${DEBUG_FREEZE_BOTS ? "ON" : "OFF"} (bots frozen: ${DEBUG_FREEZE_BOTS}, god mode: ${DEBUG_GOD_MODE})`);
   }
 });
 window.addEventListener("keyup", (event) => {
@@ -2162,6 +2181,9 @@ function setPlayerHealth(newHealth) {
 
 function damagePlayer(amount, killerInfo = null) {
   if (isDead || matchEnded) return;
+  // Debug test mode ("P") - shots still visually land, they just never
+  // hurt the player, same as the spawn-invulnerability no-op below.
+  if (DEBUG_GOD_MODE) return;
   // No-op during the post-respawn invulnerability window (see
   // SPAWN_INVULNERABILITY_MS) - shots still visually land, they just
   // don't do anything yet.
@@ -2288,45 +2310,10 @@ function startReload() {
 }
 
 // -----------------------------------------------------------------------
-// Shooting visual feedback (Milestones 4 + 11)
+// Shooting visual feedback (Milestones 4 + 11; ballistics polish below)
 // -----------------------------------------------------------------------
-// Per the Visual Style spec: "a thin glowing tracer line from gun to
-// impact point, plus a small flash/particle at the impact point" - no
-// bullet model needed. Milestone 11 adds muzzle flash + hit markers;
-// recoil is applied as camera offsets in tick().
-
-const TRACER_LIFETIME_MS = 70;
-const IMPACT_FLASH_LIFETIME_MS = 120;
-
-function spawnTracer(start, end) {
-  const tracerGeometry = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(start.x, start.y, start.z),
-    new THREE.Vector3(end.x, end.y, end.z),
-  ]);
-  const tracerMaterial = new THREE.LineBasicMaterial({ color: 0xfff59d });
-  const tracerLine = new THREE.Line(tracerGeometry, tracerMaterial);
-  scene.add(tracerLine);
-
-  setTimeout(() => {
-    scene.remove(tracerLine);
-    tracerGeometry.dispose();
-    tracerMaterial.dispose();
-  }, TRACER_LIFETIME_MS);
-}
-
-function spawnImpactFlash(point) {
-  const flashGeometry = new THREE.SphereGeometry(0.08, 8, 8);
-  const flashMaterial = new THREE.MeshBasicMaterial({ color: 0xffffaa });
-  const flashMesh = new THREE.Mesh(flashGeometry, flashMaterial);
-  flashMesh.position.set(point.x, point.y, point.z);
-  scene.add(flashMesh);
-
-  setTimeout(() => {
-    scene.remove(flashMesh);
-    flashGeometry.dispose();
-    flashMaterial.dispose();
-  }, IMPACT_FLASH_LIFETIME_MS);
-}
+// Milestone 11 adds muzzle flash + hit markers; recoil is applied as
+// camera offsets in tick().
 
 function spawnMuzzleFlash(point) {
   const flashGeometry = new THREE.SphereGeometry(0.07, 8, 8);
@@ -2349,6 +2336,476 @@ function spawnMuzzleFlash(point) {
 function applyRecoilKick() {
   recoilPitch += RECOIL_PITCH_KICK;
   recoilYaw += (Math.random() - 0.5) * 2 * RECOIL_YAW_KICK_MAX;
+}
+
+// -----------------------------------------------------------------------
+// Bullet tracers (feat-ballistics-polish)
+// -----------------------------------------------------------------------
+// A tracer is a short, fixed-length "comet" (two crossed additive-blended
+// quads, since a single billboard would vanish edge-on) that travels from
+// the muzzle to the impact/miss point over time instead of instantly
+// drawing a line - gunplay itself stays hitscan (damage is still applied
+// the instant the trigger is pulled, see fireShot()/botFireShot() below);
+// only the tracer's visual arrival is delayed. Geometry/material are
+// shared singletons since every tracer looks identical and only its
+// transform differs - avoids per-shot allocation churn during full-auto.
+
+const TRACER_LENGTH = 2.2; // meters - fixed length of the traveling streak
+const TRACER_SPEED = 300; // meters/second
+const TRACER_WIDTH = 0.05; // meters
+
+let tracerTexture = null;
+function getTracerTexture() {
+  if (tracerTexture) return tracerTexture;
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 8;
+  const ctx = canvas.getContext("2d");
+  // U=0 (local -X, trailing edge) -> transparent orange smoke.
+  // U=1 (local +X, leading edge, points along the travel direction) ->
+  // hot white, per the "bright head fading to smoke tail" look requested.
+  const gradient = ctx.createLinearGradient(0, 0, canvas.width, 0);
+  gradient.addColorStop(0, "rgba(255, 130, 40, 0)");
+  gradient.addColorStop(0.55, "rgba(255, 170, 90, 0.5)");
+  gradient.addColorStop(1, "rgba(255, 255, 255, 1)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  tracerTexture = new THREE.CanvasTexture(canvas);
+  tracerTexture.colorSpace = THREE.SRGBColorSpace;
+  return tracerTexture;
+}
+
+let tracerMaterial = null;
+function getTracerMaterial() {
+  if (tracerMaterial) return tracerMaterial;
+  tracerMaterial = new THREE.MeshBasicMaterial({
+    map: getTracerTexture(),
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  return tracerMaterial;
+}
+
+let tracerGeometry = null;
+function getTracerGeometry() {
+  // Unit-length quad, long axis along local X, so a mesh using this
+  // geometry can be aligned to the travel direction and scaled in X for
+  // length each frame without ever touching the geometry itself.
+  if (!tracerGeometry) tracerGeometry = new THREE.PlaneGeometry(1, TRACER_WIDTH);
+  return tracerGeometry;
+}
+
+// In-flight tracers, updated once per frame in tick() via updateTracers().
+const activeTracers = [];
+
+// onImpact (optional) fires once the tracer visually reaches `end`, so
+// impact decals/particles can be timed to the bullet's arrival instead of
+// popping in before the visible tracer gets there.
+function spawnTracer(start, end, onImpact) {
+  const startVec = new THREE.Vector3(start.x, start.y, start.z);
+  const endVec = new THREE.Vector3(end.x, end.y, end.z);
+  const toEnd = new THREE.Vector3().subVectors(endVec, startVec);
+  const totalDistance = toEnd.length();
+  if (totalDistance < 1e-4) return;
+  const dir = toEnd.divideScalar(totalDistance);
+
+  const geometry = getTracerGeometry();
+  const material = getTracerMaterial();
+  const group = new THREE.Group();
+  const quad1 = new THREE.Mesh(geometry, material);
+  const quad2 = new THREE.Mesh(geometry, material);
+  // Rotating around local X (the shared "length" axis) leaves that axis
+  // fixed, so both quads keep the same length/orientation along dir while
+  // crossing at 90 deg - readable from any viewing angle without a true
+  // camera-facing billboard shader.
+  quad2.rotation.x = Math.PI / 2;
+  group.add(quad1, quad2);
+  group.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
+  scene.add(group);
+
+  activeTracers.push({
+    group,
+    start: startVec,
+    dir,
+    totalDistance,
+    traveled: 0,
+    onImpact: onImpact || null,
+  });
+}
+
+function updateTracers(deltaTime) {
+  for (let i = activeTracers.length - 1; i >= 0; i--) {
+    const tracer = activeTracers[i];
+    tracer.traveled += TRACER_SPEED * deltaTime;
+    const reachedEnd = tracer.traveled >= tracer.totalDistance;
+    const headDistance = Math.min(tracer.traveled, tracer.totalDistance);
+    // Tail stays pinned to the muzzle while the streak is still shorter
+    // than TRACER_LENGTH (so it visibly emerges rather than popping in at
+    // full length), then trails at a constant length once it's caught up.
+    const tailDistance = Math.max(0, headDistance - TRACER_LENGTH);
+    const length = headDistance - tailDistance;
+
+    const midDistance = (headDistance + tailDistance) / 2;
+    tracer.group.position
+      .copy(tracer.start)
+      .addScaledVector(tracer.dir, midDistance);
+    tracer.group.scale.set(length, 1, 1);
+
+    if (reachedEnd) {
+      scene.remove(tracer.group);
+      activeTracers.splice(i, 1);
+      if (tracer.onImpact) tracer.onImpact();
+    }
+  }
+}
+
+// -----------------------------------------------------------------------
+// Impact decals - bullet holes (feat-ballistics-polish)
+// -----------------------------------------------------------------------
+// A small dark plane oriented to the impact normal and nudged off the
+// surface along it to avoid z-fighting. Only spawned for environment hits
+// (see fireShot()/botFireShot()) - a decal stuck to a bot doesn't track
+// its animation and looks broken once the bot dies/respawns, and body
+// hits already get a hit marker + damage number, so no decal is needed
+// there. Geometry/material are shared singletons like the tracer's; decals
+// don't fade, they just get removed outright after their lifetime, so a
+// shared material is safe (no per-instance state to fight over).
+
+const IMPACT_DECAL_LIFETIME_MS = 8000;
+const IMPACT_DECAL_SIZE = 0.06;
+const IMPACT_DECAL_NORMAL_OFFSET = 0.015;
+// Defensive cap, same pattern as MAX_CONCURRENT_DAMAGE_INDICATORS - each
+// decal already self-removes after its lifetime, this just bounds the
+// worst case during a long, decal-heavy match.
+const MAX_CONCURRENT_DECALS = 40;
+const liveDecals = [];
+
+let decalTexture = null;
+function getDecalTexture() {
+  if (decalTexture) return decalTexture;
+  const canvas = document.createElement("canvas");
+  canvas.width = 32;
+  canvas.height = 32;
+  const ctx = canvas.getContext("2d");
+  const gradient = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  gradient.addColorStop(0, "rgba(12, 11, 10, 0.95)");
+  gradient.addColorStop(0.6, "rgba(18, 16, 15, 0.7)");
+  gradient.addColorStop(1, "rgba(18, 16, 15, 0)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  decalTexture = new THREE.CanvasTexture(canvas);
+  decalTexture.colorSpace = THREE.SRGBColorSpace;
+  return decalTexture;
+}
+
+let decalGeometry = null;
+function getDecalGeometry() {
+  if (!decalGeometry) {
+    decalGeometry = new THREE.PlaneGeometry(IMPACT_DECAL_SIZE, IMPACT_DECAL_SIZE);
+  }
+  return decalGeometry;
+}
+
+let decalMaterial = null;
+function getDecalMaterial() {
+  if (!decalMaterial) {
+    decalMaterial = new THREE.MeshBasicMaterial({
+      map: getDecalTexture(),
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+  }
+  return decalMaterial;
+}
+
+function spawnImpactDecal(point, normal) {
+  const normalVec = new THREE.Vector3(normal.x, normal.y, normal.z).normalize();
+  const mesh = new THREE.Mesh(getDecalGeometry(), getDecalMaterial());
+  mesh.position
+    .set(point.x, point.y, point.z)
+    .addScaledVector(normalVec, IMPACT_DECAL_NORMAL_OFFSET);
+  // Plane's default face normal is local +Z - align that to the impact
+  // normal, then spin randomly around it (that axis is now local Z, so
+  // rotateZ spins in-place around the normal) so decals aren't all
+  // identically oriented.
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normalVec);
+  mesh.rotateZ(Math.random() * Math.PI * 2);
+  scene.add(mesh);
+
+  liveDecals.push(mesh);
+  if (liveDecals.length > MAX_CONCURRENT_DECALS) {
+    scene.remove(liveDecals.shift());
+  }
+
+  trackTimeout(
+    setTimeout(() => {
+      scene.remove(mesh);
+      const index = liveDecals.indexOf(mesh);
+      if (index !== -1) liveDecals.splice(index, 1);
+    }, IMPACT_DECAL_LIFETIME_MS)
+  );
+}
+
+// -----------------------------------------------------------------------
+// Impact particle bursts - wall dust/sparks + blood splatter
+// (feat-ballistics-polish)
+// -----------------------------------------------------------------------
+// Two distinct burst types share the same InstancedMesh-per-burst
+// infrastructure (positions/velocities integrated with gravity, faded via
+// scale + opacity, one dedicated material per burst since opacity is
+// per-burst state): spawnWallSparkParticles() for concrete/environment
+// hits, spawnBloodSplatterParticles() for body hits. They differ in more
+// than color - wall dust sprays outward around the surface normal with
+// light gravity, blood is a heavier liquid biased along the bullet's
+// travel direction (exit-wound spatter) that arcs hard toward the floor.
+
+const IMPACT_PARTICLE_LIFETIME_MIN_S = 0.2;
+const IMPACT_PARTICLE_LIFETIME_MAX_S = 0.4;
+
+const WALL_SPARK_MIN_COUNT = 5;
+const WALL_SPARK_MAX_COUNT = 10;
+const WALL_SPARK_SPEED_MIN = 1.5;
+const WALL_SPARK_SPEED_MAX = 4;
+const WALL_SPARK_GRAVITY = 6;
+const WALL_SPARK_SIZE = 0.02;
+// Wide, shallow cone around the surface normal - "flying off the wall".
+const WALL_SPARK_DIRECTION_BIAS_MIN = 0.35;
+const WALL_SPARK_DIRECTION_BIAS_MAX = 1.0;
+
+// Punchier than wall dust (more particles, thrown faster) for a more
+// "impactful" feel on a confirmed hit, heavy liquid-like gravity so it
+// arcs down instead of hanging in the air, and slightly larger than the
+// dust motes so it reads at a glance.
+const BLOOD_SPLATTER_MIN_COUNT = 8;
+const BLOOD_SPLATTER_MAX_COUNT = 15;
+const BLOOD_SPLATTER_SPEED_MIN = 2;
+const BLOOD_SPLATTER_SPEED_MAX = 5;
+const BLOOD_SPLATTER_GRAVITY = 18;
+// 2x the original 0.032 - small droplets read as gray specks at any
+// distance, this is chunky enough to register as liquid.
+const BLOOD_SPLATTER_SIZE = 0.064;
+// Tighter cone around the bullet's travel direction than the wall spark's
+// cone around the surface normal - an exit wound sprays mostly forward,
+// not in a full hemisphere.
+const BLOOD_SPLATTER_DIRECTION_BIAS_MIN = 0.55;
+const BLOOD_SPLATTER_DIRECTION_BIAS_MAX = 1.0;
+// Bright, saturated red rather than a "realistic" dark crimson - with
+// NormalBlending and no per-particle light of their own, a dark base color
+// gets crushed toward the ambient/shadow color and reads as gray dust at a
+// glance. The emissive term below keeps it visible even fully in shadow,
+// without going full Additive-glow.
+const BLOOD_SPLATTER_BASE_COLOR = 0xc20202;
+const BLOOD_SPLATTER_EMISSIVE_COLOR = 0x4a0000;
+const BLOOD_SPLATTER_EMISSIVE_INTENSITY = 0.5;
+
+let wallSparkGeometry = null;
+function getWallSparkGeometry() {
+  if (!wallSparkGeometry) {
+    wallSparkGeometry = new THREE.IcosahedronGeometry(WALL_SPARK_SIZE, 0);
+  }
+  return wallSparkGeometry;
+}
+
+let bloodSplatterGeometry = null;
+function getBloodSplatterGeometry() {
+  if (!bloodSplatterGeometry) {
+    bloodSplatterGeometry = new THREE.IcosahedronGeometry(BLOOD_SPLATTER_SIZE, 0);
+  }
+  return bloodSplatterGeometry;
+}
+
+// A random direction biased around `axis` - `biasMin`/`biasMax` control
+// how tightly the cone hugs the axis (closer to 1 = tighter/more forward,
+// closer to 0 = wider/closer to a full hemisphere). Shared by both burst
+// types since the sampling math is identical; only the axis and bias
+// range differ (surface normal + wide cone for wall dust, travel
+// direction + narrow cone for blood).
+function randomBiasedDirection(axis, biasMin, biasMax) {
+  const theta = Math.random() * Math.PI * 2;
+  const z = biasMin + Math.random() * (biasMax - biasMin);
+  const r = Math.sqrt(Math.max(0, 1 - z * z));
+  const helper =
+    Math.abs(axis.y) < 0.99
+      ? new THREE.Vector3(0, 1, 0)
+      : new THREE.Vector3(1, 0, 0);
+  const tangent = new THREE.Vector3().crossVectors(helper, axis).normalize();
+  const bitangent = new THREE.Vector3().crossVectors(axis, tangent);
+  return new THREE.Vector3()
+    .addScaledVector(tangent, r * Math.cos(theta))
+    .addScaledVector(bitangent, r * Math.sin(theta))
+    .addScaledVector(axis, z);
+}
+
+// In-flight particle bursts, updated once per frame in tick() via
+// updateImpactParticles(). Both spawn functions below push burst objects
+// of the same shape (mesh/count/positions/velocities/age/lifetime/gravity)
+// so one update loop can drive both.
+const activeParticleBursts = [];
+
+function spawnWallSparkParticles(point, normal) {
+  const normalVec = new THREE.Vector3(normal.x, normal.y, normal.z).normalize();
+  const count =
+    WALL_SPARK_MIN_COUNT +
+    Math.floor(Math.random() * (WALL_SPARK_MAX_COUNT - WALL_SPARK_MIN_COUNT + 1));
+  const material = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+  });
+  const mesh = new THREE.InstancedMesh(getWallSparkGeometry(), material, count);
+
+  const positions = [];
+  const velocities = [];
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < count; i++) {
+    const dir = randomBiasedDirection(
+      normalVec,
+      WALL_SPARK_DIRECTION_BIAS_MIN,
+      WALL_SPARK_DIRECTION_BIAS_MAX
+    );
+    const speed =
+      WALL_SPARK_SPEED_MIN +
+      Math.random() * (WALL_SPARK_SPEED_MAX - WALL_SPARK_SPEED_MIN);
+    positions.push(new THREE.Vector3(point.x, point.y, point.z));
+    velocities.push(dir.multiplyScalar(speed));
+
+    dummy.position.set(point.x, point.y, point.z);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+
+    // Mostly concrete-dust gray, with an occasional warm spark for variety.
+    const isSpark = Math.random() < 0.35;
+    mesh.setColorAt(
+      i,
+      isSpark
+        ? new THREE.Color(0xffaa55).multiplyScalar(0.8 + Math.random() * 0.4)
+        : new THREE.Color(0x8a8681).multiplyScalar(0.7 + Math.random() * 0.5)
+    );
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  scene.add(mesh);
+
+  activeParticleBursts.push({
+    mesh,
+    count,
+    positions,
+    velocities,
+    gravity: WALL_SPARK_GRAVITY,
+    age: 0,
+    lifetime:
+      IMPACT_PARTICLE_LIFETIME_MIN_S +
+      Math.random() *
+        (IMPACT_PARTICLE_LIFETIME_MAX_S - IMPACT_PARTICLE_LIFETIME_MIN_S),
+  });
+}
+
+// `travelDirection` is the bullet's raycast direction (unit vector) at the
+// moment it hit - used instead of the hit normal so the spray continues
+// roughly the bullet's path (an exit wound), not a burst off the surface.
+function spawnBloodSplatterParticles(point, travelDirection) {
+  const dirVec = new THREE.Vector3(
+    travelDirection.x,
+    travelDirection.y,
+    travelDirection.z
+  ).normalize();
+  const count =
+    BLOOD_SPLATTER_MIN_COUNT +
+    Math.floor(
+      Math.random() * (BLOOD_SPLATTER_MAX_COUNT - BLOOD_SPLATTER_MIN_COUNT + 1)
+    );
+  // MeshStandardMaterial (not MeshBasicMaterial) specifically so `emissive`
+  // is available: an unlit/emissive-less material's only source of red is
+  // its base color reacting to scene light, which reads as gray dust the
+  // instant it's in shadow. The emissive term is added on top regardless
+  // of incoming light, so the blood stays visibly red in the dark without
+  // needing AdditiveBlending (kept NormalBlending, explicitly, so
+  // overlapping particles darken/occlude like a liquid rather than
+  // stacking into a bright glow).
+  const material = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    transparent: true,
+    blending: THREE.NormalBlending,
+    emissive: new THREE.Color(BLOOD_SPLATTER_EMISSIVE_COLOR),
+    emissiveIntensity: BLOOD_SPLATTER_EMISSIVE_INTENSITY,
+  });
+  const mesh = new THREE.InstancedMesh(getBloodSplatterGeometry(), material, count);
+
+  const positions = [];
+  const velocities = [];
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < count; i++) {
+    const dir = randomBiasedDirection(
+      dirVec,
+      BLOOD_SPLATTER_DIRECTION_BIAS_MIN,
+      BLOOD_SPLATTER_DIRECTION_BIAS_MAX
+    );
+    const speed =
+      BLOOD_SPLATTER_SPEED_MIN +
+      Math.random() * (BLOOD_SPLATTER_SPEED_MAX - BLOOD_SPLATTER_SPEED_MIN);
+    positions.push(new THREE.Vector3(point.x, point.y, point.z));
+    velocities.push(dir.multiplyScalar(speed));
+
+    dummy.position.set(point.x, point.y, point.z);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+
+    // Bright saturated red base, small per-particle variance so the burst
+    // doesn't read as one flat color.
+    mesh.setColorAt(
+      i,
+      new THREE.Color(BLOOD_SPLATTER_BASE_COLOR).multiplyScalar(
+        0.8 + Math.random() * 0.3
+      )
+    );
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  scene.add(mesh);
+
+  activeParticleBursts.push({
+    mesh,
+    count,
+    positions,
+    velocities,
+    gravity: BLOOD_SPLATTER_GRAVITY,
+    age: 0,
+    lifetime:
+      IMPACT_PARTICLE_LIFETIME_MIN_S +
+      Math.random() *
+        (IMPACT_PARTICLE_LIFETIME_MAX_S - IMPACT_PARTICLE_LIFETIME_MIN_S),
+  });
+}
+
+function updateImpactParticles(deltaTime) {
+  const dummy = new THREE.Object3D();
+  for (let i = activeParticleBursts.length - 1; i >= 0; i--) {
+    const burst = activeParticleBursts[i];
+    burst.age += deltaTime;
+    const t = burst.age / burst.lifetime;
+    if (t >= 1) {
+      scene.remove(burst.mesh);
+      burst.mesh.material.dispose();
+      activeParticleBursts.splice(i, 1);
+      continue;
+    }
+
+    const fade = 1 - t;
+    burst.mesh.material.opacity = fade;
+    for (let p = 0; p < burst.count; p++) {
+      burst.velocities[p].y -= burst.gravity * deltaTime;
+      burst.positions[p].addScaledVector(burst.velocities[p], deltaTime);
+      dummy.position.copy(burst.positions[p]);
+      dummy.scale.setScalar(fade);
+      dummy.updateMatrix();
+      burst.mesh.setMatrixAt(p, dummy.matrix);
+    }
+    burst.mesh.instanceMatrix.needsUpdate = true;
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -3714,11 +4171,21 @@ function startRenderLoop({
         y: origin.y + direction.y * hit.timeOfImpact,
         z: origin.z + direction.z * hit.timeOfImpact,
       };
-      spawnTracer(muzzlePosition, hitPoint);
-      spawnImpactFlash(hitPoint);
-
       // Player only damages RED enemy bots — never blue allies (no FF).
       const hitBot = colliderToBot.get(hit.collider);
+      spawnTracer(muzzlePosition, hitPoint, () => {
+        // Bullet holes only make sense on static environment surfaces - a
+        // decal on a bot doesn't track its animation and looks wrong once
+        // it dies/respawns. Body hits get a directional blood splatter
+        // (biased along the shot's travel direction) instead of dust.
+        if (hitBot) {
+          spawnBloodSplatterParticles(hitPoint, direction);
+        } else {
+          spawnImpactDecal(hitPoint, hit.normal);
+          spawnWallSparkParticles(hitPoint, hit.normal);
+        }
+      });
+
       if (hitBot && hitBot.team === "red") {
         // Headshot: hit landed above the soldier's neck line (double damage).
         const isHeadshot =
@@ -4034,8 +4501,19 @@ function startRenderLoop({
         y: botEyePosition.y + aimDirection.y * hit.timeOfImpact,
         z: botEyePosition.z + aimDirection.z * hit.timeOfImpact,
       };
-      spawnTracer(muzzlePosition, hitPoint);
-      spawnImpactFlash(hitPoint);
+      // Decals only for environment hits; character hits get a directional
+      // blood splatter instead of dust - see the matching comment in
+      // fireShot() above.
+      const isCharacterHit =
+        hit.collider === playerCollider || !!colliderToBot.get(hit.collider);
+      spawnTracer(muzzlePosition, hitPoint, () => {
+        if (isCharacterHit) {
+          spawnBloodSplatterParticles(hitPoint, aimDirection);
+        } else {
+          spawnImpactDecal(hitPoint, hit.normal);
+          spawnWallSparkParticles(hitPoint, hit.normal);
+        }
+      });
       if (bot.team === "red" && hit.collider === playerCollider) {
         damagePlayer(BOT_DAMAGE_PER_HIT, killerInfo);
       } else {
@@ -4180,6 +4658,10 @@ function startRenderLoop({
   // Per-bot AI tick. Same logic for every tier — only parameters differ.
   function updateBot(bot, now, deltaTime) {
     if (bot.destroyed) return;
+    // Debug test mode ("P"): everything below this point is movement,
+    // aiming, or firing logic - skip all of it so the bot sits still as a
+    // stationary target dummy.
+    if (DEBUG_FREEZE_BOTS) return;
     const botPosition = bot.body.translation();
     const botEyePosition = getBotEyePosition(bot);
     const visibleHostile = pickVisibleHostile(bot, botEyePosition);
@@ -4431,6 +4913,11 @@ function startRenderLoop({
       // Multi-kill combo chain: counts down the window since the last
       // kill and breaks the chain once it expires.
       updateMultiKillTimer(deltaTime);
+
+      // In-flight bullet tracers + impact dust/spark bursts (ballistics
+      // polish) - both freeze along with everything else while paused.
+      updateTracers(deltaTime);
+      updateImpactParticles(deltaTime);
 
       // Hold-C crouch / sprint+tap-C slide: resize capsule, adjust speed,
       // and advance slide decay before movement so this frame's
@@ -4846,6 +5333,21 @@ function returnToPrematchMenu() {
   damageNumbersEl.innerHTML = "";
   damageIndicatorsEl.innerHTML = "";
   liveDamageIndicators.length = 0;
+
+  // Drop any bullet tracers/decals/particle bursts still live from the
+  // just-ended match - the arena they're drawn against is about to be
+  // torn down/rebuilt, so leaving these in the scene would show floating
+  // debris with nothing left to have caused it.
+  for (const tracer of activeTracers) scene.remove(tracer.group);
+  activeTracers.length = 0;
+  for (const decal of liveDecals) scene.remove(decal);
+  liveDecals.length = 0;
+  for (const burst of activeParticleBursts) {
+    scene.remove(burst.mesh);
+    burst.mesh.material.dispose();
+  }
+  activeParticleBursts.length = 0;
+
   recoilPitch = 0;
   recoilYaw = 0;
   yaw = 0;
