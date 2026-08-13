@@ -4501,26 +4501,29 @@ function startRenderLoop({
         y: botEyePosition.y + aimDirection.y * hit.timeOfImpact,
         z: botEyePosition.z + aimDirection.z * hit.timeOfImpact,
       };
-      // Decals only for environment hits; character hits get a directional
+      // Decals only for environment hits; bot-vs-bot hits get a directional
       // blood splatter instead of dust - see the matching comment in
-      // fireShot() above.
-      const isCharacterHit =
-        hit.collider === playerCollider || !!colliderToBot.get(hit.collider);
+      // fireShot() above. Hits on the local player never get 3D blood: the
+      // splatter spawns at the impact point, which for the player is right
+      // in front of the camera - it reads as the screen getting blinded by
+      // red rather than as a hit effect. The 2D damage vignette/indicator
+      // already covers "you got shot" feedback for the player.
+      const isPlayerHit = hit.collider === playerCollider;
+      const hitBot = colliderToBot.get(hit.collider);
       spawnTracer(muzzlePosition, hitPoint, () => {
-        if (isCharacterHit) {
+        if (isPlayerHit) {
+          // No 3D particles - see comment above.
+        } else if (hitBot) {
           spawnBloodSplatterParticles(hitPoint, aimDirection);
         } else {
           spawnImpactDecal(hitPoint, hit.normal);
           spawnWallSparkParticles(hitPoint, hit.normal);
         }
       });
-      if (bot.team === "red" && hit.collider === playerCollider) {
+      if (bot.team === "red" && isPlayerHit) {
         damagePlayer(BOT_DAMAGE_PER_HIT, killerInfo);
-      } else {
-        const hitBot = colliderToBot.get(hit.collider);
-        if (hitBot && hitBot.team !== bot.team) {
-          damageBot(hitBot, BOT_DAMAGE_PER_HIT, killerInfo);
-        }
+      } else if (hitBot && hitBot.team !== bot.team) {
+        damageBot(hitBot, BOT_DAMAGE_PER_HIT, killerInfo);
       }
     } else {
       const missPoint = {
