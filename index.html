@@ -198,34 +198,12 @@
     </div>
 
     <!--
-      Title / splash screen (Milestone 15). Shown first; Continue reveals
-      the pre-match menu. Name field is branding/placeholder only.
+      Pre-match menu (Milestone 9). Shown first now that the title splash is
+      gone (see git history for that screen if it needs to come back).
+      Choosing team size / difficulty / kill target and clicking Start Match
+      applies the config in src/main.js, then reveals #pause-overlay.
     -->
-    <div id="title-splash">
-      <div id="title-splash-panel">
-        <div id="title-splash-title">OUTPOST</div>
-        <div id="title-splash-tagline">Tactical Arena FPS &middot; Portfolio Demo</div>
-        <label id="title-splash-name-label" for="title-splash-name">
-          Player name
-          <input
-            type="text"
-            id="title-splash-name"
-            maxlength="24"
-            value="Your Name"
-            autocomplete="off"
-            spellcheck="false"
-          />
-        </label>
-        <button type="button" id="title-splash-continue">Continue</button>
-      </div>
-    </div>
-
-    <!--
-      Pre-match menu (Milestone 9). Hidden until the splash Continue button
-      runs. Choosing team size / difficulty / kill target and clicking
-      Start Match applies the config in src/main.js, then reveals #pause-overlay.
-    -->
-    <div id="prematch-menu" class="hidden">
+    <div id="prematch-menu">
       <div id="prematch-menu-panel">
         <div id="prematch-menu-title">Match Setup</div>
 

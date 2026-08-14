@@ -192,9 +192,17 @@ scene.add(camera);
 // Append the renderer's <canvas> into the #app div from index.html.
 document.getElementById("app").appendChild(renderer.domElement);
 
-// Keep the camera/renderer in sync with the browser window size.
+// Keep the camera/renderer in sync with the browser window size. Also
+// re-derives camera.fov (see convertVerticalFov()/FOV_REFERENCE_ASPECT
+// below) so whatever HORIZONTAL FOV was showing right before the resize -
+// hip-fire, ADS, sprint, or mid-blend between them - stays fixed instead of
+// ballooning on a wider window; snapped instantly here rather than left for
+// tick()'s per-frame FOV smoothing to catch up, so there's no visibly
+// warped frame right after the resize.
 window.addEventListener("resize", () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  const newAspect = window.innerWidth / window.innerHeight;
+  camera.fov = convertVerticalFov(camera.fov, camera.aspect, newAspect);
+  camera.aspect = newAspect;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
@@ -951,9 +959,33 @@ const SLIDE_CAMERA_ROLL_TRANSITION_SECONDS = 0.15;
 
 // FOV states (modern-overhaul): base view, aim-down-sights zoom, and a
 // slight sprint widen for a sense of speed. Blended smoothly in tick().
+// These are VERTICAL FOV values tuned/playtested at FOV_REFERENCE_ASPECT
+// (16:9) - three.js's PerspectiveCamera.fov is always vertical, but
+// holding a fixed vertical FOV while the aspect ratio grows (ultrawide
+// monitors) makes the equivalent HORIZONTAL FOV balloon, which reads as
+// severe fisheye/stretching at the screen edges. convertVerticalFov()
+// below derives the vertical FOV that keeps the HORIZONTAL FOV these
+// constants imply at 16:9 constant across any aspect ratio, so gameplay
+// feel is unchanged on a normal 16:9 monitor and ultrawide just gets a
+// narrower vertical FOV to compensate instead of a wider horizontal one.
 const BASE_FOV = 75;
 const ADS_FOV = 52;
 const SPRINT_FOV = 83;
+const FOV_REFERENCE_ASPECT = 16 / 9;
+
+// Converts a vertical FOV valid at `fromAspect` into the vertical FOV that
+// preserves the same HORIZONTAL FOV at `toAspect`. Symmetric/general so it
+// works both for "constant -> current aspect" (tick()'s FOV blending
+// below) and "current aspect -> new aspect" (the resize listener, which
+// has no access to which FOV state - hip/ADS/sprint/mid-transition - is
+// currently active, so it re-derives from whatever camera.fov already is
+// instead of re-selecting a target).
+function convertVerticalFov(verticalFovDeg, fromAspect, toAspect) {
+  const halfFromRad = THREE.MathUtils.degToRad(verticalFovDeg) / 2;
+  const halfHorizontalRad = Math.atan(Math.tan(halfFromRad) * fromAspect);
+  const halfToRad = Math.atan(Math.tan(halfHorizontalRad) / toAspect);
+  return THREE.MathUtils.radToDeg(halfToRad * 2);
+}
 
 // Hip-fire vs ADS accuracy (modern-overhaul): shots now cone-spread when
 // firing from the hip; aiming down sights makes them near-laser accurate.
@@ -5059,12 +5091,20 @@ function startRenderLoop({
       moveInputForward = 0;
       moveInputRight = 0;
     }
-    const targetFov =
+    const targetFovAtReferenceAspect =
       isAiming && !isSprinting && playing
         ? ADS_FOV
         : isSprinting
           ? SPRINT_FOV
           : BASE_FOV;
+    // Re-derived every frame from the CURRENT aspect ratio (not just once
+    // on resize) so the horizontal FOV these constants imply at 16:9 stays
+    // constant no matter the window shape - see convertVerticalFov() above.
+    const targetFov = convertVerticalFov(
+      targetFovAtReferenceAspect,
+      FOV_REFERENCE_ASPECT,
+      camera.aspect
+    );
     const fovStep = 1 - Math.exp(-12 * deltaTime);
     if (Math.abs(camera.fov - targetFov) > 0.01) {
       camera.fov += (targetFov - camera.fov) * fovStep;
@@ -5237,27 +5277,16 @@ wirePrematchOptionGroup(document.getElementById("prematch-difficulty"));
 wirePrematchOptionGroup(document.getElementById("prematch-kill-target"));
 updatePrematchTeamHint();
 
-// -----------------------------------------------------------------------
-// Title splash (Milestone 15) + soft reset / Play Again (Milestone 13)
-// -----------------------------------------------------------------------
+// Kick the (large) GLB downloads off immediately so they overlap with the
+// player's time on the Match Setup screen instead of blocking Start Match.
+// Cached — Start Match/Play Again reuse the same promise. Previously fired
+// from the title splash's Continue click; now that that screen is gone,
+// the Match Setup menu is the first thing shown, so this just runs at load.
+loadGameAssets();
 
-const titleSplash = document.getElementById("title-splash");
-const titleSplashContinue = document.getElementById("title-splash-continue");
-const titleSplashNameInput = document.getElementById("title-splash-name");
-// Branding placeholder only — kill feed still uses "You".
-let playerDisplayName = "Your Name";
-
-titleSplashContinue.addEventListener("click", () => {
-  ensureAudio();
-  // Kick the (large) GLB downloads off early so they overlap with the
-  // player's time on the Match Setup screen. Cached — Start Match reuses it.
-  loadGameAssets();
-  const trimmed = titleSplashNameInput.value.trim();
-  playerDisplayName = trimmed.length > 0 ? trimmed : "Your Name";
-  titleSplashNameInput.value = playerDisplayName;
-  titleSplash.classList.add("hidden");
-  prematchMenu.classList.remove("hidden");
-});
+// -----------------------------------------------------------------------
+// Soft reset / Play Again (Milestone 13)
+// -----------------------------------------------------------------------
 
 function disposeAllBots() {
   for (const bot of bots) {
@@ -5338,7 +5367,7 @@ function returnToPrematchMenu() {
   isReloading = false;
   isFiring = false;
   isAiming = false;
-  camera.fov = BASE_FOV;
+  camera.fov = convertVerticalFov(BASE_FOV, FOV_REFERENCE_ASPECT, camera.aspect);
   camera.updateProjectionMatrix();
   updateAmmoDisplay();
   vignette.classList.remove("active");
@@ -5371,7 +5400,6 @@ function returnToPrematchMenu() {
 
   matchEndOverlay.classList.add("hidden");
   pauseOverlay.classList.add("hidden");
-  titleSplash.classList.add("hidden");
   prematchMenu.classList.remove("hidden");
   prematchStartButton.disabled = false;
   prematchStartButton.textContent = "Start Match";
@@ -5482,7 +5510,6 @@ prematchStartButton.addEventListener("click", () => {
 // devplay test mode: skip the menus entirely and start a default match so
 // headless/automated runs can capture real gameplay frames.
 if (DEV_AUTOPLAY) {
-  titleSplash.classList.add("hidden");
   prematchMenu.classList.add("hidden");
   startMatch();
 }
