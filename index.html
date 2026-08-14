@@ -188,12 +188,62 @@
 
     <!--
       Match-end overlay (Milestones 6 + 13). Shown by endMatch(); includes
-      team score, player K/D, and Play Again (returns to pre-match menu).
+      team score and the After Action Report score breakdown below, then
+      Play Again (returns to pre-match menu).
     -->
     <div id="match-end-overlay" class="hidden">
       <div id="match-end-title"></div>
       <div id="match-end-subtitle"></div>
+      <!-- K/D is informational only - it does not feed the score below. -->
       <div id="match-end-kd"></div>
+
+      <!--
+        Mission Debrief (post-match scoring). Two-column Category/Points
+        modal, reusing the same .menu-panel look as the pause/pre-match
+        panels. Every value here starts at 0 in the markup - endMatch() in
+        src/main.js calls playResultsReportAnimation() to tween each row up
+        in sequence; clicking anywhere on #match-end-overlay while that's
+        running snaps everything straight to its final value. Each label's
+        .results-sublabel (set once, not tweened) shows the raw count behind
+        that row's points, e.g. "Base Kills (5 Kills)".
+      -->
+      <div id="results-report" class="menu-panel">
+        <div id="results-report-title">Mission Debrief</div>
+
+        <div class="results-row">
+          <span class="results-label">Base Kills<span class="results-sublabel" id="results-base-kills-sublabel"></span></span>
+          <span class="results-value" id="results-base-kills">0</span>
+        </div>
+        <div class="results-row">
+          <span class="results-label">Headshot Kill Bonus<span class="results-sublabel" id="results-headshot-bonus-sublabel"></span></span>
+          <span class="results-value" id="results-headshot-bonus">0</span>
+        </div>
+        <div class="results-row">
+          <span class="results-label">Streak Bonus<span class="results-sublabel" id="results-streak-bonus-sublabel"></span></span>
+          <span class="results-value" id="results-streak-bonus">0</span>
+        </div>
+        <div class="results-row results-row-subtotal">
+          <span class="results-label">Subtotal</span>
+          <span class="results-value" id="results-subtotal">0</span>
+        </div>
+        <div class="results-row results-row-multiplier">
+          <span class="results-label" id="results-multiplier-label">Difficulty Multiplier</span>
+          <span class="results-value" id="results-multiplier-value">+0%</span>
+        </div>
+        <div class="results-row">
+          <span class="results-label">Damage Dealt<span class="results-sublabel" id="results-damage-dealt-sublabel"></span></span>
+          <span class="results-value" id="results-damage-dealt">0</span>
+        </div>
+        <div class="results-row">
+          <span class="results-label">Win Bonus<span class="results-sublabel" id="results-win-bonus-sublabel"></span></span>
+          <span class="results-value" id="results-win-bonus">0</span>
+        </div>
+        <div class="results-row results-row-total">
+          <span class="results-label">Total Score</span>
+          <span class="results-value" id="results-total-score">0</span>
+        </div>
+      </div>
+
       <button type="button" id="match-end-play-again">Play Again</button>
     </div>
 

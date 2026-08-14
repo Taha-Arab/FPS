@@ -1004,7 +1004,7 @@ const MAX_DELTA_TIME = 1 / 30;
 // Gun tuning constants (Milestone 4). The gun is "hitscan" - it's an
 // instant raycast rather than a physical bullet that travels over time,
 // which is standard for simple FPS games and much easier to get right.
-const GUN_DAMAGE = 25; // 4 hits destroys the bot's 100 health
+const GUN_DAMAGE = 20; // 5 hits destroys the bot's 100 health
 const GUN_RANGE = 100; // meters
 
 // Full-auto fire rate, matched to BOT_FIRE_RATE_RPM so the player doesn't
@@ -1022,12 +1022,23 @@ const RELOAD_TIME_MS = 1800;
 // firing itself (that's still gated purely on currentAmmo > 0).
 const LOW_AMMO_RATIO = 0.2;
 
-// Weapon feedback (Milestone 11). Recoil is a temporary camera offset that
-// decays each frame — mouse yaw/pitch themselves are not permanently nudged,
-// so look direction stays predictable after the kick settles.
-const RECOIL_PITCH_KICK = 0.028;
-const RECOIL_YAW_KICK_MAX = 0.01;
-const RECOIL_RECOVERY_PER_SECOND = 8;
+// Weapon feedback (Milestone 11; reworked feat-scoring-system). Recoil has
+// two layers stacked on top of each other:
+//  - A PERMANENT kick baked directly into `pitch`/`yaw` - the same
+//    variables mouse-look drives - clamped exactly like manual aiming. This
+//    is what makes spraying a full magazine without pulling the mouse down
+//    actually leave your crosshair above where you started; it only clears
+//    the way normal aiming does; by you moving the mouse back down.
+//  - A snappier, short-lived SNAP offset layered on top that decays fast
+//    each frame, giving each shot a felt "pop" before settling onto the
+//    new (permanently raised) baseline above. This is cosmetic timing only
+//    - it's what makes a burst look punchy shot-to-shot - the lasting
+//    aim consequence lives entirely in the permanent kick.
+const RECOIL_PITCH_KICK = 0.006;
+const RECOIL_YAW_KICK_MAX = 0.003;
+const RECOIL_SNAP_PITCH_KICK = 0.02;
+const RECOIL_SNAP_YAW_KICK_MAX = 0.01;
+const RECOIL_SNAP_RECOVERY_PER_SECOND = 14;
 const MUZZLE_FLASH_LIFETIME_MS = 50;
 // Bot muzzle flash sprite (calibrated in public/sandbox_muzzle.html
 // alongside BOT_MUZZLE_OFFSET above — re-run that sandbox before changing).
@@ -2378,8 +2389,16 @@ function spawnMuzzleFlash(point) {
 }
 
 function applyRecoilKick() {
-  recoilPitch += RECOIL_PITCH_KICK;
-  recoilYaw += (Math.random() - 0.5) * 2 * RECOIL_YAW_KICK_MAX;
+  // Permanent: nudges the real aim, clamped exactly like manual mouse-look
+  // (see the mousemove handler above) - only clears when the player moves
+  // the mouse back down themselves.
+  pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch + RECOIL_PITCH_KICK));
+  yaw += (Math.random() - 0.5) * 2 * RECOIL_YAW_KICK_MAX;
+
+  // Temporary: a sharper pop on top, decayed independently every frame in
+  // tick() - purely a per-shot visual snap, not part of the aim consequence.
+  recoilPitch += RECOIL_SNAP_PITCH_KICK;
+  recoilYaw += (Math.random() - 0.5) * 2 * RECOIL_SNAP_YAW_KICK_MAX;
 }
 
 // -----------------------------------------------------------------------
@@ -2990,9 +3009,23 @@ function showKillstreakBanner(text) {
   trackTimeout(killstreakHideTimeoutId);
 }
 
+// Scoring bonus for the Nth kill in a live streak chain (feat-scoring-
+// system): 0/+50/+100/+150 through Quad Kill, then a flat +200 from
+// Frenzy (kill 5) onward - deliberately uncapped-but-flat past 5 so there's
+// still a reason to extend the chain, without the runaway growth an
+// ever-increasing bonus would produce on a long spree.
+const STREAK_BONUS_BY_KILL_COUNT = { 1: 0, 2: 50, 3: 100, 4: 150 };
+const STREAK_BONUS_FRENZY = 200;
+
+function streakBonusForKillCount(count) {
+  return STREAK_BONUS_BY_KILL_COUNT[count] ?? STREAK_BONUS_FRENZY;
+}
+
 function registerPlayerKillForStreak() {
   multiKillCount += 1;
   multiKillTimer = MULTI_KILL_WINDOW_SECONDS;
+  playerStreakBonusTotal += streakBonusForKillCount(multiKillCount);
+  playerBestStreakThisMatch = Math.max(playerBestStreakThisMatch, multiKillCount);
   if (multiKillCount === 3) showKillstreakBanner("TRIPLE KILL!");
   else if (multiKillCount === 4) showKillstreakBanner("QUAD KILL!");
   else if (multiKillCount >= 5) showKillstreakBanner("KILL FRENZY!");
@@ -3146,6 +3179,29 @@ let matchEnded = false;
 // above still decide the win; these only track the human player's kills/deaths.
 let playerKills = 0;
 let playerDeaths = 0;
+
+// -----------------------------------------------------------------------
+// Post-match scoring (feat-scoring-system): extra per-player stats beyond
+// K/D, feeding the After Action Report's point breakdown. Incremented at
+// the same choke points that already existed (fireShot()'s headshot check,
+// registerPlayerKillForStreak(), damageBot()'s hit path) - see
+// computeResultsReport() below for how these turn into the final score.
+let playerHeadshots = 0;
+let playerStreakBonusTotal = 0;
+// Highest multi-kill chain reached this match - display-only (shown as the
+// Streak Bonus row's sublabel), doesn't itself score any points.
+let playerBestStreakThisMatch = 0;
+// Sum of each hit's damage capped at the target's remaining HP, so a
+// killing blow that overkills a near-dead bot doesn't inflate this past
+// what the bot actually had left.
+let playerDamageDealt = 0;
+
+function resetResultsStats() {
+  playerHeadshots = 0;
+  playerStreakBonusTotal = 0;
+  playerBestStreakThisMatch = 0;
+  playerDamageDealt = 0;
+}
 // Set once, the first time the player actually starts playing (see
 // hidePauseOverlay()) - null beforehand so the timer HUD knows not to
 // start counting yet.
@@ -3192,6 +3248,24 @@ const matchEndTitle = document.getElementById("match-end-title");
 const matchEndSubtitle = document.getElementById("match-end-subtitle");
 const matchEndKd = document.getElementById("match-end-kd");
 const matchEndPlayAgainButton = document.getElementById("match-end-play-again");
+
+// Mission Debrief row elements (feat-scoring-system) - see
+// computeResultsReport()/playResultsReportAnimation() below.
+const resultsReportEl = document.getElementById("results-report");
+const resultsBaseKillsEl = document.getElementById("results-base-kills");
+const resultsBaseKillsSublabelEl = document.getElementById("results-base-kills-sublabel");
+const resultsHeadshotBonusEl = document.getElementById("results-headshot-bonus");
+const resultsHeadshotBonusSublabelEl = document.getElementById("results-headshot-bonus-sublabel");
+const resultsStreakBonusEl = document.getElementById("results-streak-bonus");
+const resultsStreakBonusSublabelEl = document.getElementById("results-streak-bonus-sublabel");
+const resultsSubtotalEl = document.getElementById("results-subtotal");
+const resultsMultiplierLabelEl = document.getElementById("results-multiplier-label");
+const resultsMultiplierValueEl = document.getElementById("results-multiplier-value");
+const resultsDamageDealtEl = document.getElementById("results-damage-dealt");
+const resultsDamageDealtSublabelEl = document.getElementById("results-damage-dealt-sublabel");
+const resultsWinBonusEl = document.getElementById("results-win-bonus");
+const resultsWinBonusSublabelEl = document.getElementById("results-win-bonus-sublabel");
+const resultsTotalScoreEl = document.getElementById("results-total-score");
 const killFeedEl = document.getElementById("kill-feed");
 
 // Kill feed entries (Milestone 13). Oldest fall off when we exceed the cap.
@@ -3382,9 +3456,197 @@ function formatMatchTime(elapsedMs) {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+// -----------------------------------------------------------------------
+// Mission Debrief scoring (feat-scoring-system)
+// -----------------------------------------------------------------------
+// Difficulty scales kill-based points only (base kills, headshots, streak
+// bonuses) - Damage Dealt and the Win Bonus are added afterward, unscaled,
+// per the locked formula:
+// (Base Kills + Streak Bonus + Headshots) * (1 + Difficulty%) + Damage Dealt + Win Bonus
+const DIFFICULTY_SCORE_MULTIPLIER = { easy: 0, medium: 0.25, hard: 0.5 };
+const DIFFICULTY_SCORE_LABEL = { easy: "Easy", medium: "Medium", hard: "Hard" };
+// Flat, unscaled by difficulty - it's a reward for the match outcome, not
+// for how tough the enemies were.
+const WIN_BONUS = 400;
+
+// Turns this match's tracked stats into every row the Mission Debrief
+// needs, already summed/rounded - playResultsReportAnimation() just tweens
+// the DOM to these numbers, it does no math of its own. Raw counts
+// (kills/headshots/best streak/damage) ride alongside their point values
+// so the UI can show "what earned this" next to "how much it was worth".
+// `playerWon` is the human's team (always BLUE) having hit the kill target.
+function computeResultsReport(playerWon) {
+  const baseKillPoints = playerKills * 100;
+  const headshotPoints = playerHeadshots * 50;
+  const streakPoints = playerStreakBonusTotal;
+  const subtotal = baseKillPoints + headshotPoints + streakPoints;
+
+  const difficultyPercent =
+    DIFFICULTY_SCORE_MULTIPLIER[matchConfig.difficulty] ?? DIFFICULTY_SCORE_MULTIPLIER.medium;
+  const difficultyLabel =
+    DIFFICULTY_SCORE_LABEL[matchConfig.difficulty] ?? DIFFICULTY_SCORE_LABEL.medium;
+  const subtotalWithMultiplier = Math.round(subtotal * (1 + difficultyPercent));
+
+  const damagePoints = Math.floor(playerDamageDealt / 2);
+  const winBonus = playerWon ? WIN_BONUS : 0;
+  const totalScore = subtotalWithMultiplier + damagePoints + winBonus;
+
+  return {
+    baseKillPoints,
+    killCount: playerKills,
+    headshotPoints,
+    headshotCount: playerHeadshots,
+    streakPoints,
+    bestStreak: playerBestStreakThisMatch,
+    subtotal,
+    difficultyPercent,
+    difficultyLabel,
+    subtotalWithMultiplier,
+    damagePoints,
+    damageDealt: playerDamageDealt,
+    winBonus,
+    playerWon,
+    totalScore,
+  };
+}
+
+// -----------------------------------------------------------------------
+// After Action Report animation: staggered count-up tweens + click-to-skip
+// -----------------------------------------------------------------------
+// Bumped on every run; tweens compare their captured token against the
+// live value so a stale rAF loop (e.g. Play Again fired mid-animation)
+// snaps to its target and resolves instead of hanging or clobbering the
+// next match's freshly-reset display.
+let resultsAnimationToken = 0;
+let resultsSkipRequested = false;
+
+// Placeholder audio hooks (feat-scoring-system) - intentionally no-ops.
+// Wire real clips in here, or swap to the existing playSynthSound() helper
+// (see playKillSound()/playDeathSound() above) for a zero-asset synth cue.
+function playResultsTickSound() {
+  // e.g. playSynthSound({ type: "square", frequency: 900, duration: 0.03, volume: 0.05 });
+}
+function playResultsThudSound() {
+  // e.g. playSynthSound({ type: "sine", frequency: 80, frequencyEnd: 40, duration: 0.3, volume: 0.3 });
+}
+
+// Counts `el`'s text up from 0 to `to` over `durationMs`. Resolves early
+// (snapped straight to `to`) if a skip was requested, or if `token` has
+// been superseded by a newer animation run.
+function tweenResultsNumber(el, to, durationMs, token) {
+  return new Promise((resolve) => {
+    const finish = () => {
+      el.textContent = to.toLocaleString();
+      resolve();
+    };
+    if (resultsSkipRequested || token !== resultsAnimationToken || to === 0) {
+      finish();
+      return;
+    }
+    const start = performance.now();
+    let lastTickAt = start;
+    function step(now) {
+      if (resultsSkipRequested || token !== resultsAnimationToken) {
+        finish();
+        return;
+      }
+      const progress = Math.min(1, (now - start) / durationMs);
+      el.textContent = Math.round(to * progress).toLocaleString();
+      if (now - lastTickAt > 60) {
+        playResultsTickSound();
+        lastTickAt = now;
+      }
+      if (progress < 1) requestAnimationFrame(step);
+      else finish();
+    }
+    requestAnimationFrame(step);
+  });
+}
+
+// A pause between tween beats (e.g. before the multiplier flash) that's
+// still skip-aware, so clicking during the "dead time" between two tweens
+// doesn't leave the player waiting for it to elapse anyway.
+function waitUnlessSkipped(ms, token) {
+  return new Promise((resolve) => {
+    if (resultsSkipRequested || token !== resultsAnimationToken) {
+      resolve();
+      return;
+    }
+    const timeoutId = setTimeout(resolve, ms);
+    trackTimeout(timeoutId);
+  });
+}
+
+// Pluralizes a simple count label, e.g. pluralizeCount(1, "Kill") -> "1 Kill".
+function pluralizeCount(count, noun) {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+// Plays the full staggered reveal: Base Kills -> Headshot Kill Bonus ->
+// Streak Bonus -> Subtotal, then a dramatic multiplier beat that flashes
+// and instantly recalculates the subtotal, then Damage Dealt, then the
+// Total Score drops in. A click anywhere on #match-end-overlay at any
+// point sets resultsSkipRequested, which every step above checks before
+// its next frame/timeout - so the whole sequence collapses to final
+// values within a frame or two instead of needing bespoke skip-handling
+// per step.
+async function playResultsReportAnimation(report) {
+  resultsAnimationToken += 1;
+  const token = resultsAnimationToken;
+  resultsSkipRequested = false;
+
+  resultsBaseKillsEl.textContent = "0";
+  resultsBaseKillsSublabelEl.textContent = `(${pluralizeCount(report.killCount, "Kill")})`;
+  resultsHeadshotBonusEl.textContent = "0";
+  resultsHeadshotBonusSublabelEl.textContent = `(${pluralizeCount(report.headshotCount, "Headshot")})`;
+  resultsStreakBonusEl.textContent = "0";
+  resultsStreakBonusSublabelEl.textContent =
+    report.bestStreak > 1 ? `(Best Streak: ${report.bestStreak})` : "(No Streak)";
+  resultsSubtotalEl.textContent = "0";
+  resultsMultiplierLabelEl.textContent = `${report.difficultyLabel} Multiplier`;
+  resultsMultiplierValueEl.textContent = "+0%";
+  resultsDamageDealtEl.textContent = "0";
+  resultsDamageDealtSublabelEl.textContent = `(${report.damageDealt.toLocaleString()} DMG)`;
+  resultsWinBonusEl.textContent = "0";
+  resultsWinBonusSublabelEl.textContent = report.playerWon ? "(Victory)" : "(Defeat)";
+  resultsTotalScoreEl.textContent = "0";
+  resultsReportEl.classList.remove("results-multiplier-flash", "results-total-drop");
+
+  const skipHandler = () => {
+    resultsSkipRequested = true;
+  };
+  matchEndOverlay.addEventListener("click", skipHandler);
+
+  await tweenResultsNumber(resultsBaseKillsEl, report.baseKillPoints, 750, token);
+  await tweenResultsNumber(resultsHeadshotBonusEl, report.headshotPoints, 600, token);
+  await tweenResultsNumber(resultsStreakBonusEl, report.streakPoints, 600, token);
+  await tweenResultsNumber(resultsSubtotalEl, report.subtotal, 500, token);
+
+  // Dramatic beat: fade/flash the multiplier in, then snap the subtotal
+  // straight to its post-multiplier value - no intermediate count-up here,
+  // the jump itself is the payoff.
+  resultsMultiplierValueEl.textContent =
+    `+${Math.round(report.difficultyPercent * 100)}%`;
+  resultsReportEl.classList.add("results-multiplier-flash");
+  await waitUnlessSkipped(650, token);
+  resultsSubtotalEl.textContent = report.subtotalWithMultiplier.toLocaleString();
+  resultsReportEl.classList.remove("results-multiplier-flash");
+
+  await tweenResultsNumber(resultsDamageDealtEl, report.damagePoints, 600, token);
+  await tweenResultsNumber(resultsWinBonusEl, report.winBonus, 500, token);
+
+  // Final drop-in: heavy "thud" beat instead of a count-up.
+  playResultsThudSound();
+  resultsTotalScoreEl.textContent = report.totalScore.toLocaleString();
+  resultsReportEl.classList.add("results-total-drop");
+
+  matchEndOverlay.removeEventListener("click", skipHandler);
+}
+
 // Ends the match for good: freezes the whole simulation (tick() checks
 // `matchEnded` the same way it already checks `isDead`) and shows the
-// final result + personal K/D. Play Again returns to the pre-match menu.
+// final result + the Mission Debrief score breakdown. Play Again returns
+// to the pre-match menu.
 function endMatch(winningTeamName) {
   matchEnded = true;
   isFiring = false;
@@ -3399,11 +3661,14 @@ function endMatch(winningTeamName) {
     `Final Score: <span class="score-blue">${blueScore}</span> &mdash; ` +
     `<span class="score-red">${redScore}</span>` +
     ` (first to ${killTarget})`;
+  // Informational only - not part of the scored report below.
   matchEndKd.textContent = `Your K/D: ${playerKills} / ${playerDeaths}`;
   matchEndOverlay.classList.remove("hidden");
   // Keep pause / death overlays from covering the summary while lock is released.
   pauseOverlay.classList.add("hidden");
   deathOverlay.classList.add("hidden");
+
+  playResultsReportAnimation(computeResultsReport(blueWon));
 }
 
 // Called from damagePlayer() the instant the player's health reaches 0.
@@ -4238,9 +4503,17 @@ function startRenderLoop({
         const damage = isHeadshot
           ? GUN_DAMAGE * HEADSHOT_MULTIPLIER
           : GUN_DAMAGE;
+        // Capture before damageBot() mutates health, so an overkill hit on
+        // a near-dead bot only scores the HP it actually had left. Rounded
+        // because bot.health can be fractional between hits (continuous
+        // regen ticks by HEALTH_REGEN_RATE_PER_SECOND * deltaTime) - a
+        // capped killing blow would otherwise score a decimal HP amount.
+        const cappedDamageForScoring = Math.round(Math.min(damage, hitBot.health));
         if (damageBot(hitBot, damage, { label: "You", team: "blue" })) {
           showHitMarker(isHeadshot);
           spawnDamageNumber(hitPoint, damage, isHeadshot);
+          if (isHeadshot) playerHeadshots += 1;
+          playerDamageDealt += cappedDamageForScoring;
         }
       }
     } else {
@@ -5060,9 +5333,11 @@ function startRenderLoop({
       playerPosition.z
     );
 
-    // Recoil kick decays toward zero each frame (Milestone 11). Applied as
-    // a temporary offset so mouse look yaw/pitch stay the "true" aim.
-    const recoilDecay = Math.exp(-RECOIL_RECOVERY_PER_SECOND * deltaTime);
+    // Snap layer only - decays toward zero each frame (Milestone 11;
+    // reworked feat-scoring-system). The permanent climb lives in
+    // pitch/yaw themselves (see applyRecoilKick()), so this decay never
+    // erases the lasting part of the kick - only the cosmetic pop on top.
+    const recoilDecay = Math.exp(-RECOIL_SNAP_RECOVERY_PER_SECOND * deltaTime);
     recoilPitch *= recoilDecay;
     recoilYaw *= recoilDecay;
     if (Math.abs(recoilPitch) < 0.0001) recoilPitch = 0;
@@ -5346,6 +5621,7 @@ function returnToPrematchMenu() {
   redScore = 0;
   playerKills = 0;
   playerDeaths = 0;
+  resetResultsStats();
   killTarget = pendingMatchSettings.killTarget;
   updateScoreHud();
   matchTimerEl.textContent = "0:00";
@@ -5436,6 +5712,7 @@ function startMatch() {
   redScore = 0;
   playerKills = 0;
   playerDeaths = 0;
+  resetResultsStats();
   matchEnded = false;
   hasPlayedBefore = false;
   matchStartTime = null;
