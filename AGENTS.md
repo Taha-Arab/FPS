@@ -74,10 +74,19 @@ Audio API with synthesized one-shots (no new npm deps / no sound files).
   death + player-kill cues via Web Audio helpers (`ensureAudio`,
   `playSynthSound`, etc.).
 - **Kill feed + post-match (Milestone 13 complete):** `#kill-feed`
-  shows recent eliminations (You/Ally/Enemy, team-colored).
-  `playerKills`/`playerDeaths` on `#match-end-kd`; **Play Again** runs
-  `returnToPrematchMenu()` (soft teardown, back to Match Setup — no
-  page refresh).
+  shows recent eliminations (You/Ally/Enemy, team-colored). **Play
+  Again** runs `returnToPrematchMenu()` (soft teardown, back to Match
+  Setup — no page refresh).
+- **Mission Debrief (feat-scoring-system):** `endMatch()` computes a
+  post-match score via `computeResultsReport()` — kills, headshots,
+  and the multi-kill streak chain (`playerStreakBonusTotal`, updated in
+  `registerPlayerKillForStreak()`) feed a subtotal, scaled by a
+  difficulty multiplier, then Damage Dealt (`playerDamageDealt`, capped
+  per-hit at the target's remaining HP) is added unscaled. `#match-end-
+  kd` still shows K/D above the report, informational only - it isn't
+  part of the score. Revealed via `playResultsReportAnimation()` as a
+  staggered count-up in `#results-report` inside `#match-end-overlay`;
+  clicking the overlay mid-animation skips straight to final values.
 - **Movement:** WASD + mouse look + Space jump + hold **C** crouch.
   Player is a Rapier `kinematicPositionBased` capsule
   (`PLAYER_RADIUS = 0.4`, `PLAYER_HALF_HEIGHT = 0.6` standing /

@@ -963,6 +963,132 @@ button {
   margin-top: 0.25em;
 }
 
+/* --- Mission Debrief (post-match scoring) ------------------------------- */
+
+/* Reuses .menu-panel's glass/border look (shared with the pause and
+   pre-match panels) via the class on #results-report in index.html; this
+   just widens it slightly to fit two columns of text comfortably. */
+#results-report {
+  min-width: 360px;
+  max-width: 440px;
+  margin-top: 0.4em;
+}
+
+#results-report-title {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: center;
+  margin-bottom: 0.2em;
+}
+
+.results-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1em;
+  padding: 0.35em 0;
+  border-bottom: 1px solid var(--panel-border);
+  font-size: 0.95rem;
+}
+
+.results-label {
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+  text-align: left;
+}
+
+/* Raw count behind a row's points, e.g. "(5 Kills)" - set once (not
+   tweened) alongside that row's label when the report resets. */
+.results-sublabel {
+  display: block;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  color: rgba(255, 255, 255, 0.4);
+  text-transform: none;
+  margin-top: 0.1em;
+}
+
+.results-value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: white;
+}
+
+.results-row-subtotal,
+.results-row-multiplier {
+  border-bottom-style: dashed;
+}
+
+.results-row-multiplier .results-value {
+  color: var(--accent-bright);
+}
+
+/* Dramatic beat (feat-scoring-system): briefly flashes the multiplier row
+   and the subtotal it just recalculated. Toggled on/off from
+   playResultsReportAnimation() in src/main.js. */
+@keyframes results-multiplier-flash {
+  0% {
+    box-shadow: none;
+    background: transparent;
+  }
+  35% {
+    box-shadow: 0 0 22px rgba(216, 165, 49, 0.5);
+    background: rgba(216, 165, 49, 0.14);
+  }
+  100% {
+    box-shadow: none;
+    background: transparent;
+  }
+}
+
+.results-multiplier-flash .results-row-multiplier,
+.results-multiplier-flash .results-row-subtotal {
+  animation: results-multiplier-flash 0.45s ease-out;
+}
+
+.results-row-total {
+  border-bottom: none;
+  margin-top: 0.3em;
+  padding-top: 0.5em;
+  border-top: 2px solid var(--accent);
+  font-size: 1.2rem;
+}
+
+.results-row-total .results-label {
+  color: white;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.results-row-total .results-value {
+  color: var(--accent-bright);
+}
+
+/* Heavy "drop-in" pop for the final total (feat-scoring-system) - paired
+   with the commented playResultsThudSound() hook in src/main.js. */
+@keyframes results-total-drop {
+  0% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(0.96);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.results-total-drop .results-row-total {
+  animation: results-total-drop 0.3s ease-out;
+}
+
 /* --- Title splash ------------------------------------------------------ */
 
 #title-splash {
