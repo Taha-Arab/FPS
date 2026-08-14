@@ -3073,14 +3073,21 @@ function setBotHealth(bot, newHealth) {
 // Damages one bot instance. amount defaults to the player's gun damage so
 // player hitscan can call damageBot(bot); bot-vs-bot passes BOT_DAMAGE_PER_HIT.
 // killerInfo ({ label, team }) feeds the kill feed when this hit is lethal.
+// onApplied(), if given, fires the instant damage is confirmed applied -
+// BEFORE the kill/match-end cascade below can run. This matters because a
+// kill here can synchronously call endMatch(), which snapshots the score
+// report immediately (feat-scoring-system) - any stat the caller wants
+// reflected in that report (e.g. playerDamageDealt/playerHeadshots in
+// fireShot()) has to be recorded here, not after this function returns.
 // Returns true if damage was actually applied (for hit markers).
-function damageBot(bot, amount = GUN_DAMAGE, killerInfo = null) {
+function damageBot(bot, amount = GUN_DAMAGE, killerInfo = null, onApplied = null) {
   if (!bot || bot.destroyed || matchEnded) return false;
   // No-op during post-respawn invulnerability — tracers still land.
   if (performance.now() < bot.invulnerableUntil) return false;
 
   bot.lastDamageTime = performance.now();
   setBotHealth(bot, bot.health - amount);
+  onApplied?.();
   // Hit flash: pulse every material's emissive white briefly. Always reset
   // (even on a killing blow) so a GLB corpse doesn't stay glowing.
   for (const m of bot.materials) m.emissive?.setHex(0x888888);
@@ -4509,11 +4516,23 @@ function startRenderLoop({
         // regen ticks by HEALTH_REGEN_RATE_PER_SECOND * deltaTime) - a
         // capped killing blow would otherwise score a decimal HP amount.
         const cappedDamageForScoring = Math.round(Math.min(damage, hitBot.health));
-        if (damageBot(hitBot, damage, { label: "You", team: "blue" })) {
+        // "Headshot Kill Bonus" should only count headshots that actually
+        // finished the bot off, not every headshot landed on a bot that
+        // kept fighting - this is that hit's damage against its remaining
+        // health, computed before damageBot() mutates it.
+        const isLethalHit = damage >= hitBot.health;
+        if (
+          damageBot(hitBot, damage, { label: "You", team: "blue" }, () => {
+            // Recorded from inside damageBot(), before its kill/match-end
+            // cascade can run - a kill here may synchronously call
+            // endMatch(), which snapshots these stats immediately, so they
+            // must already include this shot by the time that happens.
+            playerDamageDealt += cappedDamageForScoring;
+            if (isHeadshot && isLethalHit) playerHeadshots += 1;
+          })
+        ) {
           showHitMarker(isHeadshot);
           spawnDamageNumber(hitPoint, damage, isHeadshot);
-          if (isHeadshot) playerHeadshots += 1;
-          playerDamageDealt += cappedDamageForScoring;
         }
       }
     } else {
