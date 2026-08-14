@@ -997,6 +997,10 @@ const RECOIL_PITCH_KICK = 0.028;
 const RECOIL_YAW_KICK_MAX = 0.01;
 const RECOIL_RECOVERY_PER_SECOND = 8;
 const MUZZLE_FLASH_LIFETIME_MS = 50;
+// Bot muzzle flash sprite (calibrated in public/sandbox_muzzle.html
+// alongside BOT_MUZZLE_OFFSET above — re-run that sandbox before changing).
+const BOT_MUZZLE_FLASH_TEXTURE_URL = "/assets/muzzle_flash.png";
+const BOT_MUZZLE_FLASH_SCALE = 0.18;
 const HIT_MARKER_LIFETIME_MS = 120;
 
 // Footstep cadence (Milestone 12). Separate from movement code so we never
@@ -1320,9 +1324,11 @@ function buildCoverSlots() {
 const bots = [];
 const colliderToBot = new Map();
 
-// Where a bot's rifle muzzle sits in its local space (matches the soldier
-// model's held rifle in src/botmodel.js) — used for muzzle flash + tracers.
-const BOT_MUZZLE_OFFSET = new THREE.Vector3(0.05, 0.27, -0.8);
+// Where a bot's rifle muzzle sits in bot.group-local space — used for
+// muzzle flash + tracers. Calibrated in public/sandbox_muzzle.html against
+// the GLB SWAT model's actual "shoot" pose (see that file for the live-
+// tuning tool this came from — re-run it there before changing this value).
+const BOT_MUZZLE_OFFSET = new THREE.Vector3(0.077, 0.468, -0.747);
 
 // -----------------------------------------------------------------------
 // Floating health bars (one per bot, above its head)
@@ -2315,21 +2321,27 @@ function startReload() {
 // Milestone 11 adds muzzle flash + hit markers; recoil is applied as
 // camera offsets in tick().
 
+// Shared texture/material across every bot's flash — only each shot's
+// Sprite instance (position/scale) is per-call, same pattern the sphere
+// version used for the mesh itself.
+const botMuzzleFlashTexture = new THREE.TextureLoader().load(
+  BOT_MUZZLE_FLASH_TEXTURE_URL
+);
+const botMuzzleFlashMaterial = new THREE.SpriteMaterial({
+  map: botMuzzleFlashTexture,
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  depthWrite: false,
+});
+
 function spawnMuzzleFlash(point) {
-  const flashGeometry = new THREE.SphereGeometry(0.07, 8, 8);
-  const flashMaterial = new THREE.MeshBasicMaterial({
-    color: 0xffee88,
-    transparent: true,
-    opacity: 0.95,
-  });
-  const flashMesh = new THREE.Mesh(flashGeometry, flashMaterial);
-  flashMesh.position.set(point.x, point.y, point.z);
-  scene.add(flashMesh);
+  const flashSprite = new THREE.Sprite(botMuzzleFlashMaterial);
+  flashSprite.position.set(point.x, point.y, point.z);
+  flashSprite.scale.set(BOT_MUZZLE_FLASH_SCALE, BOT_MUZZLE_FLASH_SCALE, 1);
+  scene.add(flashSprite);
 
   setTimeout(() => {
-    scene.remove(flashMesh);
-    flashGeometry.dispose();
-    flashMaterial.dispose();
+    scene.remove(flashSprite);
   }, MUZZLE_FLASH_LIFETIME_MS);
 }
 

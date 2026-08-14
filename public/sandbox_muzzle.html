@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Bot Muzzle Flash Calibration</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1a1e; font-family: -apple-system, "Segoe UI", sans-serif; }
+  canvas { display: block; }
+
+  #hint {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    color: #b8b8c0;
+    font-size: 12px;
+    background: rgba(20, 20, 24, 0.7);
+    padding: 8px 10px;
+    border-radius: 6px;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  #output-panel {
+    position: fixed;
+    bottom: 12px;
+    left: 12px;
+    width: 420px;
+    background: rgba(20, 20, 24, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    padding: 10px;
+    z-index: 10;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  }
+  #output-panel h1 {
+    font-size: 11px;
+    margin: 0 0 6px;
+    color: #39ff6a;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  #output {
+    background: #0c0c0f;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 5px;
+    padding: 8px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre;
+    color: #9be89b;
+    overflow-x: auto;
+    user-select: all;
+  }
+</style>
+</head>
+<body>
+
+<div id="hint">
+  Drag to orbit, scroll to zoom, right-drag to pan.<br />
+  Use the panel (top-right) to walk the flash onto the barrel tip.
+</div>
+
+<div id="output-panel">
+  <h1>Paste into src/main.js</h1>
+  <div id="output"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/",
+    "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.19/dist/lil-gui.esm.min.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
+import GUI from "lil-gui";
+
+// ---------------------------------------------------------------------------
+// Bot muzzle-flash calibration sandbox — NOT part of the Vite build (three.js
+// + lil-gui loaded from a CDN via importmap, same pattern as
+// public/flash_sandbox.html). Loads the real SWAT bot rig + rifle exactly
+// like buildSwatModel()/attachRifleToHand() in src/botmodel.js, freezes it on
+// a scrubbable frame of the "shoot" clip (the pose bots are actually in while
+// BOT_FIRE_ANIM_HOLD_MS-recently-fired — see setLocomotion() call sites in
+// src/main.js), and lets X/Y/Z/scale sliders walk a THREE.Sprite flash onto
+// the barrel tip.
+//
+// This file has no build-time link to src/botmodel.js or src/assets.js, so
+// every constant/algorithm below is a hand-copy of theirs — re-sync by hand
+// if those files change. Anything not needed for muzzle-flash placement
+// (team tint materials, run/idle/death clips, damage/AI logic) is left out.
+//
+// Output format: main.js's botFireShot() computes the flash/tracer origin as
+// a STATIC offset — `bot.group.localToWorld(BOT_MUZZLE_OFFSET.clone())` —
+// not a live bone read every frame. So instead of literally parenting the
+// sprite under the hand bone (whose local space is scaled ~10x by the rig's
+// baked bind-pose bone scale — see the "empirically ~10x" comment in
+// attachRifleToHand() in src/botmodel.js — which would make slider units
+// tiny and unintuitive), this sandbox tracks the hand bone's WORLD transform
+// every frame and applies the X/Y/Z sliders as a gun-relative offset in
+// plain world meters. Since `group` below is left at identity (matching a
+// bot standing at the world origin with no facing rotation), that world
+// position IS the group-local BOT_MUZZLE_OFFSET value main.js needs —
+// group.worldToLocal() is still applied explicitly below for correctness in
+// case you reposition `group` while poking around.
+// ---------------------------------------------------------------------------
+
+const BOT_MESH_URL = "/assets/bots/swat_mesh.glb";
+const BOT_SHOOT_CLIP_URL = "/assets/bots/shoot.glb";
+const RIFLE_URL = "/assets/guns/rifle.glb";
+const MUZZLE_FLASH_TEXTURE_URL = "/assets/muzzle_flash.png";
+const DRACO_DECODER_PATH = "/vendor/draco/";
+
+// --- Constants mirrored from src/assets.js -----------------------------
+const RIFLE_TARGET_LENGTH = 0.85; // meters, barrel tip to stock
+const HIPS_TRACK_PREFIX = "mixamorigHips";
+const ASSIMP_MARKER = "_$AssimpFbx$_";
+
+function normalizeRifleGeometry(model, targetLength) {
+  let bbox = new THREE.Box3().setFromObject(model);
+  let size = bbox.getSize(new THREE.Vector3());
+  if (size.x >= size.y && size.x >= size.z) {
+    model.rotation.y = -Math.PI / 2;
+  } else if (size.y >= size.x && size.y >= size.z) {
+    model.rotation.x = Math.PI / 2;
+  }
+  model.updateMatrixWorld(true);
+
+  bbox = new THREE.Box3().setFromObject(model);
+  size = bbox.getSize(new THREE.Vector3());
+  const scale = size.z > 0.0001 ? targetLength / size.z : 1;
+  model.scale.multiplyScalar(scale);
+  model.updateMatrixWorld(true);
+
+  bbox = new THREE.Box3().setFromObject(model);
+  const center = bbox.getCenter(new THREE.Vector3());
+  model.position.sub(center);
+
+  model.traverse((obj) => {
+    if (obj.isMesh) {
+      obj.castShadow = false;
+      obj.receiveShadow = false;
+      obj.frustumCulled = false;
+    }
+  });
+}
+
+function retargetTrack(track, sceneRoot) {
+  const dotIndex = track.name.lastIndexOf(".");
+  const nodeName = track.name.slice(0, dotIndex);
+  const property = track.name.slice(dotIndex + 1);
+
+  if (!nodeName.includes(ASSIMP_MARKER)) {
+    if (property === "scale") return null;
+    return track.clone();
+  }
+
+  const [boneName, kind] = nodeName.split(ASSIMP_MARKER);
+  if (kind === "Translation" && property === "position") {
+    const clone = track.clone();
+    clone.name = `${boneName}.position`;
+    return clone;
+  }
+  if (kind === "Rotation" && property === "quaternion") {
+    const preNode = sceneRoot.getObjectByName(`${boneName}${ASSIMP_MARKER}PreRotation`);
+    const clone = track.clone();
+    clone.name = `${boneName}.quaternion`;
+    if (preNode) {
+      const pre = preNode.quaternion;
+      const key = new THREE.Quaternion();
+      for (let i = 0; i < clone.values.length; i += 4) {
+        key.fromArray(clone.values, i);
+        key.premultiply(pre);
+        key.toArray(clone.values, i);
+      }
+    }
+    return clone;
+  }
+  return null;
+}
+
+function correctRootFrame(clip, animScene, template) {
+  if (!animScene || !template) return clip;
+  const templateHips = template.getObjectByName(HIPS_TRACK_PREFIX);
+  const animHips = animScene.getObjectByName(HIPS_TRACK_PREFIX);
+  if (!templateHips || !animHips) return clip;
+
+  template.updateMatrixWorld(true);
+  animScene.updateMatrixWorld(true);
+
+  let topOfChain = animHips;
+  while (topOfChain.parent && topOfChain.parent.name && topOfChain.parent.name.includes(ASSIMP_MARKER)) {
+    topOfChain = topOfChain.parent;
+  }
+  const animFrame = topOfChain.parent ?? animScene;
+
+  const qTemplate = new THREE.Quaternion();
+  templateHips.parent.getWorldQuaternion(qTemplate);
+  const qAnim = new THREE.Quaternion();
+  animFrame.getWorldQuaternion(qAnim);
+  const correction = qTemplate.invert().multiply(qAnim);
+  if (correction.angleTo(new THREE.Quaternion()) < 0.01) return clip;
+
+  const v = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  for (const track of clip.tracks) {
+    if (track.name === `${HIPS_TRACK_PREFIX}.position`) {
+      for (let i = 0; i < track.values.length; i += 3) {
+        v.fromArray(track.values, i).applyQuaternion(correction);
+        v.toArray(track.values, i);
+      }
+    } else if (track.name === `${HIPS_TRACK_PREFIX}.quaternion`) {
+      for (let i = 0; i < track.values.length; i += 4) {
+        q.fromArray(track.values, i).premultiply(correction);
+        q.toArray(track.values, i);
+      }
+    }
+  }
+  return clip;
+}
+
+function pinHorizontalRootMotion(clip, upAxisIndex = 1) {
+  for (const track of clip.tracks) {
+    if (!track.name.endsWith("Hips.position")) continue;
+    for (let axis = 0; axis < 3; axis++) {
+      if (axis === upAxisIndex) continue;
+      const first = track.values[axis];
+      for (let i = axis; i < track.values.length; i += 3) {
+        track.values[i] = first;
+      }
+    }
+  }
+  return clip;
+}
+
+function hipsUpAxisIndex(template) {
+  const hips = template?.getObjectByName(HIPS_TRACK_PREFIX);
+  if (!hips) return 1;
+  const p = hips.position;
+  const abs = [Math.abs(p.x), Math.abs(p.y), Math.abs(p.z)];
+  return abs.indexOf(Math.max(...abs));
+}
+
+function extractClip(gltf, name) {
+  const clips = gltf.animations ?? [];
+  if (clips.length === 0) return null;
+
+  if (clips.length === 1) {
+    const clip = clips[0].clone();
+    clip.name = name;
+    return clip;
+  }
+
+  const tracks = [];
+  const seen = new Set();
+  for (const clip of clips) {
+    for (const track of clip.tracks) {
+      const retargeted = retargetTrack(track, gltf.scene);
+      if (!retargeted || seen.has(retargeted.name)) continue;
+      seen.add(retargeted.name);
+      tracks.push(retargeted);
+    }
+  }
+  if (tracks.length === 0) return null;
+
+  let duration = 0;
+  for (const track of tracks) {
+    duration = Math.max(duration, track.times[track.times.length - 1]);
+  }
+  return new THREE.AnimationClip(name, duration, tracks);
+}
+
+// --- Constants mirrored from src/botmodel.js ----------------------------
+const BOT_MODEL_HEIGHT = 1.92;
+const GRIP_MESH_NAME_PATTERN = /pistol.?grip/i;
+const RIFLE_HAND_POSITION_TWEAK = new THREE.Vector3(8, 15, 3);
+const RIFLE_HAND_ROTATION_TWEAK = new THREE.Euler(0, 0.18, 0);
+const RIFLE_HAND_EXTRA_SCALE = 1;
+
+function fitSkeletonToCapsule(source, targetHeight, feetY) {
+  const wrapper = new THREE.Group();
+  wrapper.add(source);
+  source.updateMatrixWorld(true);
+
+  const v = new THREE.Vector3();
+  const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+  const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+  let boneCount = 0;
+  source.traverse((obj) => {
+    if (!obj.isBone) return;
+    boneCount += 1;
+    obj.getWorldPosition(v);
+    min.min(v);
+    max.max(v);
+  });
+  if (boneCount === 0) return wrapper;
+
+  const skeletonHeight = (max.y - min.y) * 1.04;
+  const scale = skeletonHeight > 0.0001 ? targetHeight / skeletonHeight : 1;
+  source.scale.multiplyScalar(scale);
+  source.position.set(
+    -((min.x + max.x) / 2) * scale,
+    feetY - min.y * scale,
+    -((min.z + max.z) / 2) * scale
+  );
+  return wrapper;
+}
+
+function findRightHandBone(root) {
+  let exact = null;
+  let fallback = null;
+  root.traverse((obj) => {
+    if (!obj.isBone || exact) return;
+    const name = obj.name;
+    if (!name) return;
+    if (/^mixamorig:?RightHand$/i.test(name) || /^Hand_R$/i.test(name)) {
+      exact = obj;
+      return;
+    }
+    if (!fallback && /righthand|hand_r/i.test(name) && !/thumb|index|middle|ring|pinky/i.test(name)) {
+      fallback = obj;
+    }
+  });
+  return exact ?? fallback;
+}
+
+function findGripOffset(rifleScene) {
+  const probe = rifleScene.clone(true);
+  probe.position.set(0, 0, 0);
+  probe.rotation.set(0, 0, 0);
+  const rig = new THREE.Group();
+  rig.add(probe);
+  rig.updateMatrixWorld(true);
+
+  let gripMesh = null;
+  probe.traverse((obj) => {
+    if (!gripMesh && obj.isMesh && GRIP_MESH_NAME_PATTERN.test(obj.name)) {
+      gripMesh = obj;
+    }
+  });
+  if (!gripMesh) {
+    console.error("findGripOffset: no pistol-grip mesh found — holding at the model's own pivot");
+    return new THREE.Vector3();
+  }
+  return new THREE.Box3().setFromObject(gripMesh).getCenter(new THREE.Vector3());
+}
+
+// Simplified from attachRifleToHand() in src/botmodel.js: material cloning
+// (needed there for the spawn-invuln opacity fade) is dropped since it has
+// no bearing on muzzle-flash placement. Returns the hand bone so the caller
+// can read its live world transform every frame.
+function attachRifleToHandForCalibration(source, rifleScene) {
+  const handBone = findRightHandBone(source);
+  if (!handBone) {
+    console.error("No RightHand/Hand_R bone found on the SWAT skeleton.");
+    return null;
+  }
+  source.updateMatrixWorld(true);
+  const handWorldScale = handBone.getWorldScale(new THREE.Vector3());
+  const handWorldQuat = handBone.getWorldQuaternion(new THREE.Quaternion());
+
+  const rifleClone = rifleScene.clone(true);
+  rifleClone.traverse((obj) => {
+    if (obj.isMesh) obj.frustumCulled = false;
+  });
+
+  const orientationOffset = handWorldQuat.clone().invert();
+  orientationOffset.multiply(new THREE.Quaternion().setFromEuler(RIFLE_HAND_ROTATION_TWEAK));
+
+  const gripOffset = findGripOffset(rifleScene);
+  const positionOffset = gripOffset
+    .clone()
+    .applyQuaternion(orientationOffset)
+    .negate()
+    .add(RIFLE_HAND_POSITION_TWEAK);
+
+  const counterScale = handWorldScale.x > 0.0001 ? 1 / handWorldScale.x : 1;
+  rifleClone.scale.multiplyScalar(counterScale * RIFLE_HAND_EXTRA_SCALE);
+  rifleClone.position.copy(positionOffset);
+  rifleClone.quaternion.copy(orientationOffset);
+  handBone.add(rifleClone);
+
+  return handBone;
+}
+
+// --- Slider state, seeded at a rough guess (BOT_MUZZLE_OFFSET's rough
+// magnitude from src/main.js) so the flash starts somewhere near the gun
+// instead of at the hand-bone origin. -------------------------------------
+const state = {
+  x: 0.05,
+  y: 0.0,
+  z: -0.25,
+  scale: 0.2,
+  poseFrame: 0, // 0..1 through the "shoot" clip, for scrubbing the recoil pose
+};
+
+// --- Scene / camera / lights (mirrors src/environment.js exactly, same as
+// public/flash_sandbox.html) ------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a1e);
+scene.add(new THREE.GridHelper(20, 20, 0x555566, 0x333340));
+
+scene.add(new THREE.HemisphereLight(0xbdd4e7, 0x8a8072, 1.5));
+const sun = new THREE.DirectionalLight(0xfff1dd, 3.2);
+sun.position.set(4, 8, 5);
+scene.add(sun);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const pmremGenerator = new THREE.PMREMGenerator(renderer);
+scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.001, 1000);
+// Close in on the gun/hand area (capsule center sits at y=1.0, muzzle a bit
+// lower and forward of that — see `group.position` below).
+camera.position.set(0.9, 1.35, -0.9);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0.1, 1.05, -0.5);
+controls.enableDamping = true;
+controls.update();
+
+// --- Bot rig, positioned like a standing-still bot: capsule center 1.0m
+// above the ground (PLAYER_HALF_HEIGHT + PLAYER_RADIUS in src/main.js),
+// facing -Z, no rotation — i.e. `group` is left at identity so any world
+// position computed below IS the group-local BOT_MUZZLE_OFFSET value. -----
+const group = new THREE.Group();
+group.position.set(0, 1.0, 0);
+scene.add(group);
+
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
+const gltfLoader = new GLTFLoader();
+gltfLoader.setDRACOLoader(dracoLoader);
+
+const loadOne = (url) =>
+  new Promise((resolve) => {
+    gltfLoader.load(url, resolve, undefined, (err) => {
+      console.error(`Failed to load ${url}`, err);
+      resolve(null);
+    });
+  });
+
+// --- Muzzle flash sprite, added directly to the scene (not parented to the
+// bone — see the file-header comment on why) and repositioned every frame
+// from the hand bone's live world transform. Permanently visible per the
+// request — this is a static calibration view, not a per-shot pop. --------
+const textureLoader = new THREE.TextureLoader();
+const flashTexture = textureLoader.load(MUZZLE_FLASH_TEXTURE_URL);
+const flashSpriteMat = new THREE.SpriteMaterial({
+  map: flashTexture,
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  depthWrite: false,
+});
+const flashSprite = new THREE.Sprite(flashSpriteMat);
+flashSprite.scale.set(state.scale, state.scale, 1);
+flashSprite.visible = false; // true once the rig has loaded and a hand bone exists
+scene.add(flashSprite);
+
+let handBone = null;
+let shootAction = null;
+let shootClipDuration = 0;
+
+const outputEl = document.getElementById("output");
+const _handWorldPos = new THREE.Vector3();
+const _handWorldQuat = new THREE.Quaternion();
+const _localOffset = new THREE.Vector3();
+const _groupLocal = new THREE.Vector3();
+
+function updateFlashPosition() {
+  if (!handBone) return;
+  handBone.getWorldPosition(_handWorldPos);
+  handBone.getWorldQuaternion(_handWorldQuat);
+  _localOffset.set(state.x, state.y, state.z).applyQuaternion(_handWorldQuat);
+  flashSprite.position.copy(_handWorldPos).add(_localOffset);
+}
+
+function refreshOutput() {
+  if (!handBone) {
+    outputEl.textContent = "Loading rig...";
+    return;
+  }
+  group.worldToLocal(_groupLocal.copy(flashSprite.position));
+  outputEl.textContent =
+    `// Replaces BOT_MUZZLE_OFFSET in src/main.js (~line 1325):\n` +
+    `const BOT_MUZZLE_OFFSET = new THREE.Vector3(${_groupLocal.x.toFixed(3)}, ${_groupLocal.y.toFixed(3)}, ${_groupLocal.z.toFixed(3)});\n\n` +
+    `// If you wire spawnMuzzleFlash() over to a THREE.Sprite (it's still a\n` +
+    `// plain sphere mesh today), this is the scale that matched here:\n` +
+    `const BOT_MUZZLE_FLASH_SCALE = ${state.scale.toFixed(2)};`;
+}
+
+function applyState() {
+  flashSprite.scale.set(state.scale, state.scale, 1);
+  if (shootAction && shootClipDuration > 0) {
+    shootAction.time = state.poseFrame * shootClipDuration;
+    // mixer.update(0) below (in the render loop) evaluates the action at
+    // its current .time without advancing it, baking the scrubbed pose.
+  }
+  updateFlashPosition();
+  refreshOutput();
+}
+
+// --- GUI ---------------------------------------------------------------
+const gui = new GUI({ title: "Bot Muzzle Flash" });
+gui.add(state, "x", -2, 2, 0.001).name("offsetX").onChange(applyState);
+gui.add(state, "y", -2, 2, 0.001).name("offsetY").onChange(applyState);
+gui.add(state, "z", -2, 2, 0.001).name("offsetZ").onChange(applyState);
+gui.add(state, "scale", 0.02, 3, 0.01).name("scale").onChange(applyState);
+gui
+  .add(state, "poseFrame", 0, 1, 0.01)
+  .name("shoot pose frame")
+  .onChange(applyState);
+
+// --- Load rig + rifle, then attach ------------------------------------
+Promise.all([loadOne(BOT_MESH_URL), loadOne(BOT_SHOOT_CLIP_URL), loadOne(RIFLE_URL)]).then(
+  ([botGltf, shootGltf, rifleGltf]) => {
+    if (!botGltf || !rifleGltf) {
+      console.error("sandbox_muzzle: missing bot mesh or rifle GLB — cannot proceed.");
+      return;
+    }
+
+    const template = botGltf.scene;
+    const upAxis = hipsUpAxisIndex(template);
+    let shootClip = null;
+    if (shootGltf) {
+      shootClip = extractClip(shootGltf, "shoot");
+      if (shootClip) {
+        correctRootFrame(shootClip, shootGltf.scene, template);
+        pinHorizontalRootMotion(shootClip, upAxis);
+      }
+    }
+
+    normalizeRifleGeometry(rifleGltf.scene, RIFLE_TARGET_LENGTH);
+
+    const source = cloneSkeleton(template);
+    source.rotation.y = Math.PI; // Mixamo faces +Z; bot AI forward is -Z
+    const inner = fitSkeletonToCapsule(source, BOT_MODEL_HEIGHT, -1.0);
+    group.add(inner);
+
+    source.traverse((obj) => {
+      if (obj.isMesh || obj.isSkinnedMesh) {
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+        obj.frustumCulled = false;
+      }
+    });
+
+    const mixer = new THREE.AnimationMixer(inner);
+    if (shootClip) {
+      shootAction = mixer.clipAction(shootClip);
+      shootAction.play();
+      shootAction.paused = true;
+      shootClipDuration = shootClip.duration;
+    } else {
+      console.error("sandbox_muzzle: shoot.glb clip failed to load/extract — rig will hold bind pose.");
+    }
+    mixer.update(0); // bake frame 0 (or bind pose) onto the skeleton
+
+    handBone = attachRifleToHandForCalibration(source, rifleGltf.scene);
+    flashSprite.visible = !!handBone;
+
+    applyState();
+
+    renderer.setAnimationLoop(() => {
+      mixer.update(0); // re-evaluate the (possibly scrubbed) paused action
+      controls.update();
+      updateFlashPosition();
+      renderer.render(scene, camera);
+    });
+  }
+);
+
+// --- Resize --------------------------------------------------------------
+window.addEventListener("resize", () => {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+});
+
+// Render once immediately so the scene/lighting isn't a blank canvas while
+// assets are still loading.
+renderer.render(scene, camera);
+</script>
+</body>
+</html>
