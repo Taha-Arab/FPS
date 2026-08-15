@@ -3723,6 +3723,102 @@ const resultsWinBonusSublabelEl = document.getElementById("results-win-bonus-sub
 const resultsTotalScoreEl = document.getElementById("results-total-score");
 const killFeedEl = document.getElementById("kill-feed");
 
+// -----------------------------------------------------------------------
+// Adaptive HUD text color (iOS-style) - the glass HUD panels are
+// intentionally translucent (no opaque backing, see the "Liquid glass
+// shine" block in src/style.css), so no single static text color/shadow
+// stays legible against everything behind them (dark terrain vs. a bright
+// sky). Instead of guessing a color, sample the ACTUAL rendered pixels
+// behind each HUD text element a few times a second and flip a CSS class
+// that swaps the text to near-black when the backdrop is measured as
+// light, same as the iOS status bar/Control Center. Sampling, not
+// per-frame: reading pixels back from the GPU is comparatively expensive,
+// and HUD backdrop brightness doesn't change fast enough to need 60Hz
+// updates anyway.
+// -----------------------------------------------------------------------
+
+const HUD_LUMINANCE_SAMPLE_INTERVAL_MS = 150;
+const HUD_LUMINANCE_LIGHT_THRESHOLD = 0.55; // 0 (black) - 1 (white) relative luminance
+
+// Downscaled off-screen copy of the game canvas - sampling a single pixel
+// from a small (160x90) copy is far cheaper than reading the full-res
+// canvas, and HUD elements don't need pixel-precise sampling anyway.
+const hudLuminanceCanvas = document.createElement("canvas");
+hudLuminanceCanvas.width = 160;
+hudLuminanceCanvas.height = 90;
+const hudLuminanceCtx = hudLuminanceCanvas.getContext("2d", {
+  willReadFrequently: true,
+});
+
+// Static targets, resolved once - matchTimerEl/ammoText/healthTextEl are
+// already cached above/below; the score dash has no existing const so
+// it's queried here. Kill-feed "eliminated" separators are dynamic
+// (created/destroyed per kill), so those are queried fresh each sample
+// instead.
+const scoreSeparatorEl = document.querySelector("#score-display .score-separator");
+const ADAPTIVE_HUD_STATIC_TARGETS = [
+  matchTimerEl,
+  ammoText,
+  healthTextEl,
+  scoreSeparatorEl,
+].filter(Boolean);
+
+let lastHudLuminanceSampleTime = 0;
+
+// sRGB -> linear -> relative luminance (WCAG-style, gamma-approximated).
+function relativeLuminance(r, g, b) {
+  const toLinear = (c) => Math.pow(c / 255, 2.2);
+  return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+}
+
+// Maps an element's screen-space center onto the downscaled canvas and
+// reads that single pixel back. Returns null for elements that aren't
+// currently laid out (display: none, zero size).
+function sampleElementLuminance(el) {
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return null;
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const sx = Math.min(
+    hudLuminanceCanvas.width - 1,
+    Math.max(0, Math.round((cx / window.innerWidth) * hudLuminanceCanvas.width))
+  );
+  const sy = Math.min(
+    hudLuminanceCanvas.height - 1,
+    Math.max(0, Math.round((cy / window.innerHeight) * hudLuminanceCanvas.height))
+  );
+  const [r, g, b] = hudLuminanceCtx.getImageData(sx, sy, 1, 1).data;
+  return relativeLuminance(r, g, b);
+}
+
+function updateAdaptiveHudTextColor(el) {
+  const luminance = sampleElementLuminance(el);
+  if (luminance === null) return;
+  el.classList.toggle("hud-adaptive-dark", luminance > HUD_LUMINANCE_LIGHT_THRESHOLD);
+}
+
+// Called once per frame from tick(), right after renderer.render() - the
+// drawImage() below must happen in the same synchronous pass as the
+// render call, before the browser has a chance to clear/present the
+// WebGL canvas's drawing buffer.
+function sampleHudLuminance(timestamp) {
+  if (timestamp - lastHudLuminanceSampleTime < HUD_LUMINANCE_SAMPLE_INTERVAL_MS) return;
+  lastHudLuminanceSampleTime = timestamp;
+
+  hudLuminanceCtx.drawImage(
+    renderer.domElement,
+    0,
+    0,
+    hudLuminanceCanvas.width,
+    hudLuminanceCanvas.height
+  );
+
+  for (const el of ADAPTIVE_HUD_STATIC_TARGETS) updateAdaptiveHudTextColor(el);
+  for (const sep of killFeedEl.querySelectorAll(".kill-feed-sep")) {
+    updateAdaptiveHudTextColor(sep);
+  }
+}
+
 // Kill feed entries (Milestone 13). Oldest fall off when we exceed the cap.
 const KILL_FEED_MAX_ENTRIES = 5;
 const KILL_FEED_LIFETIME_MS = 4000;
@@ -3749,8 +3845,23 @@ function pushKillFeedEntry(killerInfo, victimLabel, victimTeam) {
 
 function renderKillFeed() {
   const now = performance.now();
+  let expiredAny = false;
   for (let i = killFeedEntries.length - 1; i >= 0; i--) {
-    if (killFeedEntries[i].expiresAt <= now) killFeedEntries.splice(i, 1);
+    if (killFeedEntries[i].expiresAt <= now) {
+      killFeedEntries.splice(i, 1);
+      expiredAny = true;
+    }
+  }
+  // Called every frame from tick() purely to catch TTL expiry, not just
+  // on new kills - skip the rebuild on the (vast majority of) frames
+  // where nothing actually changed. Rebuilding unconditionally destroyed
+  // and recreated every row's DOM node ~60x/second, which wiped the
+  // .hud-adaptive-dark class sampleHudLuminance() (src/main.js) toggles
+  // onto .kill-feed-sep before it ever got a chance to paint - "eliminated"
+  // could never actually render dark against a bright sky because its
+  // element was replaced within the same frame the class was set.
+  if (!expiredAny && killFeedEl.children.length === killFeedEntries.length) {
+    return;
   }
   killFeedEl.innerHTML = "";
   for (const entry of killFeedEntries) {
@@ -6046,6 +6157,7 @@ function startRenderLoop({
     updateMinimap(playerPosition, yaw);
 
     renderer.render(scene, camera);
+    sampleHudLuminance(timestamp);
     animationFrameId = requestAnimationFrame(tick);
   }
   animationFrameId = requestAnimationFrame(tick);
@@ -6062,18 +6174,18 @@ const prematchTeamHint = document.getElementById("prematch-team-hint");
 // Live selection state while the menu is open (defaults match the HTML
 // "selected" buttons). Copied into matchConfig on Start Match.
 const pendingMatchSettings = {
-  teamSize: "1v1",
+  teamSize: "3v3",
   difficulty: "medium",
-  killTarget: 5,
+  killTarget: 10,
 };
 
 // Applied match settings after Start Match — allyBots/enemyBots drive spawn.
 let matchConfig = {
-  teamSize: "1v1",
+  teamSize: "3v3",
   difficulty: "medium",
-  killTarget: 5,
-  allyBots: 0,
-  enemyBots: 1,
+  killTarget: 10,
+  allyBots: 2,
+  enemyBots: 3,
 };
 
 const TEAM_SIZE_HINTS = {

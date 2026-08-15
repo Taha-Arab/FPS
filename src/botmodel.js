@@ -422,7 +422,18 @@ export function buildSwatModel(team, assets) {
   // top of the above - i.e. the model was still 0.08 too low relative to
   // the capsule after the first correction. Same opposite-direction
   // translation applies: -0.09 + 0.08 = -0.01.
-  inner.position.y += -0.01;
+  // Third pass (feat-liquid-glass-shine-v2): bots read as floating
+  // slightly above the ground in normal play. That calibration above was
+  // done via the debug view, which freezes bots in a static idle pose
+  // (DEBUG_FREEZE_BOTS) - never checked against the walk/run animations'
+  // own root-bone vertical bob, which is the likely source of this.
+  // Visual-only nudge, same as the two passes above: the capsule collider
+  // and HEAD_HITBOX_OFFSET (src/main.js) are untouched and were already
+  // correctly grounded (snapSpawnPointToFloor() rests the capsule bottom
+  // exactly on the floor surface) - no hitbox recalibration needed. First
+  // attempt here (-0.04) was too small to notice; -0.1 was close but still
+  // slightly high.
+  inner.position.y += -0.14;
   inner.position.z += -0.06;
   const group = new THREE.Group();
   group.add(inner);

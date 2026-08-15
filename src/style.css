@@ -229,6 +229,7 @@ button {
 #score-display .score-separator {
   margin: 0 6px;
   opacity: 0.45;
+  transition: color 0.2s ease;
 }
 
 .score-blue {
@@ -244,6 +245,7 @@ button {
   letter-spacing: 0.14em;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
+  transition: color 0.2s ease;
 }
 
 /* --- Minimap ----------------------------------------------------------- */
@@ -719,6 +721,30 @@ button {
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+  transition: color 0.2s ease;
+}
+
+/* --- Adaptive HUD text color (iOS-style) --------------------------------
+   Toggled by src/main.js (sampleHudLuminance()), which reads the actual
+   rendered pixel color behind each of these elements a few times a
+   second and flips this class on/off based on measured luminance - the
+   glass panels are translucent by design, so what's "behind" them keeps
+   changing (dark terrain vs. bright sky), and no single static text
+   color/shadow can stay legible against all of it. Compound selectors
+   (id/class + .hud-adaptive-dark) so each rule outweighs the element's
+   own base color declaration by specificity, no !important needed. */
+#match-timer.hud-adaptive-dark,
+#ammo-text.hud-adaptive-dark,
+#health-text.hud-adaptive-dark,
+#score-display .score-separator.hud-adaptive-dark,
+.kill-feed-entry .kill-feed-sep.hud-adaptive-dark {
+  color: #14171c;
+}
+
+/* Dark text doesn't need (and looks muddy with) the light-backdrop drop
+   shadow #health-text carries for the opposite case. */
+#health-text.hud-adaptive-dark {
+  text-shadow: none;
 }
 
 /* --- Ammo HUD ---------------------------------------------------------- */
@@ -752,6 +778,7 @@ button {
   letter-spacing: 0.06em;
   font-variant-numeric: tabular-nums;
   min-width: 5.5ch;
+  transition: color 0.2s ease;
 }
 
 #ammo-icon {
@@ -849,6 +876,7 @@ button {
   font-variant-numeric: tabular-nums;
   min-width: 7.5ch;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  transition: color 0.2s ease;
 }
 
 #health-bar-container {
@@ -1250,15 +1278,30 @@ button {
 #pause-overlay-panel,
 #prematch-menu-panel,
 #title-splash-panel {
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.1),
-    rgba(255, 255, 255, 0)
-  );
+  /* Static specular catchlight (top-left radial) layered over the
+     original diagonal wash - no pseudo-element, no animation, no
+     position/overflow changes to the element itself, so this can't touch
+     layout or clip existing children. Kept to a tight radius/footprint
+     (an earlier wider/brighter pass glared directly over the score/timer
+     text) so it reads as a corner catchlight, not a spotlight over the
+     content. */
+  background:
+    radial-gradient(
+      80% 60% at 10% -15%,
+      rgba(255, 255, 255, 0.45),
+      rgba(255, 255, 255, 0) 35%
+    ),
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.14),
+      rgba(255, 255, 255, 0)
+    );
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow:
+    0 8px 32px 0 rgba(0, 0, 0, 0.37),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 /* --- Hitbox debug view (feat-scoring-polish-and-bot-fixes) -------------
