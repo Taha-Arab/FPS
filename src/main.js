@@ -1385,6 +1385,16 @@ const BOT_MOVE_SPEED = 3; // meters/second - slower than the player's 5
 const BOT_AIM_ANGLE_THRESHOLD_RADIANS = 0.05; // ~3 degrees
 const BOT_WAYPOINT_ARRIVAL_RADIUS = 1.5;
 const BOT_MOVE_TIMEOUT_MS = 6000;
+// Stuck detection (see moveBotTowards()): sampled every BOT_STUCK_CHECK_INTERVAL_MS
+// while a bot is walking toward a target. If it hasn't covered
+// BOT_STUCK_DISTANCE_THRESHOLD meters in that window, it's treated as blocked
+// by geometry the collide-and-slide resolver can't route around on its own
+// (e.g. target on the far side of a wall/prop) and steers sideways for
+// BOT_AVOID_DURATION_MS instead of grinding face-first into the obstacle
+// until BOT_MOVE_TIMEOUT_MS finally gives up.
+const BOT_STUCK_CHECK_INTERVAL_MS = 350;
+const BOT_STUCK_DISTANCE_THRESHOLD = 0.15;
+const BOT_AVOID_DURATION_MS = 550;
 // After taking damage, Hard bots keep seeking cover for this long.
 const COVER_SEEK_WINDOW_MS = 3000;
 
@@ -1718,6 +1728,11 @@ function createBotInstance(world, team, spawnPoint, tier) {
     lastKnownTargetPosition: null,
     moveTarget: null,
     moveTargetSetAt: 0,
+    // Stuck-detection/avoidance state — see moveBotTowards().
+    stuckCheckPos: null,
+    stuckCheckAt: 0,
+    avoidDirection: 1,
+    avoidUntil: 0,
     lastPatrolPointIndex: -1,
     coverTarget: null,
     // After arriving at a cover slot, stay put until the under-fire window
@@ -5574,19 +5589,49 @@ function startRenderLoop({
     const distance = Math.hypot(dx, dz);
     if (distance <= BOT_WAYPOINT_ARRIVAL_RADIUS) return true;
     if (now - bot.moveTargetSetAt >= BOT_MOVE_TIMEOUT_MS) return true;
+
+    // Stuck detection: periodically sample actual world-space displacement.
+    // Rapier's collide-and-slide keeps a bot from clipping through an
+    // obstacle, but if the straight line to the target runs into one, sliding
+    // makes near-zero progress and the bot just grinds against it in place.
+    // Catch that here rather than waiting out the full move timeout.
+    if (bot.stuckCheckPos === null) {
+      bot.stuckCheckPos = { x: botPosition.x, z: botPosition.z };
+      bot.stuckCheckAt = now;
+    } else if (now - bot.stuckCheckAt >= BOT_STUCK_CHECK_INTERVAL_MS) {
+      const movedDistance = Math.hypot(
+        botPosition.x - bot.stuckCheckPos.x,
+        botPosition.z - bot.stuckCheckPos.z
+      );
+      if (movedDistance < BOT_STUCK_DISTANCE_THRESHOLD && now >= bot.avoidUntil) {
+        bot.avoidDirection = Math.random() < 0.5 ? -1 : 1;
+        bot.avoidUntil = now + BOT_AVOID_DURATION_MS;
+      }
+      bot.stuckCheckPos = { x: botPosition.x, z: botPosition.z };
+      bot.stuckCheckAt = now;
+    }
+
+    let moveX = dx / distance;
+    let moveZ = dz / distance;
+    if (now < bot.avoidUntil) {
+      // Blend in a perpendicular sidestep so the bot walks around whatever
+      // it's stuck on instead of continuing to push straight into it - a
+      // cheap stand-in for real obstacle avoidance since there's no navmesh.
+      const perpX = -moveZ * bot.avoidDirection;
+      const perpZ = moveX * bot.avoidDirection;
+      moveX += perpX * 1.4;
+      moveZ += perpZ * 1.4;
+      const blendedLength = Math.hypot(moveX, moveZ);
+      moveX /= blendedLength;
+      moveZ /= blendedLength;
+    }
+
     rotateGroupTowards(
       bot,
-      computeYawTowards(botPosition, target),
+      Math.atan2(-moveX, -moveZ),
       deltaTime
     );
-    moveBotByDirection(
-      bot,
-      dx / distance,
-      dz / distance,
-      bot.moveSpeed,
-      deltaTime,
-      now
-    );
+    moveBotByDirection(bot, moveX, moveZ, bot.moveSpeed, deltaTime, now);
     return false;
   }
 
