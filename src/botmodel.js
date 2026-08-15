@@ -9,10 +9,6 @@ import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { createCamoTexture } from "./textures.js";
 
-// Head starts this far above the capsule center — used by main.js for
-// headshot detection on the hitscan ray.
-export const HEADSHOT_MIN_Y_OFFSET = 0.52;
-
 // One camo texture per team, created lazily and shared by all bots.
 let redCamo = null;
 let blueCamo = null;
@@ -402,8 +398,32 @@ export function buildSwatModel(team, assets) {
   // the procedural soldier), so flip before measuring the skeleton.
   source.rotation.y = Math.PI;
 
-  // Origin at the Rapier capsule CENTER (feet at -1.0), like the old model.
-  const inner = fitSkeletonToCapsule(source, BOT_MODEL_HEIGHT, -1.0);
+  // Origin at the Rapier capsule CENTER - feet at
+  // -(BOT_HALF_HEIGHT + BOT_RADIUS) in src/main.js (currently
+  // 0.52 + 0.26 = 0.78m - bots have their own separate capsule dimensions
+  // from the player now, see BOT_RADIUS/BOT_HALF_HEIGHT there). Kept as a
+  // literal and hand-synced rather than imported to avoid a circular
+  // dependency between the two modules - update this if those constants
+  // change.
+  const inner = fitSkeletonToCapsule(source, BOT_MODEL_HEIGHT, -0.78);
+  // Small manual corrections on top of the auto-centered fit above, found
+  // via public/sandbox_hitbox.html calibration: the skeleton's bone-based
+  // center (what fitSkeletonToCapsule measures) doesn't quite land where
+  // the model visually reads as centered against the Rapier capsule -
+  // likely gear/rifle geometry pulling the skinned mesh surface off the
+  // bone-only bounding box. Nudge the VISUAL model only; the capsule
+  // collider (the bot's real gameplay position) is untouched. The debug
+  // view's body-offset sliders reported the collider needing to move
+  // (0, +0.09, 0) to align with a fixed model - moving the collider isn't
+  // an option in production (it's the bot's real position), so the model
+  // is shifted the opposite way here instead, to the same relative effect.
+  // Re-calibrated (feat-scoring-polish-and-bot-fixes, second pass): the
+  // debug panel reported a further (0, -0.08, 0) collider offset needed on
+  // top of the above - i.e. the model was still 0.08 too low relative to
+  // the capsule after the first correction. Same opposite-direction
+  // translation applies: -0.09 + 0.08 = -0.01.
+  inner.position.y += -0.01;
+  inner.position.z += -0.06;
   const group = new THREE.Group();
   group.add(inner);
 

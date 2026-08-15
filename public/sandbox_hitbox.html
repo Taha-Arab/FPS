@@ -1,0 +1,922 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Bot Hitbox Calibration</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1a1e; font-family: -apple-system, "Segoe UI", sans-serif; }
+  canvas { display: block; cursor: crosshair; }
+
+  #hint {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    color: #b8b8c0;
+    font-size: 12px;
+    background: rgba(20, 20, 24, 0.7);
+    padding: 8px 10px;
+    border-radius: 6px;
+    z-index: 10;
+    pointer-events: none;
+    max-width: 340px;
+    line-height: 1.5;
+  }
+
+  #crosshair {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 5;
+  }
+  #crosshair .ch-line { position: absolute; background: #39ff6a; }
+  #crosshair .ch-h { width: 18px; height: 2px; top: -1px; left: -9px; }
+  #crosshair .ch-v { width: 2px; height: 18px; top: -9px; left: -1px; }
+  #crosshair .ch-dot {
+    position: absolute; width: 3px; height: 3px; top: -1.5px; left: -1.5px;
+    background: #39ff6a; border-radius: 50%;
+  }
+
+  /* Mirrors #damage-numbers / .damage-number in src/style.css exactly. */
+  #damage-numbers { position: fixed; inset: 0; overflow: hidden; pointer-events: none; user-select: none; z-index: 6; }
+  .damage-number {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: #ffd977;
+    text-shadow: 0 0 6px rgba(0, 0, 0, 0.9), 0 2px 4px rgba(0, 0, 0, 0.7);
+    animation: damage-number-pop 0.8s ease-out forwards;
+  }
+  .damage-number.headshot { color: #ff5b45; font-size: 1.3rem; }
+  @keyframes damage-number-pop {
+    0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+    12% { opacity: 1; transform: translate(-50%, -58%) scale(1.35); }
+    30% { transform: translate(-50%, -80%) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, -190%) scale(0.9); }
+  }
+
+  #output-panel {
+    position: fixed;
+    bottom: 12px;
+    left: 12px;
+    width: 460px;
+    background: rgba(20, 20, 24, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    padding: 10px;
+    z-index: 10;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  }
+  #output-panel h1 {
+    font-size: 11px;
+    margin: 0 0 6px;
+    color: #39ff6a;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  #output {
+    background: #0c0c0f;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 5px;
+    padding: 8px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre;
+    color: #9be89b;
+    overflow-x: auto;
+    user-select: all;
+  }
+
+  #legend {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    z-index: 10;
+    background: rgba(20, 20, 24, 0.7);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    color: #b8b8c0;
+    line-height: 1.7;
+  }
+  #legend .swatch { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; vertical-align: middle; }
+</style>
+</head>
+<body>
+
+<div id="hint">
+  Click to look around (Esc to release) &middot; WASD to walk, Space/Shift
+  to fly up/down &middot; Left-click to fire at the dummy.<br />
+  Yellow = body capsule, red = head sphere - two independent hitboxes,
+  positioned/sized separately. Whichever one the shot actually reaches
+  first wins; they don't need to touch.
+</div>
+
+<div id="legend">
+  <div><span class="swatch" style="background:#ffd977"></span>Body (capsule)</div>
+  <div><span class="swatch" style="background:#ff5b45"></span>Head (sphere)</div>
+</div>
+
+<div id="damage-numbers"></div>
+
+<div id="crosshair">
+  <div class="ch-line ch-h"></div>
+  <div class="ch-line ch-v"></div>
+  <div class="ch-dot"></div>
+</div>
+
+<div id="output-panel">
+  <h1>Paste into src/main.js</h1>
+  <div id="output"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/",
+    "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.19/dist/lil-gui.esm.min.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
+import GUI from "lil-gui";
+
+// ---------------------------------------------------------------------------
+// Bot hitbox calibration (feat-scoring-polish-and-bot-fixes) - NOT part of
+// the Vite build (three.js + lil-gui loaded from a CDN via importmap, same
+// pattern as public/sandbox_muzzle.html and public/sandbox.html). Combines
+// sandbox.html's shooting-range mechanic (pointer-lock look, raycast fire,
+// floating damage numbers) with sandbox_muzzle.html's lil-gui slider +
+// wireframe-visualization pattern.
+//
+// Two INDEPENDENT hitboxes, not one shape with a proximity check layered
+// on top (an earlier version of this sandbox tried "headshot = close to a
+// point on the body capsule's surface," which forces the head zone to be
+// smaller than the body at every height it overlaps, since the ray always
+// hits the nearer body surface first - a real problem, not just a visual
+// one). Instead: a yellow CYLINDER (body) and a red SPHERE (head) are both
+// real raycast targets, sized/positioned entirely independently, and the
+// ray just hits whichever one is closer along its path - same as how real
+// games with separate head/body/limb hitboxes work. They don't need to
+// overlap or relate to each other at all.
+//
+// Porting this to the real game (fireShot() in src/main.js): the body
+// stays the existing Rapier CAPSULE collider (used for physics/movement
+// too, not just hit detection - not worth changing). Adding a second real
+// Rapier collider per bot just for the head would work but touches
+// collision/movement for every bot, more risk than the payoff here needs.
+// Lower-risk option: after the existing capsule raycast lands a hit,
+// separately compute a plain ray-vs-sphere intersection (standard formula,
+// no physics engine needed) against the head sphere's position/radius
+// below, and compare which hit is closer to the ray origin - same
+// nearest-wins logic this sandbox's raycaster does natively via
+// intersectObjects(), just hand-rolled instead of using Three.js's version.
+// ---------------------------------------------------------------------------
+
+const BOT_MESH_URL = "/assets/bots/swat_mesh.glb";
+const BOT_IDLE_CLIP_URL = "/assets/bots/idle.glb";
+const RIFLE_URL = "/assets/guns/rifle.glb";
+const DRACO_DECODER_PATH = "/vendor/draco/";
+const BOT_MODEL_HEIGHT = 1.92; // mirrors BOT_MODEL_HEIGHT in src/botmodel.js
+const HIPS_TRACK_PREFIX = "mixamorigHips";
+const ASSIMP_MARKER = "_$AssimpFbx$_";
+const RIFLE_TARGET_LENGTH = 0.85; // meters, barrel tip to stock — mirrors src/assets.js
+
+// --- Rifle-in-hand + idle-pose rig loading, copied wholesale from
+// public/sandbox_muzzle.html (same GLB pipeline, same Assimp-track-name
+// retargeting quirks) - this sandbox has no build-time link to
+// src/botmodel.js/src/assets.js, so these are hand-synced copies, not
+// imports. Re-sync by hand if those files change. Only "idle" is used
+// here (not "shoot"/"run"/"death") since the whole point is a calm,
+// standing-still target to calibrate hitboxes against. ---------------------
+const GRIP_MESH_NAME_PATTERN = /pistol.?grip/i;
+const RIFLE_HAND_POSITION_TWEAK = new THREE.Vector3(8, 15, 3);
+const RIFLE_HAND_ROTATION_TWEAK = new THREE.Euler(0, 0.18, 0);
+const RIFLE_HAND_EXTRA_SCALE = 1;
+
+function normalizeRifleGeometry(model, targetLength) {
+  let bbox = new THREE.Box3().setFromObject(model);
+  let size = bbox.getSize(new THREE.Vector3());
+  if (size.x >= size.y && size.x >= size.z) {
+    model.rotation.y = -Math.PI / 2;
+  } else if (size.y >= size.x && size.y >= size.z) {
+    model.rotation.x = Math.PI / 2;
+  }
+  model.updateMatrixWorld(true);
+
+  bbox = new THREE.Box3().setFromObject(model);
+  size = bbox.getSize(new THREE.Vector3());
+  const scale = size.z > 0.0001 ? targetLength / size.z : 1;
+  model.scale.multiplyScalar(scale);
+  model.updateMatrixWorld(true);
+
+  bbox = new THREE.Box3().setFromObject(model);
+  const center = bbox.getCenter(new THREE.Vector3());
+  model.position.sub(center);
+
+  model.traverse((obj) => {
+    if (obj.isMesh) {
+      obj.castShadow = false;
+      obj.receiveShadow = false;
+      obj.frustumCulled = false;
+    }
+  });
+}
+
+function retargetTrack(track, sceneRoot) {
+  const dotIndex = track.name.lastIndexOf(".");
+  const nodeName = track.name.slice(0, dotIndex);
+  const property = track.name.slice(dotIndex + 1);
+
+  if (!nodeName.includes(ASSIMP_MARKER)) {
+    if (property === "scale") return null;
+    return track.clone();
+  }
+
+  const [boneName, kind] = nodeName.split(ASSIMP_MARKER);
+  if (kind === "Translation" && property === "position") {
+    const clone = track.clone();
+    clone.name = `${boneName}.position`;
+    return clone;
+  }
+  if (kind === "Rotation" && property === "quaternion") {
+    const preNode = sceneRoot.getObjectByName(`${boneName}${ASSIMP_MARKER}PreRotation`);
+    const clone = track.clone();
+    clone.name = `${boneName}.quaternion`;
+    if (preNode) {
+      const pre = preNode.quaternion;
+      const key = new THREE.Quaternion();
+      for (let i = 0; i < clone.values.length; i += 4) {
+        key.fromArray(clone.values, i);
+        key.premultiply(pre);
+        key.toArray(clone.values, i);
+      }
+    }
+    return clone;
+  }
+  return null;
+}
+
+function correctRootFrame(clip, animScene, template) {
+  if (!animScene || !template) return clip;
+  const templateHips = template.getObjectByName(HIPS_TRACK_PREFIX);
+  const animHips = animScene.getObjectByName(HIPS_TRACK_PREFIX);
+  if (!templateHips || !animHips) return clip;
+
+  template.updateMatrixWorld(true);
+  animScene.updateMatrixWorld(true);
+
+  let topOfChain = animHips;
+  while (topOfChain.parent && topOfChain.parent.name && topOfChain.parent.name.includes(ASSIMP_MARKER)) {
+    topOfChain = topOfChain.parent;
+  }
+  const animFrame = topOfChain.parent ?? animScene;
+
+  const qTemplate = new THREE.Quaternion();
+  templateHips.parent.getWorldQuaternion(qTemplate);
+  const qAnim = new THREE.Quaternion();
+  animFrame.getWorldQuaternion(qAnim);
+  const correction = qTemplate.invert().multiply(qAnim);
+  if (correction.angleTo(new THREE.Quaternion()) < 0.01) return clip;
+
+  const v = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  for (const track of clip.tracks) {
+    if (track.name === `${HIPS_TRACK_PREFIX}.position`) {
+      for (let i = 0; i < track.values.length; i += 3) {
+        v.fromArray(track.values, i).applyQuaternion(correction);
+        v.toArray(track.values, i);
+      }
+    } else if (track.name === `${HIPS_TRACK_PREFIX}.quaternion`) {
+      for (let i = 0; i < track.values.length; i += 4) {
+        q.fromArray(track.values, i).premultiply(correction);
+        q.toArray(track.values, i);
+      }
+    }
+  }
+  return clip;
+}
+
+function pinHorizontalRootMotion(clip, upAxisIndex = 1) {
+  for (const track of clip.tracks) {
+    if (!track.name.endsWith("Hips.position")) continue;
+    for (let axis = 0; axis < 3; axis++) {
+      if (axis === upAxisIndex) continue;
+      const first = track.values[axis];
+      for (let i = axis; i < track.values.length; i += 3) {
+        track.values[i] = first;
+      }
+    }
+  }
+  return clip;
+}
+
+function extractClip(gltf, name) {
+  const clips = gltf.animations ?? [];
+  if (clips.length === 0) return null;
+
+  if (clips.length === 1) {
+    const clip = clips[0].clone();
+    clip.name = name;
+    return clip;
+  }
+
+  const tracks = [];
+  const seen = new Set();
+  for (const clip of clips) {
+    for (const track of clip.tracks) {
+      const retargeted = retargetTrack(track, gltf.scene);
+      if (!retargeted || seen.has(retargeted.name)) continue;
+      seen.add(retargeted.name);
+      tracks.push(retargeted);
+    }
+  }
+  if (tracks.length === 0) return null;
+
+  let duration = 0;
+  for (const track of tracks) {
+    duration = Math.max(duration, track.times[track.times.length - 1]);
+  }
+  return new THREE.AnimationClip(name, duration, tracks);
+}
+
+function findRightHandBone(root) {
+  let exact = null;
+  let fallback = null;
+  root.traverse((obj) => {
+    if (!obj.isBone || exact) return;
+    const name = obj.name;
+    if (!name) return;
+    if (/^mixamorig:?RightHand$/i.test(name) || /^Hand_R$/i.test(name)) {
+      exact = obj;
+      return;
+    }
+    if (!fallback && /righthand|hand_r/i.test(name) && !/thumb|index|middle|ring|pinky/i.test(name)) {
+      fallback = obj;
+    }
+  });
+  return exact ?? fallback;
+}
+
+function findGripOffset(rifleScene) {
+  const probe = rifleScene.clone(true);
+  probe.position.set(0, 0, 0);
+  probe.rotation.set(0, 0, 0);
+  const rig = new THREE.Group();
+  rig.add(probe);
+  rig.updateMatrixWorld(true);
+
+  let gripMesh = null;
+  probe.traverse((obj) => {
+    if (!gripMesh && obj.isMesh && GRIP_MESH_NAME_PATTERN.test(obj.name)) {
+      gripMesh = obj;
+    }
+  });
+  if (!gripMesh) {
+    console.error("findGripOffset: no pistol-grip mesh found — holding at the model's own pivot");
+    return new THREE.Vector3();
+  }
+  return new THREE.Box3().setFromObject(gripMesh).getCenter(new THREE.Vector3());
+}
+
+// Simplified from attachRifleToHand() in src/botmodel.js: material cloning
+// (needed there for the spawn-invuln opacity fade) is dropped since it has
+// no bearing on hitbox placement.
+function attachRifleToHandForCalibration(source, rifleScene) {
+  const handBone = findRightHandBone(source);
+  if (!handBone) {
+    console.error("No RightHand/Hand_R bone found on the SWAT skeleton.");
+    return null;
+  }
+  source.updateMatrixWorld(true);
+  const handWorldScale = handBone.getWorldScale(new THREE.Vector3());
+  const handWorldQuat = handBone.getWorldQuaternion(new THREE.Quaternion());
+
+  const rifleClone = rifleScene.clone(true);
+  rifleClone.traverse((obj) => {
+    if (obj.isMesh) obj.frustumCulled = false;
+  });
+
+  const orientationOffset = handWorldQuat.clone().invert();
+  orientationOffset.multiply(new THREE.Quaternion().setFromEuler(RIFLE_HAND_ROTATION_TWEAK));
+
+  const gripOffset = findGripOffset(rifleScene);
+  const positionOffset = gripOffset
+    .clone()
+    .applyQuaternion(orientationOffset)
+    .negate()
+    .add(RIFLE_HAND_POSITION_TWEAK);
+
+  const counterScale = handWorldScale.x > 0.0001 ? 1 / handWorldScale.x : 1;
+  rifleClone.scale.multiplyScalar(counterScale * RIFLE_HAND_EXTRA_SCALE);
+  rifleClone.position.copy(positionOffset);
+  rifleClone.quaternion.copy(orientationOffset);
+  handBone.add(rifleClone);
+
+  return rifleClone;
+}
+
+// Mirrors GUN_DAMAGE/HEADSHOT_MULTIPLIER in src/main.js so damage numbers
+// here mean the same thing they would in an actual match.
+const GUN_DAMAGE = 20;
+const HEADSHOT_MULTIPLIER = 2;
+const DUMMY_HEALTH_MAX = 100;
+const GUN_RANGE = 100;
+
+// --- Slider state, seeded at the values currently live in src/main.js
+// (BOT_RADIUS/BOT_HALF_HEIGHT, HEAD_HITBOX_OFFSET/HEAD_HITBOX_RADIUS) so
+// this starts exactly where the real game is, not from scratch. Bots have
+// their own separate capsule dimensions from the player now. -------------
+const state = {
+  capsuleRadius: 0.25,
+  capsuleHalfHeight: 0.43,
+  // Offset from the capsule's default position (0, capsuleHalfHeight +
+  // capsuleRadius, 0) - lets you nudge the whole hitbox relative to the
+  // visual model instead of only resizing it. In the real game the
+  // collider IS the bot's actual position (createBotInstance()/
+  // botStandingSpawnTranslation()) and the visual model is fitted to match
+  // it, not the other way around - so a non-zero offset found here means
+  // the visual model's fit (BOT_MODEL_HEIGHT / the feetY math in
+  // fitSkeletonToCapsule() in src/botmodel.js) needs correcting to match
+  // the collider, not that the collider itself should move. See the output
+  // panel note below.
+  capsuleOffsetX: 0,
+  capsuleOffsetY: 0,
+  capsuleOffsetZ: 0,
+  // Head hitbox: a fully independent sphere, positioned in absolute
+  // dummyGroup-local space (i.e. height above the ground, not an offset
+  // from the body). Doesn't need to overlap or relate to the body cylinder
+  // at all - see the file-header comment for why (both are real, separate
+  // raycast targets now; the ray just hits whichever is closer).
+  headX: 0.1,
+  headY: 1.45,
+  headZ: -0.105,
+  headRadius: 0.16,
+  showCapsule: true,
+  showHeadZone: true,
+  showBotMesh: true,
+};
+
+// --- Scene / camera / lights (mirrors src/environment.js, same as the
+// other two sandboxes) -------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a1e);
+scene.add(new THREE.GridHelper(40, 40, 0x555566, 0x333340));
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+sun.position.set(4, 8, 5);
+scene.add(sun);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// Matches src/main.js's PerspectiveCamera exactly (fov/near/far) so
+// perspective distortion matches the real game.
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.001, 1000);
+camera.rotation.order = "YXZ";
+camera.position.set(0, 1.8, 0); // EYE_HEIGHT in src/main.js
+
+// --- Pointer-lock mouselook (mirrors main.js's YXZ FPS look) --------------
+let yaw = 0;
+let pitch = 0;
+const MOUSE_SENSITIVITY = 0.0022;
+
+renderer.domElement.addEventListener("click", () => {
+  renderer.domElement.requestPointerLock();
+});
+
+// --- WASD free-fly movement (Space/Shift for up/down) - gated to
+// pointer-lock like the mouselook above, so typing into a slider's number
+// field never moves the camera. Not ground-collision-limited like the
+// real game's player movement - this is a calibration room, being able to
+// fly above/below/around the dummy to inspect the hitboxes from any angle
+// is more useful here than realistic movement. -----------------------------
+const MOVE_SPEED = 4; // meters/second
+const keysPressed = {};
+window.addEventListener("keydown", (e) => {
+  keysPressed[e.code] = true;
+});
+window.addEventListener("keyup", (e) => {
+  keysPressed[e.code] = false;
+});
+
+const moveForward = new THREE.Vector3();
+const moveRight = new THREE.Vector3();
+function updateMovement(deltaTime) {
+  if (document.pointerLockElement !== renderer.domElement) return;
+  let inputForward = 0;
+  let inputRight = 0;
+  let inputUp = 0;
+  if (keysPressed["KeyW"]) inputForward += 1;
+  if (keysPressed["KeyS"]) inputForward -= 1;
+  if (keysPressed["KeyD"]) inputRight += 1;
+  if (keysPressed["KeyA"]) inputRight -= 1;
+  if (keysPressed["Space"]) inputUp += 1;
+  if (keysPressed["ShiftLeft"] || keysPressed["ShiftRight"]) inputUp -= 1;
+  if (inputForward === 0 && inputRight === 0 && inputUp === 0) return;
+
+  moveForward.set(Math.sin(yaw), 0, Math.cos(yaw)).multiplyScalar(-inputForward);
+  moveRight.set(Math.cos(yaw), 0, -Math.sin(yaw)).multiplyScalar(inputRight);
+  const step = moveForward.add(moveRight);
+  if (step.lengthSq() > 1) step.normalize();
+  camera.position.x += step.x * MOVE_SPEED * deltaTime;
+  camera.position.z += step.z * MOVE_SPEED * deltaTime;
+  camera.position.y += inputUp * MOVE_SPEED * deltaTime;
+}
+
+document.addEventListener("mousemove", (e) => {
+  if (document.pointerLockElement !== renderer.domElement) return;
+  yaw -= e.movementX * MOUSE_SENSITIVITY;
+  pitch -= e.movementY * MOUSE_SENSITIVITY;
+  pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+  camera.rotation.set(pitch, yaw, 0);
+});
+renderer.domElement.addEventListener("mousedown", (e) => {
+  if (e.button === 0 && document.pointerLockElement === renderer.domElement) {
+    fireShot();
+  }
+});
+
+// --- Dummy bot: one stationary SWAT model, 4m ahead, frozen in bind pose
+// (no AnimationMixer created — same simplification sandbox.html makes;
+// this tool is for static hitbox calibration, not per-frame animation
+// tracking). ------------------------------------------------------------
+const DUMMY_DISTANCE = 4;
+const dummyGroup = new THREE.Group();
+dummyGroup.position.set(0, 0, -DUMMY_DISTANCE);
+scene.add(dummyGroup);
+
+let dummyHealth = DUMMY_HEALTH_MAX;
+
+// Body mesh: a true capsule (rounded caps), matching both the real Rapier
+// collider (capsule(halfHeight, radius), total extent 2*(halfHeight+radius))
+// and the in-game debug wireframe (createDebugHitboxMeshes() in
+// src/main.js) exactly. An earlier version drew this as a flat cylinder
+// (height = halfHeight*2, no cap extension) - that undersold the true
+// height by 2*radius, so values tuned here looked right in this sandbox
+// but rendered visibly taller in-game once the rounded caps were added on
+// top. This IS a real raycast target, sized to match the bot's own
+// BOT_RADIUS/BOT_HALF_HEIGHT (separate from the player's).
+const bodyMat = new THREE.MeshBasicMaterial({
+  color: 0xffd977,
+  wireframe: true,
+  transparent: true,
+  opacity: 0.55,
+});
+let bodyMesh = null;
+
+// Body center position (local to dummyGroup): the default
+// capsuleHalfHeight + capsuleRadius above ground - same height
+// bot.body.translation() would be at in the real game - plus whatever
+// capsuleOffset* sliders are dialed in. Purely about the body's own
+// placement now; the head no longer depends on this at all.
+function bodyCenterLocal() {
+  return new THREE.Vector3(
+    state.capsuleOffsetX,
+    state.capsuleHalfHeight + state.capsuleRadius + state.capsuleOffsetY,
+    state.capsuleOffsetZ
+  );
+}
+
+function rebuildBody() {
+  if (bodyMesh) {
+    dummyGroup.remove(bodyMesh);
+    bodyMesh.geometry.dispose();
+  }
+  const geo = new THREE.CapsuleGeometry(
+    state.capsuleRadius,
+    state.capsuleHalfHeight * 2,
+    4,
+    16
+  );
+  bodyMesh = new THREE.Mesh(geo, bodyMat);
+  bodyMesh.position.copy(bodyCenterLocal());
+  bodyMesh.visible = state.showCapsule;
+  dummyGroup.add(bodyMesh);
+}
+rebuildBody();
+
+// Head hitbox: a real, independent sphere raycast target - positioned in
+// absolute dummyGroup-local space (headX/Y/Z), not relative to the body at
+// all. Free to sit anywhere, any size, overlapping the body or not.
+const headMat = new THREE.MeshBasicMaterial({
+  color: 0xff5b45,
+  wireframe: true,
+  transparent: true,
+  opacity: 0.75,
+});
+const headMesh = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 16), headMat);
+dummyGroup.add(headMesh);
+
+function updateHead() {
+  headMesh.position.set(state.headX, state.headY, state.headZ);
+  headMesh.scale.setScalar(state.headRadius);
+  headMesh.visible = state.showHeadZone;
+}
+updateHead();
+
+// --- Load the real SWAT model as a semi-transparent visual reference only
+// (never raycast against this — see the file-header comment). Positioned
+// the same way createBotInstance()/botStandingSpawnTranslation() would:
+// capsule center = capsuleHalfHeight + capsuleRadius above ground, model
+// origin at that same center per BOT_MODEL_HEIGHT sizing. -----------------
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
+const gltfLoader = new GLTFLoader();
+gltfLoader.setDRACOLoader(dracoLoader);
+
+function hipsUpAxisIndex(template) {
+  const hips = template?.getObjectByName(HIPS_TRACK_PREFIX);
+  if (!hips) return 1;
+  const p = hips.position;
+  const abs = [Math.abs(p.x), Math.abs(p.y), Math.abs(p.z)];
+  return abs.indexOf(Math.max(...abs));
+}
+
+function fitSkeletonToCapsule(source, targetHeight, feetY) {
+  const wrapper = new THREE.Group();
+  wrapper.add(source);
+  source.updateMatrixWorld(true);
+
+  const v = new THREE.Vector3();
+  const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+  const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+  let boneCount = 0;
+  source.traverse((obj) => {
+    if (!obj.isBone) return;
+    boneCount += 1;
+    obj.getWorldPosition(v);
+    min.min(v);
+    max.max(v);
+  });
+  if (boneCount === 0) return wrapper;
+
+  const skeletonHeight = (max.y - min.y) * 1.04;
+  const scale = skeletonHeight > 0.0001 ? targetHeight / skeletonHeight : 1;
+  source.scale.multiplyScalar(scale);
+  source.position.set(
+    -((min.x + max.x) / 2) * scale,
+    feetY - min.y * scale,
+    -((min.z + max.z) / 2) * scale
+  );
+  return wrapper;
+}
+
+let botMeshRoot = null;
+let idleMixer = null;
+
+const loadOne = (url) =>
+  new Promise((resolve) => {
+    gltfLoader.load(url, resolve, undefined, (err) => {
+      console.error(`Failed to load ${url}`, err);
+      resolve(null);
+    });
+  });
+
+// Loads the bot mesh + idle clip + rifle together, then poses the rig in a
+// calm standing idle frame with the rifle in-hand - not the raw bind pose
+// (T-pose, no weapon), which is what a skinned mesh with no AnimationMixer
+// renders as. Frozen at frame 0 of "idle" (not left running) since this is
+// a static calibration reference, not something that needs to keep moving.
+Promise.all([loadOne(BOT_MESH_URL), loadOne(BOT_IDLE_CLIP_URL), loadOne(RIFLE_URL)]).then(
+  ([botGltf, idleGltf, rifleGltf]) => {
+    if (!botGltf) {
+      console.error("sandbox_hitbox: missing bot mesh GLB — cannot proceed.");
+      return;
+    }
+
+    const template = botGltf.scene;
+    const upAxis = hipsUpAxisIndex(template);
+    let idleClip = null;
+    if (idleGltf) {
+      idleClip = extractClip(idleGltf, "idle");
+      if (idleClip) {
+        correctRootFrame(idleClip, idleGltf.scene, template);
+        pinHorizontalRootMotion(idleClip, upAxis);
+      }
+    } else {
+      console.error("sandbox_hitbox: idle.glb failed to load/extract — rig will hold bind pose.");
+    }
+
+    if (rifleGltf) normalizeRifleGeometry(rifleGltf.scene, RIFLE_TARGET_LENGTH);
+
+    const source = cloneSkeleton(template);
+    source.rotation.y = Math.PI; // Mixamo faces +Z; bot AI forward is -Z
+    // feetY = 0: dummyGroup's own origin IS ground level (unlike
+    // sandbox_muzzle.html's `group`, which represents the CAPSULE CENTER,
+    // elevated separately to y=1.0) - so the model's feet just need to land
+    // at dummyGroup's local origin, not offset below it. Getting this wrong
+    // (the previous value here) sank the whole model ~1m into the ground,
+    // landing its torso roughly at y=0 instead of its feet - exactly the
+    // "center on the ground, not his feet" bug. The model stays planted at
+    // this fixed ground level regardless of capsuleOffset* sliders - it's
+    // the fixed visual reference the (possibly offset) hitbox is checked
+    // against, not something that should move with it.
+    const inner = fitSkeletonToCapsule(source, BOT_MODEL_HEIGHT, 0);
+    botMeshRoot = inner;
+    dummyGroup.add(inner);
+
+    source.traverse((obj) => {
+      if (obj.isMesh || obj.isSkinnedMesh) {
+        obj.frustumCulled = false;
+        obj.castShadow = false;
+        obj.receiveShadow = false;
+        if (obj.material) {
+          obj.material = obj.material.clone();
+          obj.material.transparent = true;
+          obj.material.opacity = 0.55;
+        }
+      }
+    });
+    inner.visible = state.showBotMesh;
+
+    if (idleClip) {
+      idleMixer = new THREE.AnimationMixer(source);
+      const idleAction = idleMixer.clipAction(idleClip);
+      idleAction.play();
+      idleAction.paused = true; // frozen on frame 0, not looping live
+    }
+    idleMixer?.update(0); // bake frame 0 (or bind pose, if idle failed to load) onto the skeleton
+
+    if (rifleGltf) attachRifleToHandForCalibration(source, rifleGltf.scene);
+  }
+);
+
+// --- Shooting: raycast against the capsule mesh only, mirroring
+// fireShot()/damageBot() in src/main.js exactly - same GUN_DAMAGE/
+// HEADSHOT_MULTIPLIER, same distance-from-anchor headshot rule. -----------
+const damageNumbersEl = document.getElementById("damage-numbers");
+const DAMAGE_NUMBER_LIFETIME_MS = 850;
+
+function spawnDamageNumber(worldPoint, amount, isHeadshot) {
+  const projected = new THREE.Vector3(worldPoint.x, worldPoint.y, worldPoint.z).project(camera);
+  if (projected.z > 1) return; // behind the camera
+
+  const el = document.createElement("span");
+  el.className = isHeadshot ? "damage-number headshot" : "damage-number";
+  el.textContent = String(Math.round(amount));
+  const jitterX = (Math.random() - 0.5) * 28;
+  el.style.left = `${((projected.x + 1) / 2) * window.innerWidth + jitterX}px`;
+  el.style.top = `${((1 - projected.y) / 2) * window.innerHeight}px`;
+  damageNumbersEl.appendChild(el);
+  setTimeout(() => el.remove(), DAMAGE_NUMBER_LIFETIME_MS);
+}
+
+const raycaster = new THREE.Raycaster();
+raycaster.far = GUN_RANGE;
+
+function fireShot() {
+  if (!bodyMesh) return;
+  raycaster.set(camera.position, camera.getWorldDirection(new THREE.Vector3()));
+  // Both real, independent targets in one call - Three.js returns hits
+  // sorted nearest-first, so hits[0] is simply whichever one the ray
+  // actually reached first. No proximity math, no shared anchor.
+  const hits = raycaster.intersectObjects([bodyMesh, headMesh], false);
+  if (hits.length === 0) return;
+
+  const hitPoint = hits[0].point;
+  const isHeadshot = hits[0].object === headMesh;
+  const damage = isHeadshot ? GUN_DAMAGE * HEADSHOT_MULTIPLIER : GUN_DAMAGE;
+
+  // Never actually dies - resets to full once depleted, so it's a
+  // repeatable target instead of a one-shot kill.
+  dummyHealth -= damage;
+  if (dummyHealth <= 0) dummyHealth = DUMMY_HEALTH_MAX;
+
+  spawnDamageNumber(hitPoint, damage, isHeadshot);
+
+  // Brief flash on whichever wireframe was actually hit, for extra
+  // "did that count" feedback beyond the damage number color.
+  const flashMat = hits[0].object.material;
+  const originalOpacity = flashMat.opacity;
+  flashMat.opacity = 1;
+  setTimeout(() => (flashMat.opacity = originalOpacity), 120);
+}
+
+// --- Output panel --------------------------------------------------------
+const outputEl = document.getElementById("output");
+function refreshOutput() {
+  const p2 = (v) => v.toFixed(2);
+  const p3 = (v) => v.toFixed(3);
+  const offsetLine =
+    state.capsuleOffsetX === 0 && state.capsuleOffsetY === 0 && state.capsuleOffsetZ === 0
+      ? ""
+      : `\n// Non-zero body offset (${p3(state.capsuleOffsetX)}, ${p3(state.capsuleOffsetY)}, ${p3(state.capsuleOffsetZ)}):\n` +
+        `// the collider IS the bot's real position in the actual game (createBotInstance()) -\n` +
+        `// the VISUAL MODEL is fitted to match it (fitSkeletonToCapsule() in src/botmodel.js),\n` +
+        `// not the reverse. This offset means the visual model is misaligned from the collider\n` +
+        `// by this much - adjust BOT_MODEL_HEIGHT / the feetY math there to correct the fit,\n` +
+        `// then re-zero this offset (it should end at (0,0,0) once the model fit is right).\n`;
+
+  // Head slider values are absolute ground-relative height in this
+  // sandbox (dummyGroup's origin = ground); the real game needs them as
+  // an offset from bot.body.translation() (the capsule center), so
+  // subtract that out here rather than making you do the math by hand.
+  const bodyCenterY = state.capsuleHalfHeight + state.capsuleRadius + state.capsuleOffsetY;
+  const headOffsetX = state.headX - state.capsuleOffsetX;
+  const headOffsetY = state.headY - bodyCenterY;
+  const headOffsetZ = state.headZ - state.capsuleOffsetZ;
+
+  outputEl.textContent =
+    `// Body (createBotInstance() in src/main.js) — stays a CAPSULE there for\n` +
+    `// physics/movement; this sandbox visualizes it as the same true capsule\n` +
+    `// shape (see file-header comment). BOT_RADIUS/BOT_HALF_HEIGHT - separate\n` +
+    `// from the player's own PLAYER_RADIUS/PLAYER_HALF_HEIGHT:\n` +
+    `const BOT_RADIUS = ${p2(state.capsuleRadius)};\n` +
+    `const BOT_HALF_HEIGHT = ${p2(state.capsuleHalfHeight)};\n` +
+    offsetLine +
+    `\n// Head hitbox (fireShot() in src/main.js) — a fully independent sphere,\n` +
+    `// offset from bot.body.translation() (the capsule center), NOT relative\n` +
+    `// to the body's own surface/shape at all:\n` +
+    `const HEAD_HITBOX_OFFSET = { x: ${p3(headOffsetX)}, y: ${p3(headOffsetY)}, z: ${p3(headOffsetZ)} };\n` +
+    `const HEAD_HITBOX_RADIUS = ${p3(state.headRadius)};\n` +
+    `// Real-game check: ray-vs-sphere against botTranslation + HEAD_HITBOX_OFFSET,\n` +
+    `// compared against the existing capsule hit's distance along the same ray -\n` +
+    `// nearest one wins (see file-header comment for why no physics collider needed).`;
+}
+refreshOutput();
+
+// --- GUI -------------------------------------------------------------------
+const gui = new GUI({ title: "Bot Hitbox Calibration" });
+
+// Body and head are fully independent now (see file-header comment) -
+// body controls only rebuild/move the body, and vice versa. refreshOutput()
+// still needs both since headOffsetY is computed relative to the body's
+// center, purely for translating sandbox values into the real game's
+// coordinate space - the two hitboxes themselves don't affect each other.
+const capsuleFolder = gui.addFolder("Body Capsule (yellow)");
+capsuleFolder.add(state, "capsuleRadius", 0.1, 0.8, 0.005).name("radius").onChange(() => {
+  rebuildBody();
+  refreshOutput();
+});
+capsuleFolder.add(state, "capsuleHalfHeight", 0.2, 1.2, 0.005).name("half-height").onChange(() => {
+  rebuildBody();
+  refreshOutput();
+});
+capsuleFolder.add(state, "capsuleOffsetX", -0.5, 0.5, 0.005).name("offset X").onChange(() => {
+  rebuildBody();
+  refreshOutput();
+});
+capsuleFolder.add(state, "capsuleOffsetY", -0.5, 0.5, 0.005).name("offset Y").onChange(() => {
+  rebuildBody();
+  refreshOutput();
+});
+capsuleFolder.add(state, "capsuleOffsetZ", -0.5, 0.5, 0.005).name("offset Z").onChange(() => {
+  rebuildBody();
+  refreshOutput();
+});
+capsuleFolder.add(state, "showCapsule").name("show wireframe").onChange((v) => {
+  bodyMesh.visible = v;
+});
+
+const headFolder = gui.addFolder("Head Hitbox (red)");
+headFolder.add(state, "headX", -0.5, 0.5, 0.005).name("position X").onChange(() => {
+  updateHead();
+  refreshOutput();
+});
+headFolder.add(state, "headY", 0.3, 2.2, 0.005).name("position Y").onChange(() => {
+  updateHead();
+  refreshOutput();
+});
+headFolder.add(state, "headZ", -0.5, 0.5, 0.005).name("position Z").onChange(() => {
+  updateHead();
+  refreshOutput();
+});
+headFolder.add(state, "headRadius", 0.03, 0.5, 0.005).name("radius").onChange(() => {
+  updateHead();
+  refreshOutput();
+});
+headFolder.add(state, "showHeadZone").name("show wireframe").onChange((v) => {
+  headMesh.visible = v;
+});
+
+gui.add(state, "showBotMesh").name("show bot mesh (reference)").onChange((v) => {
+  if (botMeshRoot) botMeshRoot.visible = v;
+});
+
+// --- Resize + render loop ---------------------------------------------------
+window.addEventListener("resize", () => {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+});
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  updateMovement(clock.getDelta());
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

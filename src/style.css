@@ -1260,3 +1260,87 @@ button {
   border: 1px solid rgba(255, 255, 255, 0.2);
   box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
 }
+
+/* --- Hitbox debug view (feat-scoring-polish-and-bot-fixes) -------------
+   Dev-only panel, toggled by "P" alongside DEBUG_FREEZE_BOTS/
+   DEBUG_GOD_MODE. Deliberately plain/utilitarian rather than matching the
+   game's own tactical-HUD polish - this is a calibration tool, not
+   player-facing UI. */
+#debug-hitbox-panel {
+  position: fixed;
+  bottom: 12px;
+  left: 12px;
+  width: 300px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: rgba(20, 20, 24, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 10px;
+  z-index: 40;
+  color: #e6e6e6;
+  font-size: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+#debug-hitbox-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #39ff6a;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  padding-bottom: 6px;
+}
+
+.debug-hitbox-slider-block {
+  margin-bottom: 8px;
+}
+
+.debug-hitbox-slider-label {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 3px;
+  color: #b8b8c0;
+}
+
+.debug-hitbox-slider-label .debug-hitbox-value {
+  color: #39ff6a;
+  font-family: "SF Mono", Consolas, monospace;
+}
+
+.debug-hitbox-slider-block input[type="range"] {
+  width: 100%;
+}
+
+#debug-hitbox-copy {
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: #2b2b33;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #e6e6e6;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+#debug-hitbox-copy:hover {
+  background: #37373f;
+}
+
+#debug-hitbox-output {
+  margin-top: 8px;
+  background: #0c0c0f;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  padding: 8px;
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: #9be89b;
+  user-select: all;
+}

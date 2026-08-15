@@ -147,7 +147,6 @@ import { createPlayerArms } from "./playerArms.js";
 import {
   buildSoldierModel,
   buildSwatModel,
-  HEADSHOT_MIN_Y_OFFSET,
   SHOOT_ANIM_HOLD_MS,
 } from "./botmodel.js";
 import { loadGameAssets } from "./assets.js";
@@ -903,17 +902,28 @@ function buildArenaCover(groundSize) {
 // -----------------------------------------------------------------------
 // Player movement tuning constants
 // -----------------------------------------------------------------------
-// Declared here (before the bot below, which reuses PLAYER_RADIUS/
-// PLAYER_HALF_HEIGHT for its own capsule shape) rather than further down
-// near the Rapier setup that mostly uses them, so both can rely on it.
-
-const PLAYER_RADIUS = 0.4;
+// Declared here (before the bot below) rather than further down near the
+// Rapier setup that mostly uses them, so both can rely on it. The
+// player's own capsule - fixed, not touched by the in-game hitbox debug
+// view ("P"). BOT_RADIUS/BOT_HALF_HEIGHT below are the bots' own separate
+// dimensions - the two used to be the same shared constant, but bots and
+// the player are calibrated independently now (public/sandbox_hitbox.html)
+// and don't need to match.
+const PLAYER_RADIUS = 0.25;
 // Half-height of just the capsule's cylindrical middle section (not
 // counting the rounded caps), so total capsule height = 2 * (half + radius).
-const PLAYER_HALF_HEIGHT = 0.6;
+const PLAYER_HALF_HEIGHT = 0.62;
 // How far above the capsule's center point the camera sits (roughly eye
 // level, a bit below the very top of the capsule).
 const EYE_HEIGHT = 0.8;
+
+// Bots' own capsule dimensions - separate from PLAYER_RADIUS/
+// PLAYER_HALF_HEIGHT above (see comment there). let, not const: live-
+// tunable from the in-game hitbox debug view ("P") - see
+// applyDebugBodyChange() below, which pushes changes into every live bot's
+// Rapier capsule via setRadius()/setHalfHeight(), never the player's.
+let BOT_RADIUS = 0.26;
+let BOT_HALF_HEIGHT = 0.52;
 
 // Crouch (Milestone 7): static height/speed change. Sprint+crouch also
 // triggers a slide (below) layered on top of this same collider/camera
@@ -991,8 +1001,69 @@ function convertVerticalFov(verticalFovDeg, fromAspect, toAspect) {
 // firing from the hip; aiming down sights makes them near-laser accurate.
 const HIP_SPREAD_RADIANS = 0.016;
 const ADS_SPREAD_RADIANS = 0.002;
-// Headshots deal double damage (hit point above the bot's neck line).
+// Headshots deal double damage. The head is a fully independent hitbox
+// from the body capsule - not a region carved out of the capsule's
+// surface via a proximity check (that was tried and had a real flaw: it
+// forces the head zone to be smaller than the body everywhere they'd
+// overlap, since the ray always reaches the nearer body surface first).
+// Instead, a shot checks BOTH: the existing capsule raycast, and a plain
+// ray-vs-sphere intersection against HEAD_HITBOX_OFFSET/HEAD_HITBOX_RADIUS
+// (offset from bot.body.translation(), the capsule center) - whichever one
+// the ray actually reaches first wins. See rayIntersectsSphere() below and
+// public/sandbox_hitbox.html, which this was calibrated against.
 const HEADSHOT_MULTIPLIER = 2;
+// let, not const: live-tunable from the in-game hitbox debug view (see
+// DEBUG_HITBOX_VIEW below) so calibration can happen against real, moving,
+// rotating bots instead of only the static sandbox dummy.
+let HEAD_HITBOX_OFFSET = { x: 0.1, y: 0.835, z: -0.125 };
+let HEAD_HITBOX_RADIUS = 0.16;
+
+// HEAD_HITBOX_OFFSET.x/z were calibrated against public/sandbox_hitbox.html,
+// where the dummy never rotates - it's a WORLD-space nudge there. Real bots
+// turn to face/track targets (bot.group.rotation.y), so applying that same
+// offset directly in world space would only line up when a bot happens to
+// face the exact direction the sandbox dummy faced, and drift everywhere
+// else - this was very likely why headshots still felt inconsistent even
+// after values matched the sandbox. Rotates X/Z by the bot's current facing
+// yaw first (Y is untouched - vertical offset doesn't care about heading).
+function getBotHeadCenter(bot, botTranslation) {
+  const yaw = bot.group.rotation.y;
+  const cosYaw = Math.cos(yaw);
+  const sinYaw = Math.sin(yaw);
+  return {
+    x:
+      botTranslation.x +
+      HEAD_HITBOX_OFFSET.x * cosYaw +
+      HEAD_HITBOX_OFFSET.z * sinYaw,
+    y: botTranslation.y + HEAD_HITBOX_OFFSET.y,
+    z:
+      botTranslation.z -
+      HEAD_HITBOX_OFFSET.x * sinYaw +
+      HEAD_HITBOX_OFFSET.z * cosYaw,
+  };
+}
+
+// Standard ray-vs-sphere intersection (unit-length direction assumed, true
+// for every ray built in fireShot() below - each goes through .normalize()
+// in applyAimSpread()). Returns the distance along the ray to the nearest
+// point where it enters `radius` of `center`, or null if it misses (or the
+// sphere is entirely behind the ray origin). This is the plain-math
+// equivalent of what a second Rapier collider would give for free - see
+// the comment above HEAD_HITBOX_OFFSET for why a real collider isn't used.
+function rayIntersectsSphere(origin, direction, center, radius) {
+  const ocX = origin.x - center.x;
+  const ocY = origin.y - center.y;
+  const ocZ = origin.z - center.z;
+  const b = 2 * (ocX * direction.x + ocY * direction.y + ocZ * direction.z);
+  const c = ocX * ocX + ocY * ocY + ocZ * ocZ - radius * radius;
+  const discriminant = b * b - 4 * c;
+  if (discriminant < 0) return null;
+  const sqrtDisc = Math.sqrt(discriminant);
+  const nearT = (-b - sqrtDisc) / 2;
+  const farT = (-b + sqrtDisc) / 2;
+  const t = nearT >= 0 ? nearT : farT;
+  return t >= 0 ? t : null;
+}
 // A bit stronger than real-world gravity (9.81) for a snappier game feel -
 // common in shooters so jumps don't feel floaty.
 const GRAVITY = 20;
@@ -1221,28 +1292,41 @@ function findSpawnSurfaceY(world, x, z, excludeCollider) {
 // top of whatever's physically there. excludeCollider is optional - pass
 // the entity's own collider when respawning so the ray can't hit its old
 // (soon-to-be-vacated) position; omit it at creation time, when no such
-// collider exists yet.
-function snapSpawnPointToFloor(world, point, excludeCollider) {
+// collider exists yet. halfHeight/radius default to the player's own
+// capsule - bot call sites (botStandingSpawnTranslation()/
+// getRedTeamSpawnTranslation() below) pass BOT_HALF_HEIGHT/BOT_RADIUS
+// explicitly instead, since the two are no longer the same size.
+function snapSpawnPointToFloor(
+  world,
+  point,
+  excludeCollider,
+  halfHeight = PLAYER_HALF_HEIGHT,
+  radius = PLAYER_RADIUS
+) {
   const surfaceY = findSpawnSurfaceY(world, point.x, point.z, excludeCollider);
   return {
     x: point.x,
-    y: surfaceY + PLAYER_HALF_HEIGHT + PLAYER_RADIUS,
+    y: surfaceY + halfHeight + radius,
     z: point.z,
   };
 }
 
+// Player-only (respawnPlayer()) - uses the default player capsule size above.
 function getBlueTeamSpawnTranslation(world, livingPositions, excludeCollider) {
   const point = pickSafeSpawnPoint(BLUE_TEAM_SPAWN_POINTS, livingPositions);
   return snapSpawnPointToFloor(world, point, excludeCollider);
 }
 
+// Bot-only (enemy respawn) - see botStandingSpawnTranslation() below for
+// the same reasoning on ally bots.
 function getRedTeamSpawnTranslation(world, livingPositions, excludeCollider) {
   const point = pickSafeSpawnPoint(RED_TEAM_SPAWN_POINTS, livingPositions);
-  return snapSpawnPointToFloor(world, point, excludeCollider);
+  return snapSpawnPointToFloor(world, point, excludeCollider, BOT_HALF_HEIGHT, BOT_RADIUS);
 }
 
+// Bot-only (creation + ally respawn) - see getRedTeamSpawnTranslation() above.
 function botStandingSpawnTranslation(world, point, excludeCollider) {
-  return snapSpawnPointToFloor(world, point, excludeCollider);
+  return snapSpawnPointToFloor(world, point, excludeCollider, BOT_HALF_HEIGHT, BOT_RADIUS);
 }
 
 // How far a bot can "see" a hostile - same scale as the player's GUN_RANGE.
@@ -1315,6 +1399,58 @@ const BOT_PATROL_POINTS = [
   { x: -4, z: -1 },
 ];
 
+// Crouch-underpass footprints (feat-scoring-polish-and-bot-fixes): bots use
+// the same standing-height capsule as the player with no crouch mechanic
+// (see createBotInstance()), so these low-ceiling decks are a bot trap -
+// excluded from patrol/cover/chase targets below, the same way spawn
+// points already avoid the east bridge's ramp footprint. Coordinates match
+// the deck definitions (the hand-written NW box at line ~617, and the two
+// makeCrouchUnderpassPieces() calls); margin covers the bot capsule radius
+// plus slop so they route clear of the deck edge instead of clipping it.
+const CROUCH_UNDERPASS_FOOTPRINTS = [
+  { x: -11.5, z: -9.5, hx: 1.3 + BOT_RADIUS + 0.6, hz: 1.3 + BOT_RADIUS + 0.6 }, // NW, enemy half (1v1+)
+  { x: -17, z: 14, hx: 1.2 + BOT_RADIUS + 0.6, hz: 1.2 + BOT_RADIUS + 0.6 }, // SW, player half (3v3+)
+  { x: 22, z: -22, hx: 1.2 + BOT_RADIUS + 0.6, hz: 1.2 + BOT_RADIUS + 0.6 }, // SE, enemy half (5v5)
+];
+
+// Ramp-underside exclusion: standing bridges (makeStandingDeckPieces) have
+// plenty of clearance to walk *under* the deck itself, but the ramp
+// connecting ground to deck is a solid tilted box - the wedge-shaped gap
+// underneath it narrows to nothing, and a bot that wanders into it gets
+// physically wedged against its underside (same failure mode as the
+// crouch underpasses above, different geometry). Derived live from
+// elevatedStructurePieceDefs (rebuilt per arena size by buildArenaCover())
+// instead of hardcoded like CROUCH_UNDERPASS_FOOTPRINTS, so it
+// automatically covers every ramp on every tier - including the ground-
+// level standing decks' ramps and any future ones - without needing to be
+// kept in sync by hand. rampObstacleDefs (climbable ground mounds, no
+// underside void) are a different thing and aren't included here.
+function rampExclusionFootprints() {
+  const margin = BOT_RADIUS + 0.6;
+  return elevatedStructurePieceDefs
+    .filter((piece) => piece.type === "ramp")
+    .map((ramp) => ({
+      x: ramp.x,
+      z: ramp.z,
+      hx: ramp.hx + margin,
+      hz: ramp.hz + margin,
+    }));
+}
+
+function pointBlockedForBotNavigation(x, z) {
+  for (const zone of CROUCH_UNDERPASS_FOOTPRINTS) {
+    if (Math.abs(x - zone.x) < zone.hx && Math.abs(z - zone.z) < zone.hz) {
+      return true;
+    }
+  }
+  for (const zone of rampExclusionFootprints()) {
+    if (Math.abs(x - zone.x) < zone.hx && Math.abs(z - zone.z) < zone.hz) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Stand-points beside solid cover, rebuilt by buildCoverSlots() after
 // buildArenaCover(). Hard bots peel here after taking damage.
 let coverSlots = [];
@@ -1322,14 +1458,14 @@ let coverSlots = [];
 function pointOverlapsSolidCover(x, z) {
   for (const box of boxObstacleDefs) {
     if (
-      Math.abs(x - box.x) < box.hx + PLAYER_RADIUS * 0.5 &&
-      Math.abs(z - box.z) < box.hz + PLAYER_RADIUS * 0.5
+      Math.abs(x - box.x) < box.hx + BOT_RADIUS * 0.5 &&
+      Math.abs(z - box.z) < box.hz + BOT_RADIUS * 0.5
     ) {
       return true;
     }
   }
   for (const pillar of pillarObstacleDefs) {
-    if (Math.hypot(x - pillar.x, z - pillar.z) < pillar.radius + PLAYER_RADIUS * 0.5) {
+    if (Math.hypot(x - pillar.x, z - pillar.z) < pillar.radius + BOT_RADIUS * 0.5) {
       return true;
     }
   }
@@ -1338,13 +1474,14 @@ function pointOverlapsSolidCover(x, z) {
 
 function buildCoverSlots() {
   coverSlots = [];
-  const margin = PLAYER_RADIUS + 0.4;
+  const margin = BOT_RADIUS + 0.4;
   // Stay inside the pad so bots don't path into boundary walls.
   const padLimit = GROUND_HALF - 1;
 
   function tryAddSlot(x, z) {
     if (Math.abs(x) > padLimit || Math.abs(z) > padLimit) return;
     if (pointOverlapsSolidCover(x, z)) return;
+    if (pointBlockedForBotNavigation(x, z)) return;
     coverSlots.push({ x, z });
   }
 
@@ -1367,6 +1504,94 @@ function buildCoverSlots() {
 const bots = [];
 const colliderToBot = new Map();
 
+// Debug body-collider offset (feat-scoring-polish-and-bot-fixes): BOT_RADIUS/
+// BOT_HALF_HEIGHT above are already bot-exclusive (never read by anything
+// player-related), so the debug body sliders mutate those two directly -
+// no separate shadow copy needed. This offset has no equivalent "real"
+// constant to mutate (bots have never had a body-position offset concept),
+// so it stays its own dedicated debug variable, applied relative to
+// bot.body.translation() via Rapier's setTranslationWrtParent() -
+// world-space, not rotated by the bot's facing
+// (unlike getBotHeadCenter()'s math check, this is a real physics collider,
+// and continuously re-rotating it every frame to track facing risks
+// physics instability for little payoff). This is fine for calibration
+// since the debug view only runs while DEBUG_FREEZE_BOTS holds bots
+// stationary - not meant to be pasted in as a permanent offset for bots
+// that actually rotate in normal play. If you find you need a nonzero
+// value here, it likely means the model's fit needs correcting instead
+// (mirrors the capsuleOffset note in public/sandbox_hitbox.html).
+let debugBotBodyOffset = { x: 0, y: 0, z: 0 };
+
+// Debug hitbox wireframes: body capsule + head sphere, parented to a bot's
+// `group` so they automatically track its position AND rotation every
+// frame for free - group.position is synced to bot.body.translation() each
+// frame (see the tick() loop), and a child's local position gets the
+// group's rotation.y applied by Three.js's normal parent-child transform,
+// which is the exact same math getBotHeadCenter() does by hand for the
+// real hit-test. Hidden by default; toggled by "P" alongside
+// DEBUG_FREEZE_BOTS - see buildDebugHitboxPanel() below.
+function createDebugHitboxMeshes(group) {
+  const bodyGeo = new THREE.CapsuleGeometry(BOT_RADIUS, BOT_HALF_HEIGHT * 2, 4, 12);
+  const bodyMat = new THREE.MeshBasicMaterial({
+    color: 0xffd977,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.6,
+  });
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.visible = false;
+  group.add(body);
+
+  const headGeo = new THREE.SphereGeometry(1, 16, 12);
+  const headMat = new THREE.MeshBasicMaterial({
+    color: 0xff5b45,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.85,
+  });
+  const head = new THREE.Mesh(headGeo, headMat);
+  head.visible = false;
+  group.add(head);
+
+  return { body, head };
+}
+
+// Re-applies the live HEAD_HITBOX_OFFSET/HEAD_HITBOX_RADIUS to one bot's
+// debug head-sphere mesh - called once at bot creation, and again for
+// every living bot whenever a head slider changes.
+function updateDebugHeadMesh(bot) {
+  const meshes = bot.debugHitboxMeshes;
+  if (!meshes) return;
+  meshes.head.position.set(
+    HEAD_HITBOX_OFFSET.x,
+    HEAD_HITBOX_OFFSET.y,
+    HEAD_HITBOX_OFFSET.z
+  );
+  meshes.head.scale.setScalar(HEAD_HITBOX_RADIUS);
+}
+
+// Rebuilds one bot's debug body-capsule wireframe geometry/position to
+// match the live BOT_RADIUS/BOT_HALF_HEIGHT/debugBotBodyOffset -
+// called whenever a body slider changes. Geometry has to be replaced
+// outright (not just scaled) since a capsule's radius and half-height
+// aren't independently expressible as a uniform mesh scale.
+function updateDebugBodyMesh(bot) {
+  const meshes = bot.debugHitboxMeshes;
+  if (!meshes) return;
+  meshes.body.geometry.dispose();
+  meshes.body.geometry = new THREE.CapsuleGeometry(
+    BOT_RADIUS,
+    BOT_HALF_HEIGHT * 2,
+    4,
+    12
+  );
+  meshes.body.position.set(
+    debugBotBodyOffset.x,
+    debugBotBodyOffset.y,
+    debugBotBodyOffset.z
+  );
+}
+
 // Where a bot's rifle muzzle sits in bot.group-local space — used for
 // muzzle flash + tracers. Calibrated in public/sandbox_muzzle.html against
 // the GLB SWAT model's actual "shoot" pose (see that file for the live-
@@ -1380,7 +1605,7 @@ const BOT_MUZZLE_OFFSET = new THREE.Vector3(0.077, 0.468, -0.747);
 // ally bars stay always-visible for team awareness. Team colors match
 // capsules / minimap (blue allies, red enemies).
 
-const BOT_HEALTH_BAR_HEIGHT_OFFSET = PLAYER_HALF_HEIGHT + PLAYER_RADIUS + 0.35;
+const BOT_HEALTH_BAR_HEIGHT_OFFSET = BOT_HALF_HEIGHT + BOT_RADIUS + 0.35;
 
 function createFloatingHealthBar(color, { isEnemy = true } = {}) {
   const container = document.createElement("div");
@@ -1459,7 +1684,7 @@ function createBotInstance(world, team, spawnPoint, tier) {
     )
   );
   const collider = world.createCollider(
-    RAPIER.ColliderDesc.capsule(PLAYER_HALF_HEIGHT, PLAYER_RADIUS),
+    RAPIER.ColliderDesc.capsule(BOT_HALF_HEIGHT, BOT_RADIUS),
     body
   );
   const characterController = world.createCharacterController(0.01);
@@ -1499,6 +1724,17 @@ function createBotInstance(world, team, spawnPoint, tier) {
     // ends so Hard bots don't immediately path to another slot.
     holdingCover: false,
     lastFootstepAt: -Infinity,
+    // Gravity (feat-scoring-polish-and-bot-fixes): bots have no explicit
+    // downward force otherwise, unlike the player's verticalVelocity in
+    // tick() - see resolveBotMovement(). pendingMoveX/Z hold this frame's
+    // desired horizontal velocity, set by moveBotByDirection()/
+    // applyCombatStrafe() and consumed once per frame by
+    // resolveBotMovement(), so gravity and horizontal movement always
+    // resolve together in a single computeColliderMovement() call instead
+    // of two calls silently overwriting each other.
+    verticalVelocity: 0,
+    pendingMoveX: 0,
+    pendingMoveZ: 0,
     // Movement realism state (modern-overhaul v2).
     strafeDirection: 1, // +1 / -1, flipped on a timer while engaging
     strafeSwitchAt: 0,
@@ -1513,7 +1749,9 @@ function createBotInstance(world, team, spawnPoint, tier) {
     strafes: tier.strafes,
     strafeSpeed: tier.strafeSpeed,
     pauseAtWaypointMs: tier.pauseAtWaypointMs,
+    debugHitboxMeshes: createDebugHitboxMeshes(group),
   };
+  updateDebugHeadMesh(bot);
 
   colliderToBot.set(collider, bot);
   return bot;
@@ -1858,6 +2096,203 @@ function playKillSound() {
 let DEBUG_FREEZE_BOTS = false;
 let DEBUG_GOD_MODE = false;
 
+// -----------------------------------------------------------------------
+// Hitbox debug view (feat-scoring-polish-and-bot-fixes)
+// -----------------------------------------------------------------------
+// Toggled by the same "P" press as DEBUG_FREEZE_BOTS above. Sliders live-
+// tune HEAD_HITBOX_OFFSET/HEAD_HITBOX_RADIUS directly - immediately
+// affecting the real fireShot() headshot check on every bot, not just a
+// preview - so calibration can happen against real, moving, rotating bots
+// instead of only the static public/sandbox_hitbox.html dummy.
+
+const debugHitboxPanel = document.getElementById("debug-hitbox-panel");
+const debugHitboxSlidersEl = document.getElementById("debug-hitbox-sliders");
+const debugHitboxOutputEl = document.getElementById("debug-hitbox-output");
+const debugHitboxCopyButton = document.getElementById("debug-hitbox-copy");
+let debugHitboxPanelBuilt = false;
+
+function refreshDebugHitboxOutput() {
+  const p2 = (v) => v.toFixed(2);
+  const p3 = (v) => v.toFixed(3);
+  const offset = debugBotBodyOffset;
+  const offsetLine =
+    offset.x === 0 && offset.y === 0 && offset.z === 0
+      ? ""
+      : `\n// Non-zero body collider offset (${p3(offset.x)}, ${p3(offset.y)}, ${p3(offset.z)}),\n` +
+        `// applied in world space, only meaningful while bots are frozen (debug\n` +
+        `// mode) - likely means the VISUAL MODEL's fit needs correcting instead\n` +
+        `// (see fitSkeletonToCapsule()/BOT_MODEL_Z_OFFSET-style tweak in\n` +
+        `// src/botmodel.js), not that bots should carry a permanent world-space\n` +
+        `// collider offset that would drift as they rotate in normal play.\n`;
+  debugHitboxOutputEl.textContent =
+    `// Bot body hitbox (createBotInstance() in src/main.js) - separate from\n` +
+    `// PLAYER_RADIUS/PLAYER_HALF_HEIGHT, the player's own collider is left\n` +
+    `// untouched by this panel on purpose:\n` +
+    `const BOT_RADIUS = ${p2(BOT_RADIUS)};\n` +
+    `const BOT_HALF_HEIGHT = ${p2(BOT_HALF_HEIGHT)};` +
+    offsetLine +
+    `\n// Head hitbox (fireShot() in src/main.js):\n` +
+    `const HEAD_HITBOX_OFFSET = { x: ${p3(HEAD_HITBOX_OFFSET.x)}, y: ${p3(HEAD_HITBOX_OFFSET.y)}, z: ${p3(HEAD_HITBOX_OFFSET.z)} };\n` +
+    `const HEAD_HITBOX_RADIUS = ${p3(HEAD_HITBOX_RADIUS)};`;
+}
+
+// Re-syncs every living bot's debug head-sphere wireframe - called after a
+// head slider moves.
+function applyDebugHeadChange() {
+  for (const bot of bots) updateDebugHeadMesh(bot);
+  refreshDebugHitboxOutput();
+}
+
+// Pushes new body dimensions/offset into every LIVE bot's Rapier capsule
+// (never the player's - BOT_RADIUS/BOT_HALF_HEIGHT are bot-exclusive, see
+// their declaration above), not just the debug wireframes, so body
+// sliders actually change real bot hit detection and movement
+// collision, not just what you see. Rapier capsule colliders support
+// resizing in place via setRadius()/setHalfHeight() rather than needing to
+// be destroyed and recreated; setTranslationWrtParent() offsets the
+// collider relative to the bot's rigid body without moving the body
+// itself (so AI/movement/scoring, which all read bot.body.translation(),
+// are unaffected).
+function applyDebugBodyChange() {
+  for (const bot of bots) {
+    bot.collider.setRadius(BOT_RADIUS);
+    bot.collider.setHalfHeight(BOT_HALF_HEIGHT);
+    bot.collider.setTranslationWrtParent(debugBotBodyOffset);
+    updateDebugBodyMesh(bot);
+  }
+  refreshDebugHitboxOutput();
+}
+
+// Builds the panel's sliders once (idempotent - re-toggling "P" just
+// shows/hides the already-built panel rather than rebuilding it).
+function buildDebugHitboxPanel() {
+  if (debugHitboxPanelBuilt) return;
+  debugHitboxPanelBuilt = true;
+
+  const SLIDERS = [
+    {
+      label: "Body radius",
+      min: 0.1,
+      max: 0.6,
+      get: () => BOT_RADIUS,
+      set: (v) => (BOT_RADIUS = v),
+      apply: applyDebugBodyChange,
+    },
+    {
+      label: "Body half-height",
+      min: 0.2,
+      max: 1.0,
+      get: () => BOT_HALF_HEIGHT,
+      set: (v) => (BOT_HALF_HEIGHT = v),
+      apply: applyDebugBodyChange,
+    },
+    {
+      label: "Body offset X",
+      min: -0.5,
+      max: 0.5,
+      get: () => debugBotBodyOffset.x,
+      set: (v) => (debugBotBodyOffset.x = v),
+      apply: applyDebugBodyChange,
+    },
+    {
+      label: "Body offset Y",
+      min: -0.5,
+      max: 0.5,
+      get: () => debugBotBodyOffset.y,
+      set: (v) => (debugBotBodyOffset.y = v),
+      apply: applyDebugBodyChange,
+    },
+    {
+      label: "Body offset Z",
+      min: -0.5,
+      max: 0.5,
+      get: () => debugBotBodyOffset.z,
+      set: (v) => (debugBotBodyOffset.z = v),
+      apply: applyDebugBodyChange,
+    },
+    {
+      label: "Head offset X",
+      min: -0.5,
+      max: 0.5,
+      get: () => HEAD_HITBOX_OFFSET.x,
+      set: (v) => (HEAD_HITBOX_OFFSET.x = v),
+      apply: applyDebugHeadChange,
+    },
+    {
+      label: "Head offset Y",
+      min: 0.2,
+      max: 1.3,
+      get: () => HEAD_HITBOX_OFFSET.y,
+      set: (v) => (HEAD_HITBOX_OFFSET.y = v),
+      apply: applyDebugHeadChange,
+    },
+    {
+      label: "Head offset Z",
+      min: -0.5,
+      max: 0.5,
+      get: () => HEAD_HITBOX_OFFSET.z,
+      set: (v) => (HEAD_HITBOX_OFFSET.z = v),
+      apply: applyDebugHeadChange,
+    },
+    {
+      label: "Head radius",
+      min: 0.03,
+      max: 0.5,
+      get: () => HEAD_HITBOX_RADIUS,
+      set: (v) => (HEAD_HITBOX_RADIUS = v),
+      apply: applyDebugHeadChange,
+    },
+  ];
+
+  for (const slider of SLIDERS) {
+    const block = document.createElement("div");
+    block.className = "debug-hitbox-slider-block";
+
+    const label = document.createElement("div");
+    label.className = "debug-hitbox-slider-label";
+    const valSpan = document.createElement("span");
+    valSpan.className = "debug-hitbox-value";
+    label.innerHTML = `<span>${slider.label}</span>`;
+    label.appendChild(valSpan);
+
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = String(slider.min);
+    input.max = String(slider.max);
+    input.step = "0.005";
+    input.value = String(slider.get());
+
+    function updateLabel() {
+      valSpan.textContent = parseFloat(input.value).toFixed(3);
+    }
+    updateLabel();
+
+    input.addEventListener("input", () => {
+      slider.set(parseFloat(input.value));
+      updateLabel();
+      slider.apply();
+    });
+
+    block.appendChild(label);
+    block.appendChild(input);
+    debugHitboxSlidersEl.appendChild(block);
+  }
+
+  debugHitboxCopyButton.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(debugHitboxOutputEl.textContent);
+      debugHitboxCopyButton.textContent = "Copied!";
+    } catch {
+      // Clipboard API can be blocked (permissions/insecure context); the
+      // output block has user-select: all as a manual fallback.
+      debugHitboxCopyButton.textContent = "Select text below";
+    }
+    setTimeout(() => (debugHitboxCopyButton.textContent = "Copy Code"), 1200);
+  });
+
+  refreshDebugHitboxOutput();
+}
+
 // Tracks which keys are currently held down, keyed by event.code (layout-
 // independent, e.g. "KeyW" is always the key in the W position).
 const keysPressed = {};
@@ -1892,6 +2327,14 @@ window.addEventListener("keydown", (event) => {
     DEBUG_FREEZE_BOTS = !DEBUG_FREEZE_BOTS;
     DEBUG_GOD_MODE = DEBUG_FREEZE_BOTS;
     console.log(`[debug] test mode ${DEBUG_FREEZE_BOTS ? "ON" : "OFF"} (bots frozen: ${DEBUG_FREEZE_BOTS}, god mode: ${DEBUG_GOD_MODE})`);
+
+    buildDebugHitboxPanel();
+    debugHitboxPanel.classList.toggle("hidden", !DEBUG_FREEZE_BOTS);
+    for (const bot of bots) {
+      if (!bot.debugHitboxMeshes) continue;
+      bot.debugHitboxMeshes.body.visible = DEBUG_FREEZE_BOTS;
+      bot.debugHitboxMeshes.head.visible = DEBUG_FREEZE_BOTS;
+    }
   }
 });
 window.addEventListener("keyup", (event) => {
@@ -3470,7 +3913,7 @@ function formatMatchTime(elapsedMs) {
 // bonuses) - Damage Dealt and the Win Bonus are added afterward, unscaled,
 // per the locked formula:
 // (Base Kills + Streak Bonus + Headshots) * (1 + Difficulty%) + Damage Dealt + Win Bonus
-const DIFFICULTY_SCORE_MULTIPLIER = { easy: 0, medium: 0.25, hard: 0.5 };
+const DIFFICULTY_SCORE_MULTIPLIER = { easy: 0, medium: 0.5, hard: 1 };
 const DIFFICULTY_SCORE_LABEL = { easy: "Easy", medium: "Medium", hard: "Hard" };
 // Flat, unscaled by difficulty - it's a reward for the match outcome, not
 // for how tough the enemies were.
@@ -3590,13 +4033,15 @@ function pluralizeCount(count, noun) {
 }
 
 // Plays the full staggered reveal: Base Kills -> Headshot Kill Bonus ->
-// Streak Bonus -> Subtotal, then a dramatic multiplier beat that flashes
-// and instantly recalculates the subtotal, then Damage Dealt, then the
-// Total Score drops in. A click anywhere on #match-end-overlay at any
-// point sets resultsSkipRequested, which every step above checks before
-// its next frame/timeout - so the whole sequence collapses to final
-// values within a frame or two instead of needing bespoke skip-handling
-// per step.
+// Streak Bonus, then a dramatic multiplier beat (cause), then Subtotal
+// counts straight to its already-scaled value (effect - so the number you
+// see there already has the multiplier baked in, instead of animating to
+// an unscaled number and then jumping), then Damage Dealt -> Win Bonus,
+// then the Total Score drops in. A click anywhere on #match-end-overlay at
+// any point sets resultsSkipRequested, which every step above checks
+// before its next frame/timeout - so the whole sequence collapses to
+// final values within a frame or two instead of needing bespoke
+// skip-handling per step.
 async function playResultsReportAnimation(report) {
   resultsAnimationToken += 1;
   const token = resultsAnimationToken;
@@ -3609,9 +4054,9 @@ async function playResultsReportAnimation(report) {
   resultsStreakBonusEl.textContent = "0";
   resultsStreakBonusSublabelEl.textContent =
     report.bestStreak > 1 ? `(Best Streak: ${report.bestStreak})` : "(No Streak)";
-  resultsSubtotalEl.textContent = "0";
   resultsMultiplierLabelEl.textContent = `${report.difficultyLabel} Multiplier`;
   resultsMultiplierValueEl.textContent = "+0%";
+  resultsSubtotalEl.textContent = "0";
   resultsDamageDealtEl.textContent = "0";
   resultsDamageDealtSublabelEl.textContent = `(${report.damageDealt.toLocaleString()} DMG)`;
   resultsWinBonusEl.textContent = "0";
@@ -3627,18 +4072,17 @@ async function playResultsReportAnimation(report) {
   await tweenResultsNumber(resultsBaseKillsEl, report.baseKillPoints, 750, token);
   await tweenResultsNumber(resultsHeadshotBonusEl, report.headshotPoints, 600, token);
   await tweenResultsNumber(resultsStreakBonusEl, report.streakPoints, 600, token);
-  await tweenResultsNumber(resultsSubtotalEl, report.subtotal, 500, token);
 
-  // Dramatic beat: fade/flash the multiplier in, then snap the subtotal
-  // straight to its post-multiplier value - no intermediate count-up here,
-  // the jump itself is the payoff.
+  // Dramatic beat: fade/flash the multiplier in FIRST - cause before
+  // effect - so by the time Subtotal counts up right below it, the
+  // multiplier it explains is already on screen.
   resultsMultiplierValueEl.textContent =
     `+${Math.round(report.difficultyPercent * 100)}%`;
   resultsReportEl.classList.add("results-multiplier-flash");
-  await waitUnlessSkipped(650, token);
-  resultsSubtotalEl.textContent = report.subtotalWithMultiplier.toLocaleString();
+  await waitUnlessSkipped(450, token);
   resultsReportEl.classList.remove("results-multiplier-flash");
 
+  await tweenResultsNumber(resultsSubtotalEl, report.subtotalWithMultiplier, 500, token);
   await tweenResultsNumber(resultsDamageDealtEl, report.damagePoints, 600, token);
   await tweenResultsNumber(resultsWinBonusEl, report.winBonus, 500, token);
 
@@ -4349,6 +4793,11 @@ function startRenderLoop({
       getBlueTeamSpawnTranslation(world, getLivingEntityPositions(), playerCollider),
       true
     );
+    // Always face the enemy side (-Z) on respawn, same as the fresh-match
+    // spawn - otherwise you keep whatever direction you happened to be
+    // looking when you died.
+    yaw = 0;
+    pitch = 0;
     snapCameraHeightToPlayer();
 
     setPlayerHealth(PLAYER_MAX_HEALTH);
@@ -4404,6 +4853,9 @@ function startRenderLoop({
     bot.pauseUntil = 0;
     bot.scanYawTarget = null;
     bot.strafeSwitchAt = 0;
+    bot.verticalVelocity = 0;
+    bot.pendingMoveX = 0;
+    bot.pendingMoveZ = 0;
   }
   scheduleBotRespawn = respawnBot;
 
@@ -4481,14 +4933,45 @@ function startRenderLoop({
       playerCollider
     );
 
-    if (hit) {
+    // World raycast: walls, ally bots, and enemy BODY capsules - whatever
+    // the ray hits first among everything actually in the physics world.
+    const worldHitDistance = hit ? hit.timeOfImpact : Infinity;
+
+    // Independent head-sphere check (see HEAD_HITBOX_OFFSET above): tested
+    // against EVERY living red bot's head sphere, not just whichever bot
+    // the world raycast above happened to hit - the head sphere is a real,
+    // separate hittable target of its own (see rayIntersectsSphere()), so
+    // it has to be reachable even where it pokes outside its owner's body
+    // capsule entirely, not just in the region where the two overlap
+    // (checking it only when hit.collider was already that bot's capsule
+    // was exactly that bug). Finds whichever red bot's head sphere the ray
+    // reaches soonest, if any.
+    let headshotBot = null;
+    let headshotDistance = Infinity;
+    for (const bot of bots) {
+      if (bot.destroyed || bot.team !== "red") continue;
+      const headCenter = getBotHeadCenter(bot, bot.body.translation());
+      const d = rayIntersectsSphere(origin, direction, headCenter, HEAD_HITBOX_RADIUS);
+      if (d !== null && d < headshotDistance) {
+        headshotDistance = d;
+        headshotBot = bot;
+      }
+    }
+
+    // Whichever is actually closer along the ray wins - a wall or another
+    // bot's capsule in front of a head sphere still blocks it.
+    const isHeadshot = headshotBot !== null && headshotDistance <= worldHitDistance;
+
+    if (isHeadshot || hit) {
+      const hitDistance = isHeadshot ? headshotDistance : hit.timeOfImpact;
       const hitPoint = {
-        x: origin.x + direction.x * hit.timeOfImpact,
-        y: origin.y + direction.y * hit.timeOfImpact,
-        z: origin.z + direction.z * hit.timeOfImpact,
+        x: origin.x + direction.x * hitDistance,
+        y: origin.y + direction.y * hitDistance,
+        z: origin.z + direction.z * hitDistance,
       };
       // Player only damages RED enemy bots — never blue allies (no FF).
-      const hitBot = colliderToBot.get(hit.collider);
+      const hitBot = isHeadshot ? headshotBot : colliderToBot.get(hit.collider);
+
       spawnTracer(muzzlePosition, hitPoint, () => {
         // Bullet holes only make sense on static environment surfaces - a
         // decal on a bot doesn't track its animation and looks wrong once
@@ -4503,10 +4986,6 @@ function startRenderLoop({
       });
 
       if (hitBot && hitBot.team === "red") {
-        // Headshot: hit landed above the soldier's neck line (double damage).
-        const isHeadshot =
-          hitPoint.y >
-          hitBot.body.translation().y + HEADSHOT_MIN_Y_OFFSET;
         const damage = isHeadshot
           ? GUN_DAMAGE * HEADSHOT_MULTIPLIER
           : GUN_DAMAGE;
@@ -4872,11 +5351,22 @@ function startRenderLoop({
   }
   function pickNewPatrolTarget(bot) {
     let index;
+    let attempts = 0;
     do {
       index = Math.floor(Math.random() * BOT_PATROL_POINTS.length);
+      attempts += 1;
+      // Defensive: none of the current points fall inside a crouch
+      // underpass, but re-check here so a future added point can't
+      // silently send bots somewhere they can't fit. Bails out after a
+      // few tries rather than looping forever if every point is somehow
+      // excluded.
     } while (
-      index === bot.lastPatrolPointIndex &&
-      BOT_PATROL_POINTS.length > 1
+      ((index === bot.lastPatrolPointIndex && BOT_PATROL_POINTS.length > 1) ||
+        pointBlockedForBotNavigation(
+          BOT_PATROL_POINTS[index].x,
+          BOT_PATROL_POINTS[index].z
+        )) &&
+      attempts < 10
     );
     bot.lastPatrolPointIndex = index;
     bot.moveTarget = BOT_PATROL_POINTS[index];
@@ -4902,12 +5392,53 @@ function startRenderLoop({
     }
     return best;
   }
-  // Low-level collide-and-slide step shared by pathing + combat strafing.
+  // Low-level move: records this frame's desired horizontal velocity.
+  // Shared by pathing + combat strafing. Doesn't touch physics directly -
+  // the actual collide-and-slide resolution (combined with gravity)
+  // happens once per bot per frame in resolveBotMovement(), so a same-
+  // frame gravity pass can't silently overwrite this via a second
+  // setNextKinematicTranslation call.
   function moveBotByDirection(bot, dirX, dirZ, speed, deltaTime, now) {
+    bot.pendingMoveX = dirX * speed;
+    bot.pendingMoveZ = dirZ * speed;
+    bot.isWalking = true;
+    // Ground speed this frame — drives run-clip timeScale (anti foot-slide).
+    bot.lastMoveSpeed = speed;
+    // Spatial footstep while actively walking (cadence-gated, not every frame).
+    if (now - bot.lastFootstepAt >= BOT_FOOTSTEP_INTERVAL_MS) {
+      bot.lastFootstepAt = now;
+      const currentPosition = bot.body.translation();
+      playFootstepSound(
+        { x: currentPosition.x, y: currentPosition.y, z: currentPosition.z },
+        true
+      );
+    }
+  }
+
+  // Resolves this frame's actual physics for one bot: whatever horizontal
+  // velocity moveBotByDirection()/applyCombatStrafe() requested this frame
+  // (zero if the bot didn't move) combined with gravity, in a single
+  // computeColliderMovement() call - mirrors how the player's own tick()
+  // combines horizontal input + gravity into one desiredTranslation.
+  // Called unconditionally every frame for every living bot (see
+  // updateAllBots()), not just moving ones, so a stationary bot (e.g. an
+  // Easy bot, which doesn't strafe) still settles back down if a prior
+  // collision nudged it upward - without this, bots have no gravity of
+  // their own and rely entirely on collision resolution to stay grounded,
+  // which very rarely leaves one resting slightly above an obstacle edge
+  // with nothing to pull it back down.
+  function resolveBotMovement(bot, deltaTime) {
+    if (bot.characterController.computedGrounded()) {
+      // Same small constant downward speed the player uses to keep the
+      // "grounded" check latched true instead of flickering (see tick()).
+      bot.verticalVelocity = -0.5;
+    } else {
+      bot.verticalVelocity -= GRAVITY * deltaTime;
+    }
     bot.characterController.computeColliderMovement(bot.collider, {
-      x: dirX * speed * deltaTime,
-      y: 0,
-      z: dirZ * speed * deltaTime,
+      x: bot.pendingMoveX * deltaTime,
+      y: bot.verticalVelocity * deltaTime,
+      z: bot.pendingMoveZ * deltaTime,
     });
     const correctedMovement = bot.characterController.computedMovement();
     const currentPosition = bot.body.translation();
@@ -4916,17 +5447,8 @@ function startRenderLoop({
       y: currentPosition.y + correctedMovement.y,
       z: currentPosition.z + correctedMovement.z,
     });
-    bot.isWalking = true;
-    // Ground speed this frame — drives run-clip timeScale (anti foot-slide).
-    bot.lastMoveSpeed = speed;
-    // Spatial footstep while actively walking (cadence-gated, not every frame).
-    if (now - bot.lastFootstepAt >= BOT_FOOTSTEP_INTERVAL_MS) {
-      bot.lastFootstepAt = now;
-      playFootstepSound(
-        { x: currentPosition.x, y: currentPosition.y, z: currentPosition.z },
-        true
-      );
-    }
+    bot.pendingMoveX = 0;
+    bot.pendingMoveZ = 0;
   }
 
   function moveBotTowards(bot, target, deltaTime, now) {
@@ -5105,6 +5627,19 @@ function startRenderLoop({
       }
 
       if (!bot.moveTarget) {
+        // If the target's last known spot is inside a crouch underpass
+        // (e.g. the player ducked through one), don't chase in there -
+        // bots can't fit. Treat the trail as cold instead and fall back
+        // to patrolling, same as if it had never been seen.
+        if (
+          bot.lastKnownTargetPosition &&
+          pointBlockedForBotNavigation(
+            bot.lastKnownTargetPosition.x,
+            bot.lastKnownTargetPosition.z
+          )
+        ) {
+          bot.lastKnownTargetPosition = null;
+        }
         if (bot.lastKnownTargetPosition) {
           bot.moveTarget = bot.lastKnownTargetPosition;
         } else {
@@ -5132,6 +5667,13 @@ function startRenderLoop({
   function updateAllBots(now, deltaTime) {
     for (const bot of bots) {
       updateBot(bot, now, deltaTime);
+      // Runs even on frames the bot didn't move (pendingMoveX/Z default to
+      // 0) so gravity still applies - see resolveBotMovement(). Skipped for
+      // destroyed bots (collider disabled, nothing to resolve) and while
+      // DEBUG_FREEZE_BOTS holds them as stationary target dummies.
+      if (!bot.destroyed && !DEBUG_FREEZE_BOTS) {
+        resolveBotMovement(bot, deltaTime);
+      }
     }
   }
 
@@ -5586,6 +6128,12 @@ function disposeAllBots() {
   for (const bot of bots) {
     scene.remove(bot.group);
     for (const m of bot.materials) m.dispose();
+    if (bot.debugHitboxMeshes) {
+      for (const mesh of [bot.debugHitboxMeshes.body, bot.debugHitboxMeshes.head]) {
+        mesh.geometry.dispose();
+        mesh.material.dispose();
+      }
+    }
     if (bot.healthBar?.container?.parentNode) {
       bot.healthBar.container.parentNode.removeChild(bot.healthBar.container);
     }

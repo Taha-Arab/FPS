@@ -222,13 +222,13 @@
           <span class="results-label">Streak Bonus<span class="results-sublabel" id="results-streak-bonus-sublabel"></span></span>
           <span class="results-value" id="results-streak-bonus">0</span>
         </div>
-        <div class="results-row results-row-subtotal">
-          <span class="results-label">Subtotal</span>
-          <span class="results-value" id="results-subtotal">0</span>
-        </div>
         <div class="results-row results-row-multiplier">
           <span class="results-label" id="results-multiplier-label">Difficulty Multiplier</span>
           <span class="results-value" id="results-multiplier-value">+0%</span>
+        </div>
+        <div class="results-row results-row-subtotal">
+          <span class="results-label">Subtotal</span>
+          <span class="results-value" id="results-subtotal">0</span>
         </div>
         <div class="results-row">
           <span class="results-label">Damage Dealt<span class="results-sublabel" id="results-damage-dealt-sublabel"></span></span>
@@ -325,6 +325,22 @@
           </label>
         </div>
       </div>
+    </div>
+
+    <!--
+      Hitbox debug view (feat-scoring-polish-and-bot-fixes). Toggled by the
+      same "P" debug key as DEBUG_FREEZE_BOTS/DEBUG_GOD_MODE - shows both
+      the body capsule and head sphere as live-tunable wireframes on every
+      real bot, so calibration can happen against real, moving, rotating
+      bots instead of only the static public/sandbox_hitbox.html dummy.
+      Sliders are generated in src/main.js (buildDebugHitboxPanel()), not
+      hand-written here.
+    -->
+    <div id="debug-hitbox-panel" class="hidden">
+      <div id="debug-hitbox-title">Hitbox Debug &mdash; P to toggle</div>
+      <div id="debug-hitbox-sliders"></div>
+      <button type="button" id="debug-hitbox-copy">Copy Code</button>
+      <div id="debug-hitbox-output"></div>
     </div>
 
     <script type="module" src="/src/main.js"></script>
