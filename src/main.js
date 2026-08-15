@@ -2322,8 +2322,13 @@ window.addEventListener("keydown", (event) => {
   // Debug test mode (see flags above): freeze bots into stationary target
   // dummies + make the player invulnerable, so impact visuals can be
   // tested up close without dying or the bots wandering off. Same
-  // once-per-keypress pattern as KeyT/KeyR above.
-  if (event.code === "KeyP" && !isPaused && !isDead && !matchEnded) {
+  // once-per-keypress pattern as KeyT/KeyR above. Gated to dev builds only
+  // (import.meta.env.DEV is a Vite build-time constant - true under
+  // `npm run dev`, false under `vite build`) so free god-mode + bot-freeze
+  // never ships to the public Vercel deploy; the `false` branch is dead
+  // code Vite's production minifier strips entirely; it never reaches the
+  // deployed bundle, not just hidden behind an unreachable key.
+  if (import.meta.env.DEV && event.code === "KeyP" && !isPaused && !isDead && !matchEnded) {
     DEBUG_FREEZE_BOTS = !DEBUG_FREEZE_BOTS;
     DEBUG_GOD_MODE = DEBUG_FREEZE_BOTS;
     console.log(`[debug] test mode ${DEBUG_FREEZE_BOTS ? "ON" : "OFF"} (bots frozen: ${DEBUG_FREEZE_BOTS}, god mode: ${DEBUG_GOD_MODE})`);
